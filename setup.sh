@@ -38,8 +38,8 @@ fi
 
 echo ""
 echo "[2/4] Installing Parakeet STT dependencies..."
-if [ -d "$SCRIPT_DIR/parakeet-tdt-0.6b-v2" ]; then
-    cd "$SCRIPT_DIR/parakeet-tdt-0.6b-v2"
+if [ -d "$SCRIPT_DIR/models/stt/parakeet-tdt-0.6b-v2" ]; then
+    cd "$SCRIPT_DIR/models/stt/parakeet-tdt-0.6b-v2"
     if [ -f "requirements.txt" ]; then
         pip install -r requirements.txt
         if [ $? -ne 0 ]; then
@@ -47,13 +47,12 @@ if [ -d "$SCRIPT_DIR/parakeet-tdt-0.6b-v2" ]; then
             echo "This may be okay if you already have them installed"
         fi
     else
-        echo "WARNING: parakeet-tdt-0.6b-v2/requirements.txt not found"
+        echo "WARNING: models/stt/parakeet-tdt-0.6b-v2/requirements.txt not found"
     fi
     cd "$SCRIPT_DIR"
 else
-    echo "WARNING: parakeet-tdt-0.6b-v2 directory not found"
-    echo "STT will not be available. You can clone Parakeet from:"
-    echo "https://github.com/NVIDIA/NeMo"
+    echo "WARNING: models/stt/parakeet-tdt-0.6b-v2 directory not found"
+    echo "STT will not be available. Run setup to download the model."
 fi
 
 echo ""

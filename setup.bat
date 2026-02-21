@@ -27,18 +27,17 @@ if errorlevel 1 (
 
 echo.
 echo [2/4] Installing Parakeet STT dependencies...
-if exist "parakeet-tdt-0.6b-v2" (
-    cd parakeet-tdt-0.6b-v2
+if exist "models\stt\parakeet-tdt-0.6b-v2" (
+    cd models\stt\parakeet-tdt-0.6b-v2
     pip install -r requirements.txt
-    cd ..
+    cd ..\..\..
     if errorlevel 1 (
         echo WARNING: Failed to install some Parakeet dependencies
         echo This may be okay if you already have them installed
     )
 ) else (
-    echo WARNING: parakeet-tdt-0.6b-v2 directory not found
-    echo STT will not be available. You can clone Parakeet from:
-    echo https://github.com/NVIDIA/NeMo
+    echo WARNING: models\stt\parakeet-tdt-0.6b-v2 directory not found
+    echo STT will not be available. Run setup to download the model.
 )
 
 echo.

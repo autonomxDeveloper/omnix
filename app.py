@@ -1182,7 +1182,7 @@ def get_speculative_audio(text, speaker="default"):
 STT_BASE_URL = "http://localhost:8000"
 
 # Get the absolute path to the parakeet folder
-PARAKEET_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), 'parakeet-tdt-0.6b-v2'))
+PARAKEET_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), 'models', 'stt', 'parakeet-tdt-0.6b-v2'))
 
 # Subprocess management
 tts_process = None
@@ -1451,11 +1451,11 @@ def init_tts():
 
 # Note: TTS and STT services should be started manually:
 # - Chatterbox TTS: python chatterbox_tts_server.py (port 8020)
-# - Parakeet STT: python parakeet-tdt-0.6b-v2/app.py (port 8000)
+# - Parakeet STT: python models/stt/parakeet-tdt-0.6b-v2/app.py (port 8000)
 print("=" * 50)
 print("Note: Start services manually if needed:")
 print("  - Chatterbox TTS: python chatterbox_tts_server.py")
-print("  - Parakeet STT: cd parakeet-tdt-0.6b-v2 && python app.py")
+print("  - Parakeet STT: cd models/stt/parakeet-tdt-0.6b-v2 && python app.py")
 print("=" * 50)
 
 
