@@ -468,30 +468,25 @@ body::before {
     color: var(--accent);
 }
 
-/* Tooltip for collapsed session - show on right side */
-.sidebar-collapsed-session-item::after {
-    content: attr(title);
-    position: absolute;
-    left: 100%;
-    top: 50%;
-    transform: translateY(-50%);
-    margin-left: 12px;
-    padding: 6px 10px;
+/* Tooltip for collapsed session - using JavaScript positioning */
+.sidebar-collapsed-session-item .session-tooltip {
+    position: fixed;
+    display: none;
+    padding: 4px 8px;
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
-    font-size: 0.8rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
     white-space: nowrap;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.2s;
     z-index: 9999;
-    max-width: 250px;
-    overflow: visible;
+    max-width: 200px;
+    overflow: hidden;
     text-overflow: ellipsis;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    white-space: normal;
-    word-break: break-word;
+    pointer-events: none;
+}
+
+.sidebar-collapsed-session-item:hover .session-tooltip {
+    display: block;
 }
 
 .sidebar-collapsed-session-item:hover::after {
