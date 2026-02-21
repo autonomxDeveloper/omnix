@@ -190,6 +190,15 @@ function setupEventListeners() {
         });
     }
     
+    // Settings button in sidebar options
+    const settingsBtnOption = document.getElementById('settingsBtnOption');
+    if (settingsBtnOption) {
+        settingsBtnOption.addEventListener('click', () => {
+            loadSettings();
+            settingsModal.classList.add('active');
+        });
+    }
+    
     // Search chat button in sidebar options
     const searchChatBtnOption = document.getElementById('searchChatBtnOption');
     const searchChatModal = document.getElementById('searchChatModal');
@@ -506,10 +515,22 @@ function setupEventListeners() {
         });
     }
     
-    settingsBtn.addEventListener('click', () => {
-        loadSettings();
-        settingsModal.classList.add('active');
-    });
+    // Settings button in collapsed sidebar
+    const settingsBtnCollapsed = document.getElementById('settingsBtnCollapsed');
+    if (settingsBtnCollapsed) {
+        settingsBtnCollapsed.addEventListener('click', () => {
+            loadSettings();
+            settingsModal.classList.add('active');
+        });
+    }
+    
+    // Settings button in header (if present - may be null after removal from header)
+    if (settingsBtn) {
+        settingsBtn.addEventListener('click', () => {
+            loadSettings();
+            settingsModal.classList.add('active');
+        });
+    }
     
     closeSettings.addEventListener('click', () => {
         settingsModal.classList.remove('active');
