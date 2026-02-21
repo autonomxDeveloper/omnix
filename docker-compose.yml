@@ -1,43 +1,90 @@
 version: '3.8'
 
 services:
+  # Main Omnix service - runs all services in one container
   omnix:
     build: .
     container_name: omnix
     ports:
       - "5000:5000"    # Main Flask app
-      - "8080:8080"    # Realtime server
-      - "8000:8000"    # STT server
+      - "8000:8000"    # STT server (Parakeet)
+      - "8001:8001"    # Realtime WebSocket server
       - "8020:8020"    # TTS server (Chatterbox)
     volumes:
       - ./data:/app/data
       - ./voice_clones:/app/voice_clones
-      - ./models:/app/models
+      - ~/.cache/huggingface:/root/.cache/huggingface  # Cache HuggingFace models
     environment:
       - PYTHONUNBUFFERED=1
       - FLASK_APP=app.py
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
-    
+    # Use a startup script to run all services
+    command: >
+      bash -c "
+        echo 'Starting Parakeet STT Server...' &&
+        python parakeet_stt_server.py &
+        sleep 10 &&
+        echo 'Starting Chatterbox TTS Server...' &&
+        python chatterbox_tts_server.py &
+        sleep 5 &&
+        echo 'Starting Realtime Server...' &&
+        python realtime_server.py &
+        sleep 3 &&
+        echo 'Starting Main App...' &&
+        python app.py
+      "
+
   # Optional: Separate TTS service (Chatterbox)
   # Uncomment if running TTS as separate container
   # chatterbox-tts:
-  #   build: 
-  #     context: .
-  #     dockerfile: Dockerfile.tts
+  #   build: .
   #   container_name: chatterbox-tts
   #   ports:
   #     - "8020:8020"
   #   volumes:
   #     - ./voice_clones:/app/voice_clones
+  #     - ~/.cache/huggingface:/root/.cache/huggingface
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   command: python chatterbox_tts_server.py
   #   restart: unless-stopped
 
   # Optional: Separate STT service (Parakeet)
   # Uncomment if running STT as separate container
   # parakeet-stt:
-  #   build:
-  #     context: ./parakeet-tdt-0.6b-v2
-  #     dockerfile: Dockerfile
+  #   build: .
   #   container_name: parakeet-stt
   #   ports:
   #     - "8000:8000"
+  #   volumes:
+  #     - ~/.cache/huggingface:/root/.cache/huggingface
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   command: python parakeet_stt_server.py
   #   restart: unless-stopped
+
+# Named volumes for persistence
+volumes:
+  huggingface-cache:

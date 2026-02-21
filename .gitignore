@@ -42,8 +42,7 @@ Thumbs.db
 *.key
 *.crt
 
-# Model files (large)
-models/
+
 *.pt
 *.pth
 *.bin
