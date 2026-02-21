@@ -31,6 +31,13 @@ Run the setup script:
 setup.bat
 ```
 
+This will:
+- Install all Python dependencies
+- Download the **default LLM** (Qwen3-4B Q8_0 - ~4GB) for immediate use
+- Set up TTS and STT models
+
+The Qwen3-4B model is pre-configured and ready - no manual download needed!
+
 Or manually install:
 ```bash
 pip install -r requirements.txt
@@ -39,7 +46,7 @@ pip install -r requirements.txt
 ### 2. Start LM Studio
 
 1. Open LM Studio
-2. Download and load a model (e.g., Llama 3, Mistral)
+2. Download and load a model (e.g., Llama 3, Mistral, or use the included Qwen3-4B)
 3. Enable the server (default: http://localhost:1234)
 
 ### 3. Start the Chatbot
@@ -172,6 +179,7 @@ LM Studio provides free, private, local LLM inference on your own hardware.
 - No API key required
 
 **Recommended Models:**
+- `qwen/Qwen3-4B-Instruct-2507-GGUF` - Default, included with setup (~4GB, Q8_0)
 - `llama-3.1-8b-instant` - Fast, capable
 - `mistral-7b-instruct` - Good balance of speed and quality
 - `phi-3-mini` - Lightweight, fast

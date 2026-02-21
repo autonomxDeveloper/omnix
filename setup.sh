@@ -81,7 +81,26 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "[6/6] Verifying installations..."
+echo "[6/7] Downloading default LLM (Qwen3-4B Q8_0)..."
+echo "This provides an immediate working LLM for new installations"
+echo "Model: qwen/Qwen3-4B-Instruct-2507-GGUF"
+echo "Quantization: Q8_0 (~4GB)"
+echo ""
+
+# Create models directory
+mkdir -p models/llm
+
+# Download using huggingface_hub
+echo "Downloading Qwen3-4B GGUF model..."
+$PYTHON_CMD -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='qwen/Qwen3-4B-Instruct-2507-GGUF', filename='qwen3-4b-instruct-2507-q8_0.gguf', local_dir='models/llm', local_dir_use_symlinks=False)" 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "Could not auto-download - will provide manual instructions below"
+else
+    echo "Qwen3-4B model downloaded to models/llm/"
+fi
+
+echo ""
+echo "[7/7] Verifying installations..."
 echo ""
 
 # Check PyTorch
