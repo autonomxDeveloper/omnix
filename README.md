@@ -68,29 +68,23 @@ docker run -d -p 5000:5000 -p 8080:8080 -p 8000:8000 \
   omnix
 ```
 
-### Run with Docker Compose (Optional)
+### Run with Docker Compose (Recommended)
 
-Create a `docker-compose.yml` file:
+A `docker-compose.yml` file is included. Simply run:
 
-```yaml
-version: '3.8'
-services:
-  omnix:
-    build: .
-    ports:
-      - "5000:5000"
-      - "8080:8080"
-      - "8000:8000"
-    volumes:
-      - ./data:/app/data
-      - ./voice_clones:/app/voice_clones
-    environment:
-      - PYTHONUNBUFFERED=1
-```
-
-Then run:
 ```bash
 docker-compose up -d
+```
+
+This will:
+- Build and start the Omnix container
+- Expose ports 5000 (main app), 8080 (realtime), 8000 (STT), 8020 (TTS)
+- Mount volumes for data persistence and voice clones
+- Auto-restart on failure
+
+To stop:
+```bash
+docker-compose down
 ```
 
 Open your browser to http://localhost:5000

@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  omnix:
+    build: .
+    container_name: omnix
+    ports:
+      - "5000:5000"    # Main Flask app
+      - "8080:8080"    # Realtime server
+      - "8000:8000"    # STT server
+      - "8020:8020"    # TTS server (Chatterbox)
+    volumes:
+      - ./data:/app/data
+      - ./voice_clones:/app/voice_clones
+      - ./parakeet-tdt-0.6b-v2:/app/parakeet-tdt-0.6b-v2
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FLASK_APP=app.py
+    restart: unless-stopped
+    
+  # Optional: Separate TTS service (Chatterbox)
+  # Uncomment if running TTS as separate container
+  # chatterbox-tts:
+  #   build: 
+  #     context: .
+  #     dockerfile: Dockerfile.tts
+  #   container_name: chatterbox-tts
+  #   ports:
+  #     - "8020:8020"
+  #   volumes:
+  #     - ./voice_clones:/app/voice_clones
+  #   restart: unless-stopped
+
+  # Optional: Separate STT service (Parakeet)
+  # Uncomment if running STT as separate container
+  # parakeet-stt:
+  #   build:
+  #     context: ./parakeet-tdt-0.6b-v2
+  #     dockerfile: Dockerfile
+  #   container_name: parakeet-stt
+  #   ports:
+  #     - "8000:8000"
+  #   restart: unless-stopped
