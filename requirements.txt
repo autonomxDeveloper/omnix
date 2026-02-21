@@ -1,0 +1,24 @@
+# LM Studio Chatbot - Requirements
+
+# Core
+Flask==3.0.0
+requests==2.31.0
+
+# Voice cloning (audio conversion)
+pydub==0.25.1
+scipy>=1.9.0
+
+# WebSocket & Streaming
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+websockets>=12.0
+python-socketio>=5.9.0
+aiohttp>=3.8.0
+
+# Audio processing
+numpy>=1.24.0
+soundfile>=0.12.0
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
