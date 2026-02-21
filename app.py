@@ -1459,22 +1459,25 @@ print("  - Parakeet STT: cd models/stt/parakeet-tdt-0.6b-v2 && python app.py")
 print("=" * 50)
 
 
-# Get available speakers from Qwen3-TTS
+# Get available speakers from Chatterbox TTS (uses /voices endpoint)
 def get_available_speakers():
-    """Get list of available speakers from Qwen3-TTS server"""
+    """Get list of available speakers from Chatterbox TTS server"""
     speakers = []
     
     try:
-        response = requests.get(f"{TTS_BASE_URL}/speakers", timeout=5)
+        # Chatterbox TTS has /voices endpoint - these are already loaded from voice_clones folder
+        response = requests.get(f"{TTS_BASE_URL}/voices", timeout=5)
         if response.status_code == 200:
             data = response.json()
-            for s in data.get('speakers', []):
+            for voice_id in data.get('voices', []):
                 speakers.append({
-                    "id": s,
-                    "name": s,
-                    "language": "en"
+                    "id": voice_id,
+                    "name": voice_id,
+                    "language": "en",
+                    "source": "chatterbox"
                 })
-    except:
+    except Exception as e:
+        # If Chatterbox not available, try fallback
         pass
     
     return speakers
@@ -1664,32 +1667,28 @@ def text_to_speech_stream():
 
 @app.route('/api/tts/speakers', methods=['GET'])
 def get_speakers():
-    """Get available speakers for TTS"""
-    # Get from Qwen3-TTS API
-    speakers = get_available_speakers()
+    """Get available speakers for TTS - deduplicate from all sources"""
+    # Track seen voice IDs to avoid duplicates
+    seen_ids = set()
+    speakers = []
     
-    # If still empty, use default speaker list
-    if not speakers:
-        speakers = [
-            {"id": "serena", "name": "Serena"},
-            {"id": "aiden", "name": "Aiden"},
-            {"id": "dylan", "name": "Dylan"},
-            {"id": "eric", "name": "Eric"},
-            {"id": "ryan", "name": "Ryan"},
-            {"id": "sohee", "name": "Sohee"},
-            {"id": "vivian", "name": "Vivian"},
-            {"id": "ono_anna", "name": " Ono Anna"},
-            {"id": "uncle_fu", "name": "Uncle Fu"}
-        ]
+    # Get from Chatterbox TTS /voices endpoint
+    chatterbox_speakers = get_available_speakers()
+    for s in chatterbox_speakers:
+        if s['id'] not in seen_ids:
+            seen_ids.add(s['id'])
+            speakers.append(s)
     
-    # Add custom voices to the list
+    # Add custom/pre-loaded voices from voice_clones folder (skip duplicates)
     for voice_name, voice_data in custom_voices.items():
-        speakers.append({
-            "id": voice_name,
-            "name": f"{voice_name} (Custom)",
-            "language": voice_data.get("language", "en"),
-            "is_custom": True
-        })
+        if voice_name not in seen_ids:
+            seen_ids.add(voice_name)
+            speakers.append({
+                "id": voice_name,
+                "name": voice_name,
+                "language": voice_data.get("language", "en"),
+                "is_custom": voice_data.get("is_preloaded", False)
+            })
     
     return jsonify({"success": True, "speakers": speakers})
 
@@ -1724,6 +1723,25 @@ def save_voice_clones(clones):
 
 # Load saved voice clones on startup
 custom_voices = load_voice_clones()
+
+# Also load voice clones from voice_clones folder (pre-installed voices)
+VOICE_CLONES_DIR = os.path.join(os.path.dirname(__file__), 'voice_clones')
+if os.path.exists(VOICE_CLONES_DIR):
+    for wav_file in os.listdir(VOICE_CLONES_DIR):
+        if wav_file.lower().endswith('.wav'):
+            voice_id = os.path.splitext(wav_file)[0]
+            # Only add if not already in custom_voices
+            if voice_id not in custom_voices:
+                custom_voices[voice_id] = {
+                    "speaker": "default",
+                    "language": "en",
+                    "voice_clone_id": voice_id,
+                    "has_audio": True,
+                    "is_preloaded": True
+                }
+    if custom_voices:
+        save_voice_clones(custom_voices)
+        print(f"[VOICE CLONES] Loaded {len(custom_voices)} pre-installed voice clones from voice_clones folder")
 
 @app.route('/api/voice_clones', methods=['GET'])
 def get_voice_clones():
