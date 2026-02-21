@@ -13,24 +13,31 @@
 <body>
     <div class="app-container">
         <!-- Sidebar -->
-        <aside class="sidebar" id="sidebar">
+        <aside class="sidebar collapsed" id="sidebar">
             <div class="sidebar-header">
-                <!-- Logo button - collapses sidebar -->
-                <button id="sidebarLogoBtn" class="sidebar-logo-btn" title="Collapse sidebar">
+                <!-- Logo button -->
+                <button id="sidebarLogoBtn" class="sidebar-logo-btn" title="Omnix">
                     <img src="/logo/omnix.png" alt="Omnix" width="28" height="28" style="border-radius: 6px;">
                 </button>
                 <h2>Chats</h2>
+                <!-- Collapse button - inside sidebar header, right side -->
+                <button id="sidebarCollapseBtn" class="sidebar-collapse-btn" title="Collapse sidebar">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                        <path d="M11 17L6 12L11 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M18 17L13 12L18 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
             </div>
             
-            <!-- Sidebar Options -->
+            <!-- Sidebar Options - visible when expanded -->
             <div class="sidebar-options">
-                <button id="newChatBtnOption" class="sidebar-option-btn">
+                <button id="newChatBtnOption" class="sidebar-option-btn" title="Start a new chat">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                         <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                     </svg>
                     <span>New chat</span>
                 </button>
-                <button id="searchChatBtnOption" class="sidebar-option-btn">
+                <button id="searchChatBtnOption" class="sidebar-option-btn" title="Search all messages">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                         <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
                         <path d="M21 21L16.65 16.65" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -39,8 +46,35 @@
                 </button>
             </div>
             
+            <!-- Collapsed Sidebar Icons - visible when collapsed -->
+            <div class="sidebar-collapsed-icons" id="sidebarCollapsedIcons">
+                <button id="newChatBtnCollapsed" class="sidebar-collapsed-btn" title="New chat">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <button id="searchChatBtnCollapsed" class="sidebar-collapsed-btn" title="Search all messages">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
+                        <path d="M21 21L16.65 16.65" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Collapsed Session List - visible when collapsed, shows sessions as icons with tooltips -->
+            <div class="sidebar-collapsed-session-list" id="sidebarCollapsedSessionList">
+                <!-- Sessions will be rendered here as small icons with tooltips -->
+            </div>
+            
             <div class="session-list" id="sessionList"></div>
         </aside>
+        
+        <!-- Expand sidebar button (floating when collapsed) -->
+        <button id="expandSidebarBtn" class="expand-sidebar-btn" title="Open sidebar" style="display: none;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                <path d="M3 12H21M3 6H21M3 18H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+        </button>
         
         <!-- Search Chat Modal -->
         <div class="modal" id="searchChatModal">
