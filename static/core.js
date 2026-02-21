@@ -57,17 +57,25 @@ const ENABLE_STREAMING_TTS = true; // Set to true for streaming TTS
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('Page loaded, starting initialization...');
-    console.log('Loading settings...');
-    await loadSettings();
-    console.log('Settings loaded, checking health...');
-    checkHealth();
+    
+    // Load UI elements FIRST (no await - these are fast and make UI appear immediately)
+    console.log('Setting up event listeners...');
+    setupEventListeners();
     console.log('Loading sessions...');
     loadSessions();
     console.log('Loading TTS speakers...');
     loadTTSSpeakers();
-    console.log('Setting up event listeners...');
-    setupEventListeners();
-    console.log('Initialization complete!');
+    
+    // Then load settings and check health in the background (don't block UI)
+    console.log('Loading settings (in background)...');
+    loadSettings().then(() => {
+        console.log('Settings loaded, checking health...');
+        checkHealth();
+    }).catch(err => {
+        console.error('Error loading settings:', err);
+    });
+    
+    console.log('UI initialized, health check running in background...');
     setInterval(checkHealth, 30000);
 });
 
