@@ -38,6 +38,11 @@ const cerebrasApiKeyInput = document.getElementById('cerebrasApiKey');
 const cerebrasModelInput = document.getElementById('cerebrasModel');
 const cerebrasSettings = document.getElementById('cerebrasSettings');
 const loadCerebrasModelsBtn = document.getElementById('loadCerebrasModels');
+const llamacppSettings = document.getElementById('llamacppSettings');
+const llamacppUrlInput = document.getElementById('llamacppUrl');
+const llamacppModelInput = document.getElementById('llamacppModel');
+const huggingfaceTokenInput = document.getElementById('huggingfaceToken');
+const hfTokenInput = document.getElementById('hfToken');
 
 // State
 let sessionId = null;
@@ -103,10 +108,193 @@ function setupEventListeners() {
         sessionStorage.setItem('selectedModel', modelSelect.value);
     });
     
-    newChatBtn.addEventListener('click', createNewSession);
+    // Sidebar logo button (in sidebar header) - collapses sidebar
+    const sidebarLogoBtn = document.getElementById('sidebarLogoBtn');
+    if (sidebarLogoBtn) {
+        sidebarLogoBtn.addEventListener('click', () => {
+            sidebar.classList.add('collapsed');
+            updateSidebarButtons();
+        });
+    }
+    
+    // Sidebar toggle button (in header) - expands sidebar when collapsed
     toggleSidebarBtn.addEventListener('click', () => {
-        sidebar.classList.toggle('collapsed');
+        sidebar.classList.remove('collapsed');
+        updateSidebarButtons();
     });
+    
+    // Update buttons visibility based on sidebar state
+    function updateSidebarButtons() {
+        const isCollapsed = sidebar.classList.contains('collapsed');
+        
+        // Show header toggle button only when collapsed (to expand)
+        toggleSidebarBtn.style.display = isCollapsed ? 'flex' : 'none';
+        
+        // Show sidebar logo button only when expanded (to collapse)
+        if (sidebarLogoBtn) {
+            sidebarLogoBtn.style.display = isCollapsed ? 'none' : 'flex';
+        }
+    }
+    
+    // Initialize - sidebar starts collapsed by CSS
+    updateSidebarButtons();
+    
+    // New chat button in sidebar options
+    const newChatBtnOption = document.getElementById('newChatBtnOption');
+    if (newChatBtnOption) {
+        newChatBtnOption.addEventListener('click', () => {
+            createNewSession();
+        });
+    }
+    
+    // Search chat button in sidebar options
+    const searchChatBtnOption = document.getElementById('searchChatBtnOption');
+    const searchChatModal = document.getElementById('searchChatModal');
+    const closeSearchChat = document.getElementById('closeSearchChat');
+    const searchChatInput = document.getElementById('searchChatInput');
+    const searchChatResults = document.getElementById('searchChatResults');
+    
+    if (searchChatBtnOption && searchChatModal) {
+        searchChatBtnOption.addEventListener('click', () => {
+            searchChatModal.classList.add('active');
+            if (searchChatInput) {
+                searchChatInput.value = '';
+                searchChatInput.focus();
+            }
+            if (searchChatResults) {
+                searchChatResults.innerHTML = '';
+            }
+        });
+        
+        if (closeSearchChat) {
+            closeSearchChat.addEventListener('click', () => {
+                searchChatModal.classList.remove('active');
+            });
+        }
+        
+        searchChatModal.addEventListener('click', (e) => {
+            if (e.target === searchChatModal) {
+                searchChatModal.classList.remove('active');
+            }
+        });
+        
+        // Search chat functionality
+        if (searchChatInput) {
+            searchChatInput.addEventListener('input', debounce(async () => {
+                const query = searchChatInput.value.trim().toLowerCase();
+                if (query.length < 2) {
+                    if (searchChatResults) {
+                        searchChatResults.innerHTML = '';
+                    }
+                    return;
+                }
+                
+                await performChatSearch(query);
+            }, 300));
+        }
+    }
+    
+    // Perform chat search
+    async function performChatSearch(query) {
+        if (!searchChatResults) return;
+        
+        try {
+            const response = await fetch('/api/sessions');
+            const data = await response.json();
+            
+            if (!data.success || !data.sessions) {
+                searchChatResults.innerHTML = '<p class="search-chat-no-results">No sessions found</p>';
+                return;
+            }
+            
+            const results = [];
+            
+            // Search through all sessions and their messages only (not titles)
+            for (const session of data.sessions) {
+                // Check messages - search both user and AI messages
+                if (session.messages) {
+                    for (const msg of session.messages) {
+                        if (msg.content && msg.content.toLowerCase().includes(query)) {
+                            results.push({
+                                session: session,
+                                type: 'message',
+                                match: msg.content,
+                                role: msg.role
+                            });
+                        }
+                    }
+                }
+            }
+            
+            if (results.length === 0) {
+                searchChatResults.innerHTML = '<p class="search-chat-no-results">No results found for "' + query + '"</p>';
+                return;
+            }
+            
+            // Display results
+            searchChatResults.innerHTML = results.slice(0, 20).map(result => {
+                const sessionTitle = result.session.title || 'Untitled Chat';
+                let contentPreview = result.match;
+                
+                // Truncate and highlight
+                if (contentPreview.length > 150) {
+                    const idx = contentPreview.toLowerCase().indexOf(query);
+                    const start = Math.max(0, idx - 50);
+                    const end = Math.min(contentPreview.length, idx + query.length + 100);
+                    contentPreview = (start > 0 ? '...' : '') + 
+                        contentPreview.substring(start, end).replace(
+                            new RegExp('(' + query + ')', 'gi'), 
+                            '<mark>$1</mark>'
+                        ) + 
+                        (end < contentPreview.length ? '...' : '');
+                } else {
+                    contentPreview = contentPreview.replace(
+                        new RegExp('(' + query + ')', 'gi'), 
+                        '<mark>$1</mark>'
+                    );
+                }
+                
+                return `
+                    <div class="search-chat-result-item" data-session-id="${result.session.id}">
+                        <div class="search-chat-result-session">${sessionTitle} ${result.type === 'message' ? '- ' + (result.role || 'message') : ''}</div>
+                        <div class="search-chat-result-content">${contentPreview}</div>
+                    </div>
+                `;
+            }).join('');
+            
+            // Add click handlers to results
+            document.querySelectorAll('.search-chat-result-item').forEach(item => {
+                item.addEventListener('click', async () => {
+                    const sessionId = item.dataset.sessionId;
+                    await loadSession(sessionId);
+                    searchChatModal.classList.remove('active');
+                });
+            });
+            
+        } catch (error) {
+            console.error('Search error:', error);
+            searchChatResults.innerHTML = '<p class="search-chat-no-results">Error performing search</p>';
+        }
+    }
+    
+    // Debounce utility
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+    
+    // Keep original newChatBtn for compatibility
+    const newChatBtn = document.getElementById('newChatBtn');
+    if (newChatBtn) {
+        newChatBtn.addEventListener('click', createNewSession);
+    }
     
     settingsBtn.addEventListener('click', () => {
         loadSettings();
@@ -130,6 +318,7 @@ function setupEventListeners() {
         lmstudioSettings.style.display = provider === 'lmstudio' ? 'block' : 'none';
         openrouterSettings.style.display = provider === 'openrouter' ? 'block' : 'none';
         cerebrasSettings.style.display = provider === 'cerebras' ? 'block' : 'none';
+        llamacppSettings.style.display = provider === 'llamacpp' ? 'block' : 'none';
     });
     
     loadOpenRouterModelsBtn.addEventListener('click', loadOpenRouterModels);
@@ -215,6 +404,32 @@ async function loadSettings() {
             if (cerebrasSettings) {
                 cerebrasSettings.style.display = provider === 'cerebras' ? 'block' : 'none';
             }
+            if (llamacppSettings) {
+                llamacppSettings.style.display = provider === 'llamacpp' ? 'block' : 'none';
+            }
+            
+            // Load llama.cpp settings if present
+            if (settings.llamacpp) {
+                if (llamacppUrlInput) {
+                    llamacppUrlInput.value = settings.llamacpp.base_url || 'http://localhost:8080';
+                }
+                if (llamacppModelInput) {
+                    llamacppModelInput.value = settings.llamacpp.model || '';
+                }
+            }
+            
+            // Load HuggingFace token if present
+            if (settings.huggingface) {
+                if (huggingfaceTokenInput && settings.huggingface.token) {
+                    // Mask the token in the input field
+                    const token = settings.huggingface.token;
+                    if (token.length > 8) {
+                        huggingfaceTokenInput.value = token.substring(0, 4) + '...' + token.slice(-4);
+                    } else {
+                        huggingfaceTokenInput.value = 'hf_***';
+                    }
+                }
+            }
             
             await loadModels();
             await checkHealth();
@@ -259,6 +474,18 @@ async function saveSettingsHandler() {
     const isOpenRouterMasked = openrouterKey.includes('••••') || openrouterKey === '';
     const isCerebrasMasked = cerebrasKey.includes('...') || (cerebrasKey && cerebrasKey.length < 20);
     
+    // Get HF token from settings modal (huggingfaceTokenInput) or LLM Model Manager (hfTokenInput)
+    let hfTokenValue = '';
+    if (huggingfaceTokenInput) {
+        hfTokenValue = huggingfaceTokenInput.value.trim();
+    }
+    // Also check LLM Model Manager's hfToken if available
+    if (!hfTokenValue && hfTokenInput) {
+        hfTokenValue = hfTokenInput.value.trim();
+    }
+    
+    const isHfTokenMasked = hfTokenValue.includes('...') || hfTokenValue === '' || hfTokenValue === 'hf_***';
+    
     const settings = {
         provider: provider,
         global_system_prompt: globalSystemPromptInput ? globalSystemPromptInput.value : '',
@@ -274,6 +501,13 @@ async function saveSettingsHandler() {
         cerebras: {
             api_key: !isCerebrasMasked ? cerebrasKey : (currentSettings.cerebras?.api_key || ''),
             model: selectedModel || 'llama-3.3-70b-versatile'
+        },
+        llamacpp: {
+            base_url: llamacppUrlInput ? llamacppUrlInput.value : 'http://localhost:8080',
+            model: llamacppModelInput ? llamacppModelInput.value : ''
+        },
+        huggingface: {
+            token: !isHfTokenMasked ? hfTokenValue : (currentSettings.huggingface?.token || '')
         }
     };
     
@@ -558,5 +792,648 @@ function copyToClipboard(text, button) {
             button.textContent = 'Copy';
             button.classList.remove('copied');
         }, 2000);
+    });
+}
+
+// ==================== LLM MODEL MANAGER ====================
+
+// LLM Model Manager DOM Elements
+const llmModelBtn = document.getElementById('llmModelBtn');
+const llmModelModal = document.getElementById('llmModelModal');
+const closeLlmModel = document.getElementById('closeLlmModel');
+const modelDownloadUrl = document.getElementById('modelDownloadUrl');
+const modelPageUrl = document.getElementById('modelPageUrl');
+const fetchFilesBtn = document.getElementById('fetchFilesBtn');
+const ggufFilesGroup = document.getElementById('ggufFilesGroup');
+const ggufFilesSelect = document.getElementById('ggufFilesSelect');
+const downloadSelectedBtn = document.getElementById('downloadSelectedBtn');
+const startDownloadBtn = document.getElementById('startDownloadBtn');
+const downloadProgress = document.getElementById('downloadProgress');
+const downloadFilename = document.getElementById('downloadFilename');
+const downloadStatus = document.getElementById('downloadStatus');
+const downloadProgressBar = document.getElementById('downloadProgressBar');
+const downloadSpeed = document.getElementById('downloadSpeed');
+const downloadEta = document.getElementById('downloadEta');
+const downloadPercent = document.getElementById('downloadPercent');
+const pauseDownloadBtn = document.getElementById('pauseDownloadBtn');
+const resumeDownloadBtn = document.getElementById('resumeDownloadBtn');
+const stopDownloadBtn = document.getElementById('stopDownloadBtn');
+const llmModelsList = document.getElementById('llmModelsList');
+
+// Store fetched files for download
+let fetchedGgufFiles = [];
+
+// Download state
+let currentDownloadId = null;
+let downloadStatusInterval = null;
+
+// Fetch files from HuggingFace model page
+if (fetchFilesBtn) {
+    fetchFilesBtn.addEventListener('click', async () => {
+        const url = modelPageUrl.value.trim();
+        
+        if (!url) {
+            alert('Please enter a HuggingFace model page URL');
+            return;
+        }
+        
+        // Basic URL validation
+        if (!url.includes('huggingface.co')) {
+            alert('Please enter a valid HuggingFace URL (e.g., https://huggingface.co/ggml-org/Devstral-Small-2-24B-Instruct-2512-GGUF)');
+            return;
+        }
+        
+        fetchFilesBtn.disabled = true;
+        fetchFilesBtn.textContent = 'Fetching...';
+        
+        try {
+            const response = await fetch('/api/llm/huggingface/files', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_url: url })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                fetchedGgufFiles = data.files || [];
+                
+                if (fetchedGgufFiles.length === 0) {
+                    alert('No GGUF files found for this model.');
+                    ggufFilesGroup.style.display = 'none';
+                    return;
+                }
+                
+                // Populate dropdown
+                ggufFilesSelect.innerHTML = '<option value="">-- Select a file to download --</option>';
+                
+                fetchedGgufFiles.forEach((file, index) => {
+                    const option = document.createElement('option');
+                    option.value = index;  // Use index to reference the file
+                    option.textContent = `${file.name} (${file.size_formatted})`;
+                    ggufFilesSelect.appendChild(option);
+                });
+                
+                // Show the dropdown
+                ggufFilesGroup.style.display = 'block';
+            } else {
+                alert('Error fetching files: ' + (data.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error fetching files:', error);
+            alert('Error fetching files. Make sure the URL is correct.');
+        } finally {
+            fetchFilesBtn.disabled = false;
+            fetchFilesBtn.textContent = 'Fetch Files';
+        }
+    });
+}
+
+// Download selected file from dropdown
+if (downloadSelectedBtn) {
+    downloadSelectedBtn.addEventListener('click', async () => {
+        const selectedIndex = ggufFilesSelect.value;
+        
+        if (selectedIndex === '') {
+            alert('Please select a file to download');
+            return;
+        }
+        
+        const file = fetchedGgufFiles[selectedIndex];
+        if (!file || !file.download_url) {
+            alert('Invalid file selection');
+            return;
+        }
+        
+        downloadSelectedBtn.disabled = true;
+        downloadSelectedBtn.textContent = 'Starting...';
+        
+        try {
+            const response = await fetch('/api/llm/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: file.download_url })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                currentDownloadId = data.download_id;
+                downloadProgress.style.display = 'block';
+                downloadFilename.textContent = data.filename;
+                downloadStatus.textContent = 'Starting...';
+                downloadProgressBar.style.width = '0%';
+                downloadPercent.textContent = '0%';
+                downloadSpeed.textContent = '0 MB/s';
+                downloadEta.textContent = '--:--';
+                
+                // Start polling for status
+                downloadStatusInterval = setInterval(updateDownloadStatus, 1000);
+            } else {
+                alert('Error starting download: ' + (data.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error starting download:', error);
+            alert('Error starting download');
+        } finally {
+            downloadSelectedBtn.disabled = false;
+            downloadSelectedBtn.textContent = 'Download Selected';
+        }
+    });
+}
+
+// Setup LLM Model Manager
+if (llmModelBtn) {
+    llmModelBtn.addEventListener('click', () => {
+        llmModelModal.classList.add('active');
+        loadLlmModels();
+    });
+}
+
+if (closeLlmModel) {
+    closeLlmModel.addEventListener('click', () => {
+        llmModelModal.classList.remove('active');
+    });
+}
+
+if (llmModelModal) {
+    llmModelModal.addEventListener('click', (e) => {
+        if (e.target === llmModelModal) {
+            llmModelModal.classList.remove('active');
+        }
+    });
+}
+
+// Load LLM models list
+async function loadLlmModels() {
+    try {
+        const response = await fetch('/api/llm/models');
+        const data = await response.json();
+        
+        if (data.success && data.models) {
+            if (data.models.length === 0) {
+                llmModelsList.innerHTML = '<p style="color: var(--text-muted);">No models installed. Download a GGUF model to get started.</p>';
+            } else {
+                llmModelsList.innerHTML = '';
+                data.models.forEach(model => {
+                    const modelItem = document.createElement('div');
+                    modelItem.className = 'llm-model-item';
+                    modelItem.innerHTML = `
+                        <div class="model-info">
+                            <span class="model-name">${model.name}</span>
+                            <span class="model-size">${model.size_formatted}</span>
+                        </div>
+                        <button class="delete-model-btn" onclick="deleteLlmModel('${model.name}')" title="Delete model">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                                <path d="M3 6H5H21" stroke="currentColor" stroke-width="2"/>
+                                <path d="M19 6V20C19 21 18 22 17 22H7C6 22 5 21 5 20V6" stroke="currentColor" stroke-width="2"/>
+                            </svg>
+                        </button>
+                    `;
+                    llmModelsList.appendChild(modelItem);
+                });
+            }
+        } else {
+            llmModelsList.innerHTML = '<p style="color: var(--text-muted);">Error loading models.</p>';
+        }
+    } catch (error) {
+        console.error('Error loading LLM models:', error);
+        llmModelsList.innerHTML = '<p style="color: var(--text-muted);">Error loading models.</p>';
+    }
+}
+
+// Delete LLM model
+async function deleteLlmModel(filename) {
+    if (!confirm(`Delete model "${filename}"? This cannot be undone.`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/llm/models/${encodeURIComponent(filename)}`, {
+            method: 'DELETE'
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            loadLlmModels();
+        } else {
+            alert('Error deleting model: ' + (data.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error deleting model:', error);
+        alert('Error deleting model');
+    }
+}
+
+// Start download
+if (startDownloadBtn) {
+    startDownloadBtn.addEventListener('click', async () => {
+        const url = modelDownloadUrl.value.trim();
+        
+        if (!url) {
+            alert('Please enter a HuggingFace download URL');
+            return;
+        }
+        
+        startDownloadBtn.disabled = true;
+        startDownloadBtn.textContent = 'Starting...';
+        
+        try {
+            const response = await fetch('/api/llm/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                currentDownloadId = data.download_id;
+                downloadProgress.style.display = 'block';
+                downloadFilename.textContent = data.filename;
+                downloadStatus.textContent = 'Starting...';
+                downloadProgressBar.style.width = '0%';
+                downloadPercent.textContent = '0%';
+                downloadSpeed.textContent = '0 MB/s';
+                downloadEta.textContent = '--:--';
+                
+                // Start polling for status
+                downloadStatusInterval = setInterval(updateDownloadStatus, 1000);
+            } else {
+                alert('Error starting download: ' + (data.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error starting download:', error);
+            alert('Error starting download');
+        } finally {
+            startDownloadBtn.disabled = false;
+            startDownloadBtn.textContent = 'Download Model';
+        }
+    });
+}
+
+// Update download status
+async function updateDownloadStatus() {
+    if (!currentDownloadId) return;
+    
+    try {
+        const response = await fetch(`/api/llm/download/status?id=${currentDownloadId}`);
+        const data = await response.json();
+        
+        if (data.success && data.download) {
+            const download = data.download;
+            
+            downloadFilename.textContent = download.filename;
+            downloadProgressBar.style.width = download.progress + '%';
+            downloadPercent.textContent = download.progress + '%';
+            
+            // Update status text
+            const statusMap = {
+                'starting': 'Starting...',
+                'downloading': 'Downloading...',
+                'paused': 'Paused',
+                'completed': 'Completed!',
+                'error': 'Error: ' + (download.error || 'Unknown'),
+                'cancelled': 'Cancelled'
+            };
+            downloadStatus.textContent = statusMap[download.status] || download.status;
+            
+            // Update speed and ETA
+            if (download.speed !== undefined && download.speed !== null) {
+                const speedMB = download.speed / (1024 * 1024);
+                downloadSpeed.textContent = speedMB.toFixed(2) + ' MB/s';
+            }
+            
+            if (download.eta !== undefined && download.eta !== null && !isNaN(download.eta)) {
+                const etaSeconds = Math.round(download.eta);
+                const mins = Math.floor(etaSeconds / 60);
+                const secs = etaSeconds % 60;
+                downloadEta.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+            }
+            
+            // Update button states
+            if (download.status === 'paused') {
+                pauseDownloadBtn.style.display = 'none';
+                resumeDownloadBtn.style.display = 'inline-block';
+            } else if (download.status === 'downloading') {
+                pauseDownloadBtn.style.display = 'inline-block';
+                resumeDownloadBtn.style.display = 'none';
+            }
+            
+            // Handle completion
+            if (download.status === 'completed' || download.status === 'error' || download.status === 'cancelled') {
+                clearInterval(downloadStatusInterval);
+                
+                if (download.status === 'completed') {
+                    setTimeout(() => {
+                        alert('Download completed successfully!');
+                        downloadProgress.style.display = 'none';
+                        modelDownloadUrl.value = '';
+                        loadLlmModels();
+                    }, 500);
+                } else if (download.status === 'error') {
+                    setTimeout(() => {
+                        alert('Download error: ' + (download.error || 'Unknown error'));
+                        downloadProgress.style.display = 'none';
+                    }, 500);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error updating download status:', error);
+    }
+}
+
+// Pause download
+if (pauseDownloadBtn) {
+    pauseDownloadBtn.addEventListener('click', async () => {
+        try {
+            await fetch('/api/llm/download/pause', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ download_id: currentDownloadId })
+            });
+        } catch (error) {
+            console.error('Error pausing download:', error);
+        }
+    });
+}
+
+// Resume download
+if (resumeDownloadBtn) {
+    resumeDownloadBtn.addEventListener('click', async () => {
+        try {
+            await fetch('/api/llm/download/resume', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ download_id: currentDownloadId })
+            });
+        } catch (error) {
+            console.error('Error resuming download:', error);
+        }
+    });
+}
+
+// Stop download
+if (stopDownloadBtn) {
+    stopDownloadBtn.addEventListener('click', async () => {
+        if (!confirm('Stop download? The partial file will be deleted.')) {
+            return;
+        }
+        
+        try {
+            await fetch('/api/llm/download/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ download_id: currentDownloadId })
+            });
+            
+            clearInterval(downloadStatusInterval);
+            downloadProgress.style.display = 'none';
+            currentDownloadId = null;
+        } catch (error) {
+            console.error('Error stopping download:', error);
+        }
+    });
+}
+
+// ==================== LLAMA.CPP SETTINGS MODEL LOADING ====================
+
+// llama.cpp Settings DOM Elements
+const llamacppDownloadUrl = document.getElementById('llamacppDownloadUrl');
+const llamacppDownloadBtn = document.getElementById('llamacppDownloadBtn');
+const llamacppDownloadProgress = document.getElementById('llamacppDownloadProgress');
+const llamacppDownloadFilename = document.getElementById('llamacppDownloadFilename');
+const llamacppDownloadStatus = document.getElementById('llamacppDownloadStatus');
+const llamacppDownloadProgressBar = document.getElementById('llamacppDownloadProgressBar');
+const llamacppDownloadSpeed = document.getElementById('llamacppDownloadSpeed');
+const llamacppDownloadEta = document.getElementById('llamacppDownloadEta');
+const llamacppDownloadPercent = document.getElementById('llamacppDownloadPercent');
+const llamacppPauseDownloadBtn = document.getElementById('llamacppPauseDownloadBtn');
+const llamacppResumeDownloadBtn = document.getElementById('llamacppResumeDownloadBtn');
+const llamacppStopDownloadBtn = document.getElementById('llamacppStopDownloadBtn');
+
+// llama.cpp download state
+let llamacppCurrentDownloadId = null;
+let llamacppDownloadStatusInterval = null;
+
+// Load LLM models into llama.cpp dropdown
+async function loadLlmModelsForLlamaCpp() {
+    try {
+        const response = await fetch('/api/llm/models');
+        const data = await response.json();
+        
+        if (data.success && data.models) {
+            // Clear existing options except first
+            llamacppModelInput.innerHTML = '<option value="">-- Select a model --</option>';
+            
+            data.models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model.name;
+                option.textContent = `${model.name} (${model.size_formatted})`;
+                llamacppModelInput.appendChild(option);
+            });
+            
+            // Load saved model from settings
+            const settingsResponse = await fetch('/api/settings');
+            const settingsData = await settingsResponse.json();
+            if (settingsData.success && settingsData.settings.llamacpp?.model) {
+                llamacppModelInput.value = settingsData.settings.llamacpp.model;
+            }
+        }
+    } catch (error) {
+        console.error('Error loading LLM models for llama.cpp:', error);
+    }
+}
+
+// Setup llama.cpp download
+if (llamacppDownloadBtn) {
+    llamacppDownloadBtn.addEventListener('click', async () => {
+        const url = llamacppDownloadUrl.value.trim();
+        
+        if (!url) {
+            alert('Please enter a HuggingFace download URL');
+            return;
+        }
+        
+        llamacppDownloadBtn.disabled = true;
+        llamacppDownloadBtn.textContent = 'Starting...';
+        
+        try {
+            const response = await fetch('/api/llm/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                llamacppCurrentDownloadId = data.download_id;
+                llamacppDownloadProgress.style.display = 'block';
+                llamacppDownloadFilename.textContent = data.filename;
+                llamacppDownloadStatus.textContent = 'Starting...';
+                llamacppDownloadProgressBar.style.width = '0%';
+                llamacppDownloadPercent.textContent = '0%';
+                llamacppDownloadSpeed.textContent = '0 MB/s';
+                llamacppDownloadEta.textContent = '--:--';
+                
+                // Start polling for status
+                llamacppDownloadStatusInterval = setInterval(updateLlamaCppDownloadStatus, 1000);
+            } else {
+                alert('Error starting download: ' + (data.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error starting download:', error);
+            alert('Error starting download');
+        } finally {
+            llamacppDownloadBtn.disabled = false;
+            llamacppDownloadBtn.textContent = 'Download Model';
+        }
+    });
+}
+
+// Update llama.cpp download status
+async function updateLlamaCppDownloadStatus() {
+    if (!llamacppCurrentDownloadId) return;
+    
+    try {
+        const response = await fetch(`/api/llm/download/status?id=${llamacppCurrentDownloadId}`);
+        const data = await response.json();
+        
+        if (data.success && data.download) {
+            const download = data.download;
+            
+            llamacppDownloadFilename.textContent = download.filename;
+            llamacppDownloadProgressBar.style.width = download.progress + '%';
+            llamacppDownloadPercent.textContent = download.progress + '%';
+            
+            // Update status text
+            const statusMap = {
+                'starting': 'Starting...',
+                'downloading': 'Downloading...',
+                'paused': 'Paused',
+                'completed': 'Completed!',
+                'error': 'Error: ' + (download.error || 'Unknown'),
+                'cancelled': 'Cancelled'
+            };
+            llamacppDownloadStatus.textContent = statusMap[download.status] || download.status;
+            
+            // Update speed and ETA
+            if (download.speed !== undefined && download.speed !== null) {
+                const speedMB = download.speed / (1024 * 1024);
+                llamacppDownloadSpeed.textContent = speedMB.toFixed(2) + ' MB/s';
+            }
+            
+            if (download.eta !== undefined && download.eta !== null && !isNaN(download.eta)) {
+                const etaSeconds = Math.round(download.eta);
+                const mins = Math.floor(etaSeconds / 60);
+                const secs = etaSeconds % 60;
+                llamacppDownloadEta.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+            }
+            
+            // Update button states
+            if (download.status === 'paused') {
+                llamacppPauseDownloadBtn.style.display = 'none';
+                llamacppResumeDownloadBtn.style.display = 'inline-block';
+            } else if (download.status === 'downloading') {
+                llamacppPauseDownloadBtn.style.display = 'inline-block';
+                llamacppResumeDownloadBtn.style.display = 'none';
+            }
+            
+            // Handle completion
+            if (download.status === 'completed' || download.status === 'error' || download.status === 'cancelled') {
+                clearInterval(llamacppDownloadStatusInterval);
+                
+                if (download.status === 'completed') {
+                    setTimeout(() => {
+                        alert('Download completed successfully!');
+                        llamacppDownloadProgress.style.display = 'none';
+                        llamacppDownloadUrl.value = '';
+                        loadLlmModelsForLlamaCpp();
+                    }, 500);
+                } else if (download.status === 'error') {
+                    setTimeout(() => {
+                        alert('Download error: ' + (download.error || 'Unknown error'));
+                        llamacppDownloadProgress.style.display = 'none';
+                    }, 500);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error updating llama.cpp download status:', error);
+    }
+}
+
+// Pause llama.cpp download
+if (llamacppPauseDownloadBtn) {
+    llamacppPauseDownloadBtn.addEventListener('click', async () => {
+        try {
+            await fetch('/api/llm/download/pause', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ download_id: llamacppCurrentDownloadId })
+            });
+        } catch (error) {
+            console.error('Error pausing download:', error);
+        }
+    });
+}
+
+// Resume llama.cpp download
+if (llamacppResumeDownloadBtn) {
+    llamacppResumeDownloadBtn.addEventListener('click', async () => {
+        try {
+            await fetch('/api/llm/download/resume', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ download_id: llamacppCurrentDownloadId })
+            });
+        } catch (error) {
+            console.error('Error resuming download:', error);
+        }
+    });
+}
+
+// Stop llama.cpp download
+if (llamacppStopDownloadBtn) {
+    llamacppStopDownloadBtn.addEventListener('click', async () => {
+        if (!confirm('Stop download? The partial file will be deleted.')) {
+            return;
+        }
+        
+        try {
+            await fetch('/api/llm/download/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ download_id: llamacppCurrentDownloadId })
+            });
+            
+            clearInterval(llamacppDownloadStatusInterval);
+            llamacppDownloadProgress.style.display = 'none';
+            llamacppCurrentDownloadId = null;
+        } catch (error) {
+            console.error('Error stopping download:', error);
+        }
+    });
+}
+
+// Load LLM models when settings modal opens with llama.cpp provider
+const originalLoadSettings = loadSettings;
+loadSettings = async function() {
+    await originalLoadSettings();
+    
+    // Load LLM models for llama.cpp dropdown when provider is llama.cpp
+    if (providerSelect && providerSelect.value === 'llamacpp') {
+        loadLlmModelsForLlamaCpp();
+    }
+};
+
+// Also load on provider change to llama.cpp
+if (providerSelect) {
+    providerSelect.addEventListener('change', () => {
+        if (providerSelect.value === 'llamacpp') {
+            loadLlmModelsForLlamaCpp();
+        }
     });
 }

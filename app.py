@@ -3484,7 +3484,577 @@ def regenerate_podcast_segment():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# ==================== LLM MODEL MANAGEMENT ====================
+
+# LLM models storage directory
+LLM_MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models', 'llm')
+
+# Download tracking
+downloads = {}  # download_id -> {status, progress, speed, eta, filename, etc.}
+
+def get_gguf_files_from_hf(model_id):
+    """Get GGUF files from a HuggingFace model repo"""
+    try:
+        from huggingface_hub import list_repo_files
+        files = list_repo_files(model_id, repo_type="model")
+        gguf_files = [f for f in files if f.lower().endswith('.gguf')]
+        return gguf_files
+    except Exception as e:
+        print(f"[LLM] Error getting files from HF: {e}")
+        return []
+
+@app.route('/api/llm/models', methods=['GET'])
+def get_llm_models():
+    """Get list of downloaded LLM models"""
+    models = []
+    
+    if not os.path.exists(LLM_MODELS_DIR):
+        return jsonify({"success": True, "models": models})
+    
+    for f in os.listdir(LLM_MODELS_DIR):
+        if f.lower().endswith('.gguf'):
+            file_path = os.path.join(LLM_MODELS_DIR, f)
+            size = os.path.getsize(file_path)
+            models.append({
+                "name": f,
+                "size": size,
+                "size_formatted": format_size(size)
+            })
+    
+    return jsonify({"success": True, "models": models})
+
+
+@app.route('/api/llm/models/<path:filename>', methods=['DELETE'])
+def delete_llm_model(filename):
+    """Delete a downloaded LLM model"""
+    file_path = os.path.join(LLM_MODELS_DIR, filename)
+    
+    if not os.path.exists(file_path):
+        return jsonify({"success": False, "error": "Model not found"}), 404
+    
+    try:
+        os.remove(file_path)
+        return jsonify({"success": True, "message": f"Deleted {filename}"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/llm/huggingface/files', methods=['POST'])
+def fetch_huggingface_files():
+    """Fetch GGUF files from a HuggingFace model URL"""
+    data = request.get_json()
+    model_url = data.get('model_url', '')
+    
+    if not model_url:
+        return jsonify({"success": False, "error": "model_url is required"}), 400
+    
+    # Extract model ID from URL
+    # URL formats:
+    # https://huggingface.co/ggml-org/Devstral-Small-2-24B-Instruct-2512-GGUF
+    # https://huggingface.co/unsloth/gpt-oss-20b-GGUF
+    
+    # Try to extract model ID
+    model_id = None
+    
+    # Handle direct huggingface.co URLs
+    if 'huggingface.co/' in model_url:
+        # Extract everything after huggingface.co/
+        parts = model_url.split('huggingface.co/')
+        if len(parts) > 1:
+            path_parts = parts[1].split('/')
+            # First part is the model owner/name
+            # Handle cases like: owner/modelName/tree/main
+            # Rejoin first 2 parts to get full model ID (e.g., "unsloth/gpt-oss-20b-GGUF")
+            model_id = '/'.join(path_parts[:2])
+    
+    if not model_id:
+        return jsonify({"success": False, "error": "Invalid HuggingFace URL. Use format: https://huggingface.co/owner/modelName"}), 400
+    
+    print(f"[LLM] Fetching GGUF files for model: {model_id}")
+    
+    try:
+        from huggingface_hub import list_repo_files, hf_hub_download
+        import urllib.parse
+        
+        # Get all files in the repo
+        try:
+            repo_files = list_repo_files(model_id, repo_type="model")
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Cannot access model: {str(e)}"}), 400
+        
+        # Filter GGUF files
+        gguf_files = [f for f in repo_files if f.lower().endswith('.gguf')]
+        
+        if not gguf_files:
+            return jsonify({"success": False, "error": "No GGUF files found in this model repository"}), 400
+        
+        files_info = []
+        
+        for file in gguf_files:
+            # Get file size by attempting to get info (without downloading)
+            file_size = 0
+            try:
+                # Try to get file info - we'll download a small part to get size
+                # Actually, let's just return the filename and let user download
+                # The HF API doesn't give us file sizes easily without downloading
+                file_size = 0  # Will be determined on download
+            except:
+                pass
+            
+            # Build download URL - strip any query parameters from filename
+            clean_filename = file.split('?')[0]  # Remove query params if present
+            download_url = f"https://huggingface.co/{model_id}/resolve/main/{clean_filename}"
+            
+            files_info.append({
+                "name": file,
+                "size": file_size,
+                "size_formatted": "Unknown size",
+                "download_url": download_url
+            })
+        
+        return jsonify({
+            "success": True,
+            "model_id": model_id,
+            "files": files_info
+        })
+        
+    except ImportError:
+        return jsonify({"success": False, "error": "huggingface_hub not installed"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/llm/download', methods=['POST'])
+def start_llm_download():
+    """Start downloading a model file"""
+    data = request.get_json()
+    url = data.get('url', '')
+    
+    if not url:
+        return jsonify({"success": False, "error": "url is required"}), 400
+    
+    # Extract filename from URL - properly handle query parameters
+    from urllib.parse import urlparse, unquote
+    parsed = urlparse(url)
+    # Get the last path segment and decode any URL encoding
+    filename = unquote(parsed.path.split('/')[-1])
+    if not filename:
+        filename = "model.gguf"
+    
+    # Create download ID
+    import uuid
+    download_id = str(uuid.uuid4())[:8]
+    
+    # Create download record
+    downloads[download_id] = {
+        "id": download_id,
+        "url": url,
+        "filename": filename,
+        "status": "starting",
+        "progress": 0,
+        "speed": 0,
+        "eta": 0,
+        "downloaded": 0,
+        "total": 0,
+        "error": None
+    }
+    
+    # Start download in background thread
+    def download_file():
+        try:
+            import urllib.request
+            import ssl
+            
+            # Create SSL context that doesn't verify certificates (for downloads)
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            downloads[download_id]["status"] = "downloading"
+            
+            # Get file info first
+            req = urllib.request.Request(url, method='HEAD')
+            req.add_header('User-Agent', 'Omnix/1.0')
+            
+            try:
+                with urllib.request.urlopen(req, context=ssl_context, timeout=30) as response:
+                    total_size = int(response.headers.get('Content-Length', 0))
+                    downloads[download_id]["total"] = total_size
+            except:
+                downloads[download_id]["total"] = 0
+            
+            # Download the file
+            dest_path = os.path.join(LLM_MODELS_DIR, filename)
+            os.makedirs(LLM_MODELS_DIR, exist_ok=True)
+            
+            # Start download
+            req = urllib.request.Request(url)
+            req.add_header('User-Agent', 'Omnix/1.0')
+            
+            start_time = time.time()
+            downloaded = 0
+            
+            with urllib.request.urlopen(req, context=ssl_context, timeout=60) as response:
+                with open(dest_path, 'wb') as f:
+                    while True:
+                        chunk = response.read(1024 * 1024)  # 1MB chunks
+                        if not chunk:
+                            break
+                        
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        # Update progress
+                        elapsed = time.time() - start_time
+                        speed = downloaded / elapsed if elapsed > 0 else 0
+                        remaining = downloads[download_id]["total"] - downloaded if downloads[download_id]["total"] > 0 else 0
+                        eta = remaining / speed if speed > 0 else 0
+                        
+                        progress = (downloaded / downloads[download_id]["total"] * 100) if downloads[download_id]["total"] > 0 else 0
+                        
+                        downloads[download_id].update({
+                            "downloaded": downloaded,
+                            "progress": progress,
+                            "speed": speed,
+                            "eta": eta,
+                            "status": "downloading"
+                        })
+            
+            downloads[download_id]["status"] = "completed"
+            downloads[download_id]["progress"] = 100
+            
+        except Exception as e:
+            downloads[download_id]["status"] = "error"
+            downloads[download_id]["error"] = str(e)
+            print(f"[LLM] Download error: {e}")
+    
+    # Start download thread
+    thread = threading.Thread(target=download_file)
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({
+        "success": True,
+        "download_id": download_id,
+        "filename": filename
+    })
+
+
+@app.route('/api/llm/download/status', methods=['GET'])
+def get_download_status():
+    """Get download status"""
+    download_id = request.args.get('id', '')
+    
+    if download_id not in downloads:
+        return jsonify({"success": False, "error": "Download not found"}), 404
+    
+    download = downloads[download_id]
+    
+    return jsonify({
+        "success": True,
+        "download": {
+            "id": download["id"],
+            "filename": download["filename"],
+            "status": download["status"],
+            "progress": download["progress"],
+            "speed": download["speed"],
+            "eta": download["eta"],
+            "downloaded": download["downloaded"],
+            "total": download["total"],
+            "error": download["error"]
+        }
+    })
+
+
+@app.route('/api/llm/download/pause', methods=['POST'])
+def pause_download():
+    """Pause a download"""
+    data = request.get_json()
+    download_id = data.get('download_id', '')
+    
+    if download_id not in downloads:
+        return jsonify({"success": False, "error": "Download not found"}), 404
+    
+    downloads[download_id]["status"] = "paused"
+    return jsonify({"success": True})
+
+
+@app.route('/api/llm/download/resume', methods=['POST'])
+def resume_download():
+    """Resume a download"""
+    data = request.get_json()
+    download_id = data.get('download_id', '')
+    
+    if download_id not in downloads:
+        return jsonify({"success": False, "error": "Download not found"}), 404
+    
+    downloads[download_id]["status"] = "downloading"
+    return jsonify({"success": True})
+
+
+@app.route('/api/llm/download/stop', methods=['POST'])
+def stop_download():
+    """Stop and cancel a download"""
+    data = request.get_json()
+    download_id = data.get('download_id', '')
+    
+    if download_id not in downloads:
+        return jsonify({"success": False, "error": "Download not found"}), 404
+    
+    downloads[download_id]["status"] = "cancelled"
+    
+    # Delete partial file
+    filename = downloads[download_id]["filename"]
+    partial_path = os.path.join(LLM_MODELS_DIR, filename + ".partial")
+    if os.path.exists(partial_path):
+        try:
+            os.remove(partial_path)
+        except:
+            pass
+    
+    return jsonify({"success": True})
+
+
+def format_size(bytes):
+    """Format bytes to human readable string"""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if bytes < 1024.0:
+            return f"{bytes:.1f} {unit}"
+        bytes /= 1024.0
+    return f"{bytes:.1f} PB"
+
+
+# ==================== HUGGINGFACE GGUF MODEL MANAGEMENT ====================
+
+import re as hf_re
+
+def get_huggingface_models():
+    """Get available GGUF models from HuggingFace - searches for models with GGUF files"""
+    try:
+        # Use HF API to search for models with GGUF files
+        # This searches for models that have .gguf files in their repo
+        from huggingface_hub import list_models
+        
+        models = []
+        
+        # Search for models with GGUF files - use filter on model types
+        # We'll search for common GGUF model patterns
+        gguf_model_patterns = [
+            "gguf",
+            "llama-3",
+            "mistral",
+            "qwen",
+            "phi",
+            "gemma",
+            " Yi"
+        ]
+        
+        for pattern in gguf_model_patterns:
+            try:
+                # Search for models matching the pattern
+                for model in list_models(search=pattern, limit=50):
+                    model_id = model.id
+                    # Only include models that likely have GGUF files
+                    # Filter by model ID patterns common for GGUF
+                    if any(x in model_id.lower() for x in ['gguf', 'quantized', 'q4', 'q5', 'q6', 'q8']):
+                        models.append({
+                            'id': model_id,
+                            'name': model_id.replace('/', ' - '),
+                            'source': 'huggingface'
+                        })
+            except Exception as e:
+                print(f"[HF] Search pattern '{pattern}' error: {e}")
+                continue
+        
+        # Remove duplicates
+        seen = set()
+        unique_models = []
+        for m in models:
+            if m['id'] not in seen:
+                seen.add(m['id'])
+                unique_models.append(m)
+        
+        return unique_models
+        
+    except ImportError:
+        # Fallback: return empty if huggingface_hub not installed
+        return []
+    except Exception as e:
+        print(f"[HF] Error getting models: {e}")
+        return []
+
+
+def get_model_files(model_id):
+    """Get list of GGUF files for a specific model from HuggingFace"""
+    try:
+        from huggingface_hub import list_repo_files, hf_hub_download
+        import os
+        
+        files = []
+        
+        # Get all files in the model repo
+        try:
+            repo_files = list_repo_files(model_id, repo_type="model")
+        except Exception as e:
+            return {"success": False, "error": f"Cannot access model: {str(e)}"}, []
+        
+        # Filter for GGUF files
+        gguf_files = [f for f in repo_files if f.lower().endswith('.gguf')]
+        
+        for file in gguf_files:
+            # Get file size
+            try:
+                file_path = hf_hub_download(model_id, file, repo_type="model")
+                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                # Clean up temp file
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except:
+                file_size = 0
+            
+            files.append({
+                'name': file,
+                'size': file_size,
+                'size_mb': round(file_size / (1024 * 1024), 2) if file_size > 0 else 0
+            })
+        
+        # Sort by file size (largest first)
+        files.sort(key=lambda x: x['size'], reverse=True)
+        
+        return {"success": True, "files": files}, gguf_files
+        
+    except ImportError:
+        return {"success": False, "error": "huggingface_hub not installed. Install with: pip install huggingface_hub"}, []
+    except Exception as e:
+        return {"success": False, "error": str(e)}, []
+
+
+@app.route('/api/huggingface/models', methods=['GET'])
+def get_huggingface_models_api():
+    """Get available GGUF models from HuggingFace"""
+    models = get_huggingface_models()
+    
+    if not models:
+        return jsonify({
+            "success": False, 
+            "error": "No GGUF models found or huggingface_hub not installed",
+            "models": []
+        })
+    
+    return jsonify({
+        "success": True, 
+        "models": models
+    })
+
+
+@app.route('/api/huggingface/models/<path:model_id>', methods=['GET'])
+def get_model_files_api(model_id):
+    """Get GGUF files for a specific model"""
+    result, files = get_model_files(model_id)
+    
+    if not result.get('success'):
+        return jsonify({
+            "success": False,
+            "error": result.get('error', 'Unknown error'),
+            "files": []
+        }), 400
+    
+    return jsonify({
+        "success": True,
+        "model_id": model_id,
+        "files": files
+    })
+
+
+@app.route('/api/huggingface/download', methods=['POST'])
+def download_model_file():
+    """Download a GGUF file from HuggingFace to local models folder"""
+    data = request.get_json()
+    
+    if not data or 'model_id' not in data or 'file_name' not in data:
+        return jsonify({"success": False, "error": "model_id and file_name are required"}), 400
+    
+    model_id = data['model_id']
+    file_name = data['file_name']
+    
+    try:
+        from huggingface_hub import hf_hub_download
+        import shutil
+        
+        # Create models directory if it doesn't exist
+        models_dir = os.path.join(os.path.dirname(__file__), 'models', 'llm')
+        os.makedirs(models_dir, exist_ok=True)
+        
+        # Download the file
+        print(f"[HF] Downloading {file_name} from {model_id}...")
+        
+        downloaded_path = hf_hub_download(
+            model_id, 
+            file_name, 
+            repo_type="model",
+            local_dir=models_dir,
+            local_dir_use_symlinks=False
+        )
+        
+        # If it's a symlink or in a subdirectory, move it to the models/llm folder
+        final_path = os.path.join(models_dir, file_name)
+        
+        if downloaded_path != final_path:
+            if os.path.exists(final_path):
+                os.remove(final_path)
+            shutil.move(downloaded_path, final_path)
+        
+        file_size = os.path.getsize(final_path)
+        
+        return jsonify({
+            "success": True,
+            "message": f"Downloaded {file_name} successfully",
+            "path": final_path,
+            "size_mb": round(file_size / (1024 * 1024), 2)
+        })
+        
+    except ImportError:
+        return jsonify({"success": False, "error": "huggingface_hub not installed"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/huggingface/search', methods=['GET'])
+def search_huggingface_models():
+    """Search for models on HuggingFace by query"""
+    query = request.args.get('q', '')
+    
+    if not query:
+        return jsonify({"success": False, "error": "Search query required"}), 400
+    
+    try:
+        from huggingface_hub import list_models
+        
+        models = []
+        
+        # Search for models
+        for model in list_models(search=query, limit=20):
+            models.append({
+                'id': model.id,
+                'name': model.id.replace('/', ' - '),
+                'downloads': getattr(model, 'downloads', 0),
+                'likes': getattr(model, 'likes', 0),
+                'source': 'huggingface'
+            })
+        
+        return jsonify({
+            "success": True,
+            "models": models
+        })
+        
+    except ImportError:
+        return jsonify({"success": False, "error": "huggingface_hub not installed"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 if __name__ == '__main__':
+
     # Simple HTTP server
     print("\n" + "=" * 50)
     print("Running with HTTP on http://192.168.1.71:5000")

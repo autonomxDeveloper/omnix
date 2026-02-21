@@ -27,10 +27,13 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 \
 WORKDIR /app
 
 # Install PyTorch with CUDA 12.4 support FIRST (critical for version matching)
+# Using PyTorch 2.5.1 as 2.6.0 may not be available in all regions
+# Install torchmetrics from PyPI first to avoid torchvision compatibility issues
+RUN pip install --no-cache-dir torchmetrics==1.4.2
 RUN pip install --no-cache-dir \
-    torch==2.6.0+cu124 \
-    torchvision==0.21.0+cu124 \
-    torchaudio==2.6.0+cu124 \
+    torch==2.5.1+cu124 \
+    torchvision==0.20.1+cu124 \
+    torchaudio==2.5.1+cu124 \
     --index-url https://download.pytorch.org/whl/cu124
 
 # Copy requirements file
@@ -70,3 +73,35 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 
 # Default command - run main app
 CMD ["python", "app.py"]
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+# After building and running the container:
+#
+# 1. Build the image:
+#    docker build -t omnix .
+#
+# 2. Start the container:
+#    docker-compose up -d
+#
+# 3. Check container status:
+#    docker ps
+#
+# 4. View logs:
+#    docker-compose logs -f
+#
+# 5. Access the application:
+#    - Main app: http://localhost:5000
+#    - STT server: http://localhost:8000
+#    - Realtime server: http://localhost:8001
+#    - TTS server: http://localhost:8020
+#
+# 6. Stop the container:
+#    docker-compose down
+#
+# Note: On first run, the Parakeet STT model (~600MB) and Chatterbox TTS 
+# model will be downloaded. Check logs for progress.
+# ============================================================================
+
+

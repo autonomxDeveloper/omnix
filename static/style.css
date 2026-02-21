@@ -229,35 +229,208 @@ body::before {
     z-index: 1;
 }
 
-/* Sidebar */
+/* Sidebar - start collapsed by default to prevent flash */
 .sidebar {
     width: var(--sidebar-width);
     background: var(--bg-secondary);
     border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
-    transition: transform 0.3s ease;
+    transition: transform 0.3s ease, width 0.3s ease;
     position: relative;
     z-index: 10;
-}
-
-.sidebar.collapsed {
     transform: translateX(-100%);
     position: absolute;
     height: 100%;
 }
 
+.sidebar:not(.collapsed) {
+    transform: translateX(0);
+    position: relative;
+}
+
+/* Expand Sidebar Button (Floating - ChatGPT style) */
+.expand-sidebar-btn {
+    display: none;
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    z-index: 15;
+    width: 40px;
+    height: 40px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.expand-sidebar-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+    transform: scale(1.05);
+}
+
+/* Show expand button when sidebar is collapsed - handled by JavaScript */
+
 .sidebar-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 16px;
+    padding: 12px;
     border-bottom: 1px solid var(--border-color);
+    gap: 12px;
+}
+
+.sidebar-logo-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    padding: 0;
+    position: relative;
+}
+
+.sidebar-logo-btn img {
+    transition: opacity 0.2s;
+}
+
+/* On hover, show collapse icon instead of logo */
+.sidebar-logo-btn::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 20px;
+    height: 20px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23e8e8ec' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11 17l-5-5 5-5'/%3E%3Cpath d='M18 17l-5-5 5-5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.sidebar-logo-btn:hover {
+    background: #333;
+    border-color: #666;
+}
+
+.sidebar-logo-btn:hover img {
+    opacity: 0;
+}
+
+.sidebar-logo-btn:hover::after {
+    opacity: 1;
 }
 
 .sidebar-header h2 {
     font-size: 1rem;
     font-weight: 600;
+    flex: 1;
+}
+
+/* Sidebar Options */
+.sidebar-options {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.sidebar-option-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+    font-size: 0.85rem;
+    text-align: left;
+    width: 100%;
+}
+
+.sidebar-option-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+/* Search Chat Modal */
+.search-chat-modal-content {
+    max-width: 600px;
+    max-height: 70vh;
+}
+
+.search-chat-input-container {
+    margin-bottom: 16px;
+}
+
+.search-chat-input-container .search-input {
+    width: 100%;
+    padding: 12px 16px;
+    font-size: 1rem;
+}
+
+.search-chat-results {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.search-chat-result-item {
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+
+.search-chat-result-item:hover {
+    border-color: var(--accent);
+}
+
+.search-chat-result-session {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.search-chat-result-content {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    line-height: 1.4;
+}
+
+.search-chat-result-content mark {
+    background: rgba(124, 58, 237, 0.3);
+    color: var(--text-primary);
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+.search-chat-no-results {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 24px;
+    font-size: 0.9rem;
 }
 
 .new-chat-btn {
@@ -358,11 +531,18 @@ body::before {
 
 .toggle-sidebar-btn {
     display: none;
-    background: none;
-    border: none;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
     color: var(--text-secondary);
     cursor: pointer;
     padding: 8px;
+    transition: all 0.2s;
+}
+
+.toggle-sidebar-btn:hover {
+    background: #333;
+    border-color: #666;
 }
 
 .logo {

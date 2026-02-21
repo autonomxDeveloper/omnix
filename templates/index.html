@@ -14,19 +14,49 @@
     <div class="app-container">
         <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
-<div class="sidebar-header">
+            <div class="sidebar-header">
+                <!-- Logo button - collapses sidebar -->
+                <button id="sidebarLogoBtn" class="sidebar-logo-btn" title="Collapse sidebar">
+                    <img src="/logo/omnix.png" alt="Omnix" width="28" height="28" style="border-radius: 6px;">
+                </button>
                 <h2>Chats</h2>
-                <button id="newChatBtn" class="new-chat-btn" title="New Chat">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            </div>
+            
+            <!-- Sidebar Options -->
+            <div class="sidebar-options">
+                <button id="newChatBtnOption" class="sidebar-option-btn">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                         <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                     </svg>
+                    <span>New chat</span>
+                </button>
+                <button id="searchChatBtnOption" class="sidebar-option-btn">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                        <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
+                        <path d="M21 21L16.65 16.65" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <span>Search</span>
                 </button>
             </div>
-            <div class="sidebar-search">
-                <input type="text" id="searchConversations" class="search-input" placeholder="Search conversations...">
-            </div>
+            
             <div class="session-list" id="sessionList"></div>
         </aside>
+        
+        <!-- Search Chat Modal -->
+        <div class="modal" id="searchChatModal">
+            <div class="modal-content search-chat-modal-content">
+                <div class="modal-header">
+                    <h3>Search Chat Messages</h3>
+                    <button class="modal-close" id="closeSearchChat">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="search-chat-input-container">
+                        <input type="text" id="searchChatInput" class="search-input" placeholder="Search all messages...">
+                    </div>
+                    <div id="searchChatResults" class="search-chat-results"></div>
+                </div>
+            </div>
+        </div>
 
         <!-- Main Content -->
         <main class="main-content">
@@ -61,6 +91,13 @@
                     <select id="modelSelect" class="model-select">
                         <option value="">Loading models...</option>
                     </select>
+                    <button id="llmModelBtn" class="llm-model-btn" title="LLM Model Manager - Download GGUF models">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                            <path d="M21 15V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H5C4.46957 21 3.96086 20.7893 3.58579 20.4142C3.21071 20.0391 3 19.5304 3 19V15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M7 10L12 15L17 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
                     <select id="ttsSpeaker" class="speaker-select-header">
                         <option value="en">Loading...</option>
                     </select>
@@ -284,6 +321,7 @@
             <option value="cerebras">Cerebras (Fastest)</option>
             <option value="openrouter">OpenRouter (Cloud)</option>
             <option value="lmstudio">LM Studio (Local)</option>
+            <option value="llamacpp">llama.cpp (Local)</option>
         </select>
     </div>
 
@@ -331,6 +369,54 @@
                     </div>
                     <p style="margin-top: 12px; font-size: 0.8rem; color: #10b981;">
                         ⚡ Cerebras offers the lowest latency cloud inference!
+                    </p>
+                </div>
+
+                <!-- llama.cpp Settings -->
+                <div id="llamacppSettings" style="display: none;">
+                    <div class="setting-group">
+                        <label>Base URL</label>
+                        <input type="text" id="llamacppUrl" class="system-prompt-input" value="http://localhost:8080">
+                    </div>
+                    <div class="setting-group">
+                        <label>Model (GGUF file)</label>
+                        <select id="llamacppModel" class="model-select">
+                            <option value="">-- Select a model --</option>
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label>HuggingFace Token (optional, for private models)</label>
+                        <input type="password" id="huggingfaceToken" class="system-prompt-input" placeholder="hf_...">
+                    </div>
+                    <div class="setting-group">
+                        <label>Download New Model</label>
+                        <input type="text" id="llamacppDownloadUrl" class="system-prompt-input" placeholder="https://huggingface.co/<org>/<model>/resolve/main/model.gguf">
+                        <button id="llamacppDownloadBtn" class="btn-secondary" style="margin-top: 8px; width: 100%;">Download Model</button>
+                    </div>
+                    <!-- Download Progress for llama.cpp -->
+                    <div id="llamacppDownloadProgress" class="download-progress" style="display: none; margin-top: 12px;">
+                        <div class="download-item">
+                            <div class="download-info">
+                                <span class="download-filename" id="llamacppDownloadFilename">model.gguf</span>
+                                <span class="download-status" id="llamacppDownloadStatus">Downloading...</span>
+                            </div>
+                            <div class="progress-bar-container">
+                                <div id="llamacppDownloadProgressBar" class="progress-bar"></div>
+                            </div>
+                            <div class="download-stats">
+                                <span id="llamacppDownloadSpeed">0 MB/s</span>
+                                <span id="llamacppDownloadEta">--:--</span>
+                                <span id="llamacppDownloadPercent">0%</span>
+                            </div>
+                            <div class="download-controls">
+                                <button id="llamacppPauseDownloadBtn" class="btn-secondary">Pause</button>
+                                <button id="llamacppResumeDownloadBtn" class="btn-secondary" style="display: none;">Resume</button>
+                                <button id="llamacppStopDownloadBtn" class="btn-danger">Stop</button>
+                            </div>
+                        </div>
+                    </div>
+                    <p style="margin-top: 12px; font-size: 0.8rem; color: #666;">
+                        💻 Run llama.cpp server with: <code>llama-server -m model.gguf -c 4096 -ngl 999</code>
                     </p>
                 </div>
 
@@ -653,6 +739,91 @@
                         <p style="color: var(--text-muted);">Loading episodes...</p>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- LLM Model Download Modal -->
+    <div class="modal" id="llmModelModal">
+        <div class="modal-content llm-model-modal-content">
+            <div class="modal-header">
+                <h3>🤖 LLM Model Manager</h3>
+                <button class="modal-close" id="closeLlmModel">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Download Section -->
+                <div class="llm-download-section">
+                    <h4>Download New Model</h4>
+                    <p style="font-size: 0.8rem; color: #888; margin-bottom: 12px;">Enter a HuggingFace model page URL to see available GGUF files, or paste a direct download link</p>
+                    
+                    <div class="setting-group">
+                        <label>HuggingFace Token (optional, for private models)</label>
+                        <input type="password" id="hfToken" class="system-prompt-input" placeholder="hf_...">
+                    </div>
+                    
+                    <!-- Option 1: Model page URL with dropdown -->
+                    <div class="setting-group">
+                        <label>HuggingFace Model Page URL</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="modelPageUrl" class="system-prompt-input" placeholder="https://huggingface.co/ggml-org/Devstral-Small-2-24B-Instruct-2512-GGUF" style="flex: 1;">
+                            <button id="fetchFilesBtn" class="btn-secondary" style="white-space: nowrap;">Fetch Files</button>
+                        </div>
+                    </div>
+                    
+                    <!-- GGUF Files Dropdown -->
+                    <div class="setting-group" id="ggufFilesGroup" style="display: none;">
+                        <label>Available GGUF Files</label>
+                        <select id="ggufFilesSelect" class="model-select">
+                            <option value="">-- Select a file to download --</option>
+                        </select>
+                        <button id="downloadSelectedBtn" class="btn-primary" style="width: 100%; margin-top: 8px;">Download Selected</button>
+                    </div>
+                    
+                    <div style="text-align: center; margin: 12px 0; color: #666; font-size: 0.8rem;">— or —</div>
+                    
+                    <!-- Option 2: Direct URL -->
+                    <div class="setting-group">
+                        <label>Direct Download URL</label>
+                        <input type="text" id="modelDownloadUrl" class="system-prompt-input" placeholder="https://huggingface.co/<org>/<model>/resolve/main/model.gguf">
+                    </div>
+                    
+                    <button id="startDownloadBtn" class="btn-primary" style="width: 100%;">Download Model</button>
+                    
+                    <!-- Download Progress -->
+                    <div id="downloadProgress" class="download-progress" style="display: none;">
+                        <div class="download-item">
+                            <div class="download-info">
+                                <span class="download-filename" id="downloadFilename">model.gguf</span>
+                                <span class="download-status" id="downloadStatus">Downloading...</span>
+                            </div>
+                            <div class="progress-bar-container">
+                                <div id="downloadProgressBar" class="progress-bar"></div>
+                            </div>
+                            <div class="download-stats">
+                                <span id="downloadSpeed">0 MB/s</span>
+                                <span id="downloadEta">--:--</span>
+                                <span id="downloadPercent">0%</span>
+                            </div>
+                            <div class="download-controls">
+                                <button id="pauseDownloadBtn" class="btn-secondary">Pause</button>
+                                <button id="resumeDownloadBtn" class="btn-secondary" style="display: none;">Resume</button>
+                                <button id="stopDownloadBtn" class="btn-danger">Stop</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Existing Models Section -->
+                <div class="llm-models-section">
+                    <h4 style="margin-top: 24px;">Installed Models</h4>
+                    <div id="llmModelsList" class="llm-models-list">
+                        <p style="color: var(--text-muted);">Loading models...</p>
+                    </div>
+                </div>
+                
+                <p style="margin-top: 16px; font-size: 0.75rem; color: #666;">
+                    💾 Models are stored in: <code>models/llm/</code>
+                </p>
             </div>
         </div>
     </div>

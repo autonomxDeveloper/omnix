@@ -31,11 +31,11 @@ echo.
 echo [1/5] Installing PyTorch with CUDA 12.4 support...
 echo This is CRITICAL - mismatched versions cause errors
 echo.
-pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 torchaudio==2.6.0+cu124 --index-url https://download.pytorch.org/whl/cu124
+pip install torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
 if errorlevel 1 (
     echo WARNING: Failed to install PyTorch with CUDA
     echo Trying CPU-only version...
-    pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0
+    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
 )
 
 echo.
