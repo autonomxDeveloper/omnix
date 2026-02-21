@@ -71,7 +71,17 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "[5/5] Verifying installations..."
+echo "[5/6] Pre-downloading Parakeet TDT 0.6B model..."
+echo "This may take a few minutes..."
+echo "Note: Model downloads to HuggingFace cache: ~/.cache/huggingface/"
+$PYTHON_CMD -c "from nemo.collections.asr.models import ASRModel; ASRModel.from_pretrained('nvidia/parakeet-tdt-0.6b-v2'); print('Parakeet model downloaded successfully!')" 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "WARNING: Failed to pre-download Parakeet model"
+    echo "It will be downloaded on first use instead"
+fi
+
+echo ""
+echo "[6/6] Verifying installations..."
 echo ""
 
 # Check PyTorch
