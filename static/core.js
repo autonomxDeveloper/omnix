@@ -470,6 +470,42 @@ function setupEventListeners() {
         });
     }
     
+    // Voice Clone button in collapsed sidebar
+    const voiceCloneBtnCollapsed = document.getElementById('voiceCloneBtnCollapsed');
+    if (voiceCloneBtnCollapsed) {
+        voiceCloneBtnCollapsed.addEventListener('click', () => {
+            // Open voice clone modal - use the header button handler
+            const voiceCloneModal = document.getElementById('voiceCloneModal');
+            if (voiceCloneModal) {
+                voiceCloneModal.classList.add('active');
+            }
+        });
+    }
+    
+    // Audiobook button in collapsed sidebar
+    const audiobookBtnCollapsed = document.getElementById('audiobookBtnCollapsed');
+    if (audiobookBtnCollapsed) {
+        audiobookBtnCollapsed.addEventListener('click', () => {
+            // Open audiobook modal
+            const audiobookModal = document.getElementById('audiobook-modal');
+            if (audiobookModal) {
+                audiobookModal.classList.add('active');
+            }
+        });
+    }
+    
+    // Podcast button in collapsed sidebar
+    const podcastBtnCollapsed = document.getElementById('podcastBtnCollapsed');
+    if (podcastBtnCollapsed) {
+        podcastBtnCollapsed.addEventListener('click', () => {
+            // Open podcast modal
+            const podcastModal = document.getElementById('podcast-modal');
+            if (podcastModal) {
+                podcastModal.classList.add('active');
+            }
+        });
+    }
+    
     settingsBtn.addEventListener('click', () => {
         loadSettings();
         settingsModal.classList.add('active');

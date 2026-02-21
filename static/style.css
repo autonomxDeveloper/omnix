@@ -420,6 +420,20 @@ body::before {
     display: none;
 }
 
+/* Sidebar Tools Section */
+.sidebar-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* Hide sidebar tools when collapsed */
+.sidebar.collapsed .sidebar-tools {
+    display: none;
+}
+
 /* Session list in collapsed state - show tooltips */
 .sidebar.collapsed .session-list {
     display: none;
