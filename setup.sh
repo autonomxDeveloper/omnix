@@ -38,26 +38,44 @@ fi
 
 echo ""
 echo "[2/4] Installing Parakeet STT dependencies..."
-cd "$SCRIPT_DIR/parakeet-tdt-0.6b-v2"
-if [ -f "requirements.txt" ]; then
-    pip install -r requirements.txt
-    if [ $? -ne 0 ]; then
-        echo "WARNING: Failed to install some Parakeet dependencies"
-        echo "This may be okay if you already have them installed"
+if [ -d "$SCRIPT_DIR/parakeet-tdt-0.6b-v2" ]; then
+    cd "$SCRIPT_DIR/parakeet-tdt-0.6b-v2"
+    if [ -f "requirements.txt" ]; then
+        pip install -r requirements.txt
+        if [ $? -ne 0 ]; then
+            echo "WARNING: Failed to install some Parakeet dependencies"
+            echo "This may be okay if you already have them installed"
+        fi
+    else
+        echo "WARNING: parakeet-tdt-0.6b-v2/requirements.txt not found"
     fi
+    cd "$SCRIPT_DIR"
 else
-    echo "WARNING: parakeet-tdt-0.6b-v2/requirements.txt not found"
+    echo "WARNING: parakeet-tdt-0.6b-v2 directory not found"
+    echo "STT will not be available. You can clone Parakeet from:"
+    echo "https://github.com/NVIDIA/NeMo"
 fi
-cd "$SCRIPT_DIR"
 
 echo ""
 echo "[3/4] Installing Chatterbox TTS TURBO..."
-pip install chatterbox-tts
-if [ $? -ne 0 ]; then
-    echo "WARNING: Failed to install Chatterbox TTS"
-    echo "You can try: pip install chatterbox-tts torch torchaudio"
+# Install from local chatterbox directory if available
+if [ -d "chatterbox" ]; then
+    pip install -e ./chatterbox
+    if [ $? -ne 0 ]; then
+        echo "WARNING: Failed to install local Chatterbox TTS"
+        echo "Trying from PyPI..."
+        pip install chatterbox-tts
+    else
+        echo "Chatterbox TTS TURBO installed successfully from local directory!"
+    fi
 else
-    echo "Chatterbox TTS TURBO installed successfully!"
+    pip install chatterbox-tts
+    if [ $? -ne 0 ]; then
+        echo "WARNING: Failed to install Chatterbox TTS"
+        echo "You can try: pip install chatterbox-tts torch torchaudio"
+    else
+        echo "Chatterbox TTS TURBO installed successfully!"
+    fi
 fi
 
 echo ""
