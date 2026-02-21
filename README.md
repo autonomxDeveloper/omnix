@@ -2,7 +2,7 @@
 
 A modern AI voice platform by Autonomx - featuring chat, audiobook generation, AI podcasts, live conversation, and voice cloning.
 
-![Omnix Logo](logo/omnix.png)
+<img src="logo/omnix.png" alt="Omnix Logo" width="300">
 
 ## Features
 
