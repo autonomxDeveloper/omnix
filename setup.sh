@@ -58,24 +58,12 @@ fi
 
 echo ""
 echo "[3/4] Installing Chatterbox TTS TURBO..."
-# Install from local chatterbox directory if available
-if [ -d "chatterbox" ]; then
-    pip install -e ./chatterbox
-    if [ $? -ne 0 ]; then
-        echo "WARNING: Failed to install local Chatterbox TTS"
-        echo "Trying from PyPI..."
-        pip install chatterbox-tts
-    else
-        echo "Chatterbox TTS TURBO installed successfully from local directory!"
-    fi
+pip install chatterbox-tts
+if [ $? -ne 0 ]; then
+    echo "WARNING: Failed to install Chatterbox TTS"
+    echo "You can try: pip install chatterbox-tts torch torchaudio"
 else
-    pip install chatterbox-tts
-    if [ $? -ne 0 ]; then
-        echo "WARNING: Failed to install Chatterbox TTS"
-        echo "You can try: pip install chatterbox-tts torch torchaudio"
-    else
-        echo "Chatterbox TTS TURBO installed successfully!"
-    fi
+    echo "Chatterbox TTS TURBO installed successfully!"
 fi
 
 echo ""
