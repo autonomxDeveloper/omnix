@@ -209,20 +209,38 @@ function setupEventListeners() {
             
             const results = [];
             
-            // Search through all sessions and their messages only (not titles)
+            // Fetch each session individually to get messages
+            // The /api/sessions endpoint only returns metadata, not messages
             for (const session of data.sessions) {
-                // Check messages - search both user and AI messages
-                if (session.messages) {
-                    for (const msg of session.messages) {
-                        if (msg.content && msg.content.toLowerCase().includes(query)) {
-                            results.push({
-                                session: session,
-                                type: 'message',
-                                match: msg.content,
-                                role: msg.role
-                            });
+                try {
+                    const sessionResponse = await fetch(`/api/sessions/${session.id}`);
+                    const sessionData = await sessionResponse.json();
+                    
+                    console.log('[SEARCH] Fetched session:', session.id, sessionData.success ? 'OK' : 'FAIL');
+                    
+                    if (sessionData.success && sessionData.session) {
+                        const fullSession = sessionData.session;
+                        // Add the session ID to the session object (API doesn't include it)
+                        fullSession.id = session.id;
+                        
+                        console.log('[SEARCH] Session has messages:', fullSession.messages ? fullSession.messages.length : 0);
+                        
+                        // Check messages - search both user and AI messages
+                        if (fullSession.messages) {
+                            for (const msg of fullSession.messages) {
+                                if (msg.content && msg.content.toLowerCase().includes(query)) {
+                                    results.push({
+                                        session: fullSession,
+                                        type: 'message',
+                                        match: msg.content,
+                                        role: msg.role
+                                    });
+                                }
+                            }
                         }
                     }
+                } catch (e) {
+                    console.error('Error fetching session:', session.id, e);
                 }
             }
             
@@ -232,9 +250,13 @@ function setupEventListeners() {
             }
             
             // Display results
+            console.log('[SEARCH] Building results for query:', query);
             searchChatResults.innerHTML = results.slice(0, 20).map(result => {
                 const sessionTitle = result.session.title || 'Untitled Chat';
+                const sessionId = result.session.id;
                 let contentPreview = result.match;
+                
+                console.log('[SEARCH] Result session ID:', sessionId);
                 
                 // Truncate and highlight
                 if (contentPreview.length > 150) {
@@ -255,19 +277,106 @@ function setupEventListeners() {
                 }
                 
                 return `
-                    <div class="search-chat-result-item" data-session-id="${result.session.id}">
+                    <div class="search-chat-result-item" data-session-id="${sessionId}">
                         <div class="search-chat-result-session">${sessionTitle} ${result.type === 'message' ? '- ' + (result.role || 'message') : ''}</div>
                         <div class="search-chat-result-content">${contentPreview}</div>
                     </div>
                 `;
             }).join('');
             
+            console.log('[SEARCH] HTML generated, checking data attributes');
+            document.querySelectorAll('.search-chat-result-item').forEach((item, idx) => {
+                console.log('[SEARCH] Item', idx, 'data-session-id:', item.getAttribute('data-session-id'), 'dataset.sessionId:', item.dataset.sessionId);
+            });
+            
             // Add click handlers to results
             document.querySelectorAll('.search-chat-result-item').forEach(item => {
                 item.addEventListener('click', async () => {
-                    const sessionId = item.dataset.sessionId;
-                    await loadSession(sessionId);
+                    const targetSessionId = item.dataset.sessionId;
+                    const searchText = query; // Store the search query for scrolling
+                    
+                    // Close search modal FIRST
                     searchChatModal.classList.remove('active');
+                    
+                    // Expand sidebar if collapsed (need to do this before switching)
+                    sidebar.classList.remove('collapsed');
+                    updateSidebarButtons();
+                    
+                    // Load the session FIRST and wait for it to complete
+                    console.log('[SEARCH] Loading session:', targetSessionId);
+                    
+                    // Use loadSession directly to ensure it completes before scrolling
+                    try {
+                        console.log('[SEARCH] Fetching session from:', `/api/sessions/${targetSessionId}`);
+                        const response = await fetch(`/api/sessions/${targetSessionId}`);
+                        const data = await response.json();
+                        
+                        console.log('[SEARCH] Session response:', data);
+                        
+                        if (data.success && data.session) {
+                            // Update global sessionId
+                            sessionId = targetSessionId;
+                            
+                            // Render the messages
+                            messagesContainer.innerHTML = '';
+                            const messages = data.session.messages || [];
+                            
+                            if (messages.length === 0) {
+                                welcomeMessage.classList.remove('hidden');
+                            } else {
+                                welcomeMessage.classList.add('hidden');
+                                
+                                messages.forEach(msg => {
+                                    if (msg.role !== 'system') {
+                                        addMessage(msg.role, msg.content, msg.thinking || null);
+                                    }
+                                });
+                            }
+                            
+                            // Update system prompt if present
+                            if (data.session.system_prompt) {
+                                systemPromptInput.value = data.session.system_prompt;
+                            }
+                            
+                            // Don't call loadSessions() here as it might reset the view
+                            // The session list will be updated when user next interacts with sidebar
+                            
+                            console.log('[SEARCH] Session loaded, messages count:', messages.length);
+                            
+                            // NOW scroll to the message after session is fully loaded
+                            setTimeout(() => {
+                                const messageElements = messagesContainer.querySelectorAll('.message');
+                                console.log('[SEARCH] Found', messageElements.length, 'message elements');
+                                
+                                let found = false;
+                                for (let i = 0; i < messageElements.length; i++) {
+                                    const msg = messageElements[i];
+                                    const content = msg.querySelector('.message-content');
+                                    const messageText = content ? content.textContent : msg.textContent;
+                                    
+                                    if (messageText && messageText.toLowerCase().includes(searchText.toLowerCase())) {
+                                        console.log('[SEARCH] Found match in message', i);
+                                        msg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                        msg.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
+                                        setTimeout(() => {
+                                            msg.style.backgroundColor = '';
+                                        }, 3000);
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                
+                                if (!found) {
+                                    console.log('[SEARCH] No match, scrolling to bottom');
+                                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                                }
+                            }, 100);
+                        } else {
+                            console.error('[SEARCH] Failed to load session');
+                        }
+                    } catch (error) {
+                        console.error('[SEARCH] Error loading session:', error);
+                    }
                 });
             });
             
