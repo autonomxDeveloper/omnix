@@ -45,6 +45,9 @@ RUN pip install --no-cache-dir chatterbox-tts==0.1.6
 # Install NeMo ASR for Parakeet STT
 RUN pip install --no-cache-dir "nemo_toolkit[asr]"
 
+# Pre-download Parakeet TDT 0.6B model
+RUN python -c "from nemo.collections.asr.models import ASRModel; ASRModel.from_pretrained('nvidia/parakeet-tdt-0.6b-v2'); print('Parakeet model downloaded!')"
+
 # Copy application files
 COPY . .
 
