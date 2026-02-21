@@ -23,11 +23,11 @@ pip install -q fastapi uvicorn websockets aiohttp pydub numpy soundfile 2>nul
 
 :: Start Parakeet STT Server in background
 echo [1/4] Starting Parakeet STT Server on port 8000...
-if exist "%~dp0parakeet-tdt-0.6b-v2" (
-    start "Parakeet STT" cmd /k "cd /d "%~dp0parakeet-tdt-0.6b-v2" && python app.py"
+if exist "%~dp0models\stt\parakeet-tdt-0.6b-v2" (
+    start "Parakeet STT" cmd /k "cd /d "%~dp0models\stt\parakeet-tdt-0.6b-v2" && python app.py"
 ) else (
-    echo WARNING: parakeet-tdt-0.6b-v2 directory not found - STT will not be available
-    echo You can clone it from: https://github.com/NVIDIA/NeMo
+    echo WARNING: models\stt\parakeet-tdt-0.6b-v2 directory not found - STT will not be available
+    echo Run setup to download the model.
 )
 
 

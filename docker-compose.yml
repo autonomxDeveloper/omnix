@@ -12,7 +12,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./voice_clones:/app/voice_clones
-      - ./parakeet-tdt-0.6b-v2:/app/parakeet-tdt-0.6b-v2
+      - ./models:/app/models
     environment:
       - PYTHONUNBUFFERED=1
       - FLASK_APP=app.py
