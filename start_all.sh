@@ -35,10 +35,16 @@ trap cleanup SIGINT SIGTERM
 
 # Start Parakeet STT Server in background
 echo "[1/4] Starting Parakeet STT Server on port 8000..."
-cd "$SCRIPT_DIR/parakeet-tdt-0.6b-v2"
-python app.py &
-STT_PID=$!
-cd "$SCRIPT_DIR"
+if [ -d "$SCRIPT_DIR/parakeet-tdt-0.6b-v2" ]; then
+    cd "$SCRIPT_DIR/parakeet-tdt-0.6b-v2"
+    python app.py &
+    STT_PID=$!
+    cd "$SCRIPT_DIR"
+else
+    echo "WARNING: parakeet-tdt-0.6b-v2 directory not found - STT will not be available"
+    echo "You can clone it from: https://github.com/NVIDIA/NeMo"
+    STT_PID=""
+fi
 
 # Wait a bit for STT to start
 sleep 5

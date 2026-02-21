@@ -27,22 +27,40 @@ if errorlevel 1 (
 
 echo.
 echo [2/4] Installing Parakeet STT dependencies...
-cd parakeet-tdt-0.6b-v2
-pip install -r requirements.txt
-cd ..
-if errorlevel 1 (
-    echo WARNING: Failed to install some Parakeet dependencies
-    echo This may be okay if you already have them installed
+if exist "parakeet-tdt-0.6b-v2" (
+    cd parakeet-tdt-0.6b-v2
+    pip install -r requirements.txt
+    cd ..
+    if errorlevel 1 (
+        echo WARNING: Failed to install some Parakeet dependencies
+        echo This may be okay if you already have them installed
+    )
+) else (
+    echo WARNING: parakeet-tdt-0.6b-v2 directory not found
+    echo STT will not be available. You can clone Parakeet from:
+    echo https://github.com/NVIDIA/NeMo
 )
 
 echo.
 echo [3/4] Installing Chatterbox TTS TURBO...
-pip install chatterbox-tts
-if errorlevel 1 (
-    echo WARNING: Failed to install Chatterbox TTS
-    echo You can try: pip install chatterbox-tts torch torchaudio
+REM Install from local chatterbox directory
+if exist "chatterbox" (
+    pip install -e ./chatterbox
+    if errorlevel 1 (
+        echo WARNING: Failed to install local Chatterbox TTS
+        echo Trying from PyPI...
+        pip install chatterbox-tts
+    ) else (
+        echo Chatterbox TTS TURBO installed successfully from local directory!
+    )
 ) else (
-    echo Chatterbox TTS TURBO installed successfully!
+    pip install chatterbox-tts
+    if errorlevel 1 (
+        echo WARNING: Failed to install Chatterbox TTS
+        echo You can try: pip install chatterbox-tts torch torchaudio
+    ) else (
+        echo Chatterbox TTS TURBO installed successfully!
+    )
 )
 
 echo.
