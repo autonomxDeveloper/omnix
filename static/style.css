@@ -229,24 +229,89 @@ body::before {
     z-index: 1;
 }
 
-/* Sidebar - start collapsed by default to prevent flash */
+/* Sidebar - ChatGPT style */
 .sidebar {
     width: var(--sidebar-width);
     background: var(--bg-secondary);
     border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
-    transition: transform 0.3s ease, width 0.3s ease;
+    transition: width 0.3s ease, transform 0.3s ease;
     position: relative;
     z-index: 10;
-    transform: translateX(-100%);
-    position: absolute;
     height: 100%;
+    min-width: 60px;
 }
 
-.sidebar:not(.collapsed) {
-    transform: translateX(0);
-    position: relative;
+/* Collapsed state - narrow but visible */
+.sidebar.collapsed {
+    width: 80px;
+}
+
+/* When sidebar is hidden off-screen (initial state or mobile) */
+.sidebar.hidden {
+    transform: translateX(-100%);
+    position: absolute;
+}
+
+/* Sidebar header */
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    border-bottom: 1px solid var(--border-color);
+    gap: 8px;
+    min-height: 56px;
+}
+
+/* Logo and title container */
+.sidebar-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+.sidebar.collapsed .sidebar-header-left {
+    justify-content: center;
+}
+
+.sidebar-header h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sidebar.collapsed .sidebar-header h2 {
+    display: none;
+}
+
+/* Collapse button inside sidebar header (right side) */
+.sidebar-collapse-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+
+.sidebar-collapse-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.sidebar.collapsed .sidebar-collapse-btn {
+    display: none;
 }
 
 /* Expand Sidebar Button (Floating - ChatGPT style) */
@@ -348,6 +413,157 @@ body::before {
     gap: 4px;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border-color);
+}
+
+/* Hide sidebar options when collapsed */
+.sidebar.collapsed .sidebar-options {
+    display: none;
+}
+
+/* Session list in collapsed state - show tooltips */
+.sidebar.collapsed .session-list {
+    display: none;
+}
+
+/* Collapsed session list - shows sessions as icons with tooltips */
+.sidebar-collapsed-session-list {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 8px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* Show collapsed session list only when sidebar is collapsed */
+.sidebar.collapsed .sidebar-collapsed-session-list {
+    display: flex;
+}
+
+/* Collapsed session item - icon with tooltip */
+.sidebar-collapsed-session-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.sidebar-collapsed-session-item:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.sidebar-collapsed-session-item.active {
+    background: var(--bg-tertiary);
+    color: var(--accent);
+}
+
+/* Tooltip for collapsed session - show on right side */
+.sidebar-collapsed-session-item::after {
+    content: attr(title);
+    position: absolute;
+    left: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    margin-left: 12px;
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    z-index: 9999;
+    max-width: 250px;
+    overflow: visible;
+    text-overflow: ellipsis;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    white-space: normal;
+    word-break: break-word;
+}
+
+.sidebar-collapsed-session-item:hover::after {
+    opacity: 1;
+}
+
+/* Collapsed sidebar icons - visible when collapsed */
+.sidebar-collapsed-icons {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* Collapsed sidebar icons - visible when collapsed */
+.sidebar-collapsed-icons {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* Show collapsed icons only when sidebar is collapsed */
+.sidebar:not(.collapsed) .sidebar-collapsed-icons {
+    display: none;
+}
+
+.sidebar-collapsed-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+}
+
+.sidebar-collapsed-btn::after {
+    content: attr(title);
+    position: absolute;
+    left: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    margin-left: 8px;
+    padding: 4px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    z-index: 100;
+}
+
+.sidebar-collapsed-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.sidebar-collapsed-btn:hover::after {
+    opacity: 1;
 }
 
 .sidebar-option-btn {

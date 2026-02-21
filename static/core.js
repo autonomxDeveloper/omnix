@@ -108,11 +108,34 @@ function setupEventListeners() {
         sessionStorage.setItem('selectedModel', modelSelect.value);
     });
     
-    // Sidebar logo button (in sidebar header) - collapses sidebar
+    // Sidebar logo button (in sidebar header) - shows collapse icon on hover
     const sidebarLogoBtn = document.getElementById('sidebarLogoBtn');
     if (sidebarLogoBtn) {
         sidebarLogoBtn.addEventListener('click', () => {
+            // Toggle between collapsed and expanded
+            if (sidebar.classList.contains('collapsed')) {
+                sidebar.classList.remove('collapsed');
+            } else {
+                sidebar.classList.add('collapsed');
+            }
+            updateSidebarButtons();
+        });
+    }
+    
+    // Sidebar collapse button (inside sidebar header) - collapses sidebar
+    const sidebarCollapseBtn = document.getElementById('sidebarCollapseBtn');
+    if (sidebarCollapseBtn) {
+        sidebarCollapseBtn.addEventListener('click', () => {
             sidebar.classList.add('collapsed');
+            updateSidebarButtons();
+        });
+    }
+    
+    // Expand sidebar button (floating) - expands sidebar when collapsed
+    const expandSidebarBtn = document.getElementById('expandSidebarBtn');
+    if (expandSidebarBtn) {
+        expandSidebarBtn.addEventListener('click', () => {
+            sidebar.classList.remove('collapsed');
             updateSidebarButtons();
         });
     }
@@ -130,9 +153,21 @@ function setupEventListeners() {
         // Show header toggle button only when collapsed (to expand)
         toggleSidebarBtn.style.display = isCollapsed ? 'flex' : 'none';
         
+        // Show floating expand button when collapsed
+        const expandSidebarBtn = document.getElementById('expandSidebarBtn');
+        if (expandSidebarBtn) {
+            expandSidebarBtn.style.display = isCollapsed ? 'flex' : 'none';
+        }
+        
         // Show sidebar logo button only when expanded (to collapse)
         if (sidebarLogoBtn) {
             sidebarLogoBtn.style.display = isCollapsed ? 'none' : 'flex';
+        }
+        
+        // Show collapsed icons container only when collapsed
+        const sidebarCollapsedIcons = document.getElementById('sidebarCollapsedIcons');
+        if (sidebarCollapsedIcons) {
+            sidebarCollapsedIcons.style.display = isCollapsed ? 'flex' : 'none';
         }
     }
     
@@ -403,6 +438,28 @@ function setupEventListeners() {
     const newChatBtn = document.getElementById('newChatBtn');
     if (newChatBtn) {
         newChatBtn.addEventListener('click', createNewSession);
+    }
+    
+    // New collapsed sidebar buttons
+    const newChatBtnCollapsed = document.getElementById('newChatBtnCollapsed');
+    if (newChatBtnCollapsed) {
+        newChatBtnCollapsed.addEventListener('click', () => {
+            createNewSession();
+        });
+    }
+    
+    const searchChatBtnCollapsed = document.getElementById('searchChatBtnCollapsed');
+    if (searchChatBtnCollapsed && searchChatModal) {
+        searchChatBtnCollapsed.addEventListener('click', () => {
+            searchChatModal.classList.add('active');
+            if (searchChatInput) {
+                searchChatInput.value = '';
+                searchChatInput.focus();
+            }
+            if (searchChatResults) {
+                searchChatResults.innerHTML = '';
+            }
+        });
     }
     
     settingsBtn.addEventListener('click', () => {
