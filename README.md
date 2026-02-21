@@ -50,6 +50,51 @@ python app.py
 
 Then open your browser to http://localhost:5000
 
+## Docker Deployment
+
+### Build the Docker Image
+
+```bash
+docker build -t omnix .
+```
+
+### Run with Docker
+
+```bash
+docker run -d -p 5000:5000 -p 8080:8080 -p 8000:8000 \
+  --name omnix \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/voice_clones:/app/voice_clones \
+  omnix
+```
+
+### Run with Docker Compose (Optional)
+
+Create a `docker-compose.yml` file:
+
+```yaml
+version: '3.8'
+services:
+  omnix:
+    build: .
+    ports:
+      - "5000:5000"
+      - "8080:8080"
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./voice_clones:/app/voice_clones
+    environment:
+      - PYTHONUNBUFFERED=1
+```
+
+Then run:
+```bash
+docker-compose up -d
+```
+
+Open your browser to http://localhost:5000
+
 ## Project Structure
 
 ```
@@ -88,6 +133,22 @@ Chatbot/
 2. Hold the microphone button to speak
 3. The AI will respond with synthesized speech
 4. Click Exit to return to regular chat
+
+### Audiobook Reader
+1. Click the audiobook icon (book icon) in the toolbar
+2. Paste or type your text in the audiobook panel
+3. Select a voice from the dropdown menu
+4. Click Generate to create the audio
+5. Use the playback controls to listen
+6. Download the audio file if desired
+
+### AI Podcast Generator
+1. Click the podcast icon in the toolbar
+2. Enter a topic or prompt for your podcast
+3. Select host voices and configure settings
+4. Click Generate to create your podcast episode
+5. Listen to the generated conversation
+6. Save or download the episode
 
 ### Service Management
 - TTS and STT status indicators in the header

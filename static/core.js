@@ -451,18 +451,22 @@ async function loadTTSSpeakers() {
                 ttsSpeaker.appendChild(option);
             });
             
-            // Load saved speaker from localStorage
+            // Load saved speaker from localStorage, default to Maya for new users
             const savedSpeaker = localStorage.getItem('selectedSpeaker');
             if (savedSpeaker) {
                 // Check if saved speaker exists in the list
                 const speakerExists = data.speakers.some(s => s.id === savedSpeaker);
                 if (speakerExists) {
                     ttsSpeaker.value = savedSpeaker;
-                } else if (data.speakers.length > 0) {
-                    ttsSpeaker.value = data.speakers[0].id;
+                } else {
+                    // Default to Maya if saved speaker doesn't exist
+                    const mayaExists = data.speakers.some(s => s.id === 'Maya' || s.name === 'Maya');
+                    ttsSpeaker.value = mayaExists ? 'Maya' : (data.speakers[0]?.id || '');
                 }
-            } else if (ttsSpeaker.value === '' && data.speakers.length > 0) {
-                ttsSpeaker.value = data.speakers[0].id;
+            } else {
+                // New user - default to Maya
+                const mayaExists = data.speakers.some(s => s.id === 'Maya' || s.name === 'Maya');
+                ttsSpeaker.value = mayaExists ? 'Maya' : (data.speakers[0]?.id || '');
             }
         }
     } catch (error) {
