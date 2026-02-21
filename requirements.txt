@@ -1,24 +1,60 @@
-# LM Studio Chatbot - Requirements
+# Omnix - Requirements
+# Install with: pip install -r requirements.txt
 
-# Core
+# ============================================
+# CORE WEB FRAMEWORK
+# ============================================
 Flask==3.0.0
 requests==2.31.0
-
-# Voice cloning (audio conversion)
-pydub==0.25.1
-scipy>=1.9.0
-
-# WebSocket & Streaming
 fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
 websockets>=12.0
 python-socketio>=5.9.0
 aiohttp>=3.8.0
 
-# Audio processing
-numpy>=1.24.0
-soundfile>=0.12.0
+# ============================================
+# PYTORCH - CUDA 12.4 (CRITICAL VERSION MATCH)
+# Install separately with:
+# pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 torchaudio==2.6.0+cu124 --index-url https://download.pytorch.org/whl/cu124
+# ============================================
+# torch==2.6.0+cu124
+# torchvision==0.21.0+cu124
+# torchaudio==2.6.0+cu124
 
-# Testing
+# ============================================
+# AUDIO PROCESSING
+# ============================================
+numpy>=1.24.0,<1.26.0
+scipy>=1.9.0
+soundfile>=0.12.0
+pydub==0.25.1
+librosa==0.11.0
+
+# ============================================
+# CHATTERBOX TTS TURBO
+# ============================================
+chatterbox-tts==0.1.6
+s3tokenizer
+diffusers==0.29.0
+resemble-perth==1.0.1
+conformer==0.3.2
+safetensors==0.5.3
+spacy-pkuseg
+pykakasi==2.3.0
+gradio==5.44.1
+pyloudnorm
+omegaconf
+
+# ============================================
+# NEMO ASR (PARAKEET STT)
+# Install with: pip install nemo_toolkit[asr]
+# Note: This will update transformers to 4.53.x
+# ============================================
+# nemo_toolkit[asr]>=2.5.0
+transformers>=4.46.3
+
+# ============================================
+# TESTING
+# ============================================
 pytest>=7.0.0
 pytest-cov>=4.0.0

@@ -35,14 +35,12 @@ trap cleanup SIGINT SIGTERM
 
 # Start Parakeet STT Server in background
 echo "[1/4] Starting Parakeet STT Server on port 8000..."
-if [ -d "$SCRIPT_DIR/models/stt/parakeet-tdt-0.6b-v2" ]; then
-    cd "$SCRIPT_DIR/models/stt/parakeet-tdt-0.6b-v2"
-    python app.py &
+if [ -f "$SCRIPT_DIR/parakeet_stt_server.py" ]; then
+    python parakeet_stt_server.py &
     STT_PID=$!
-    cd "$SCRIPT_DIR"
 else
-    echo "WARNING: models/stt/parakeet-tdt-0.6b-v2 directory not found - STT will not be available"
-    echo "Run setup to download the model."
+    echo "WARNING: parakeet_stt_server.py not found - STT will not be available"
+    echo "Run setup to install nemo_toolkit[asr]."
     STT_PID=""
 fi
 

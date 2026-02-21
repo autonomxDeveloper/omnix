@@ -23,11 +23,11 @@ pip install -q fastapi uvicorn websockets aiohttp pydub numpy soundfile 2>nul
 
 :: Start Parakeet STT Server in background
 echo [1/4] Starting Parakeet STT Server on port 8000...
-if exist "%~dp0models\stt\parakeet-tdt-0.6b-v2" (
-    start "Parakeet STT" cmd /k "cd /d "%~dp0models\stt\parakeet-tdt-0.6b-v2" && python app.py"
+if exist "%~dp0parakeet_stt_server.py" (
+    start "Parakeet STT" cmd /k "cd /d "%~dp0" && python parakeet_stt_server.py"
 ) else (
-    echo WARNING: models\stt\parakeet-tdt-0.6b-v2 directory not found - STT will not be available
-    echo Run setup to download the model.
+    echo WARNING: parakeet_stt_server.py not found - STT will not be available
+    echo Run setup to install nemo_toolkit[asr].
 )
 
 
