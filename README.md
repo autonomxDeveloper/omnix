@@ -156,13 +156,124 @@ Chatbot/
 - Start/Stop/Restart servers as needed
 - View server logs
 
+## LLM Providers
+
+Omnix supports multiple LLM providers, allowing you to choose between local inference or cloud-based APIs.
+
+### LM Studio (Local - Default)
+
+LM Studio provides free, private, local LLM inference on your own hardware.
+
+**Setup:**
+1. Download and install [LM Studio](https://lmstudio.ai/)
+2. Open LM Studio and go to the "Discover" tab
+3. Download a model (recommended: Llama 3, Mistral, or Phi-3)
+4. Go to the "Developer" tab (</> icon)
+5. Click "Start Server" to enable the local API
+6. Default server runs at `http://localhost:1234`
+
+**Configuration:**
+- In Omnix Settings, select "LM Studio" as provider
+- Base URL: `http://localhost:1234` (default)
+- No API key required
+
+**Recommended Models:**
+- `llama-3.1-8b-instant` - Fast, capable
+- `mistral-7b-instruct` - Good balance of speed and quality
+- `phi-3-mini` - Lightweight, fast
+
+### Cerebras (Cloud - Fastest)
+
+Cerebras offers the fastest LLM inference available, with responses up to 10x faster than other cloud providers.
+
+**Setup:**
+1. Create an account at [Cerebras](https://cerebras.ai/)
+2. Go to [Cerebras Cloud](https://cloud.cerebras.ai/) and generate an API key
+3. In Omnix Settings, select "Cerebras" as provider
+4. Enter your API key
+
+**Available Models:**
+- `llama-3.3-70b` - High quality, fast
+- `llama-3.3-70b-versatile` - Default, balanced
+- `llama-3.1-8b` - Faster, lighter
+
+**Configuration:**
+```json
+{
+  "provider": "cerebras",
+  "cerebras": {
+    "api_key": "your-api-key-here",
+    "model": "llama-3.3-70b-versatile"
+  }
+}
+```
+
+### OpenRouter (Cloud - Most Models)
+
+OpenRouter provides unified access to 100+ models from various providers (OpenAI, Anthropic, Google, Meta, etc.).
+
+**Setup:**
+1. Create an account at [OpenRouter](https://openrouter.ai/)
+2. Go to [Keys](https://openrouter.ai/keys) and create an API key
+3. In Omnix Settings, select "OpenRouter" as provider
+4. Enter your API key
+5. Select a model from the dropdown
+
+**Popular Models:**
+- `openai/gpt-4o-mini` - Fast, affordable
+- `openai/gpt-4o` - Most capable
+- `anthropic/claude-3.5-sonnet` - Excellent reasoning
+- `google/gemini-pro` - Good multimodal
+- `meta-llama/llama-3.1-70b-instruct` - Open source
+- `mistralai/mistral-large` - European alternative
+
+**Configuration:**
+```json
+{
+  "provider": "openrouter",
+  "openrouter": {
+    "api_key": "your-api-key-here",
+    "model": "openai/gpt-4o-mini",
+    "context_size": 128000
+  }
+}
+```
+
+**Advanced Settings:**
+- `context_size` - Maximum context window (default: 128000)
+- `thinking_budget` - Extended reasoning tokens (for supported models)
+
+### Switching Providers
+
+Use the Settings modal (gear icon) in the UI to:
+1. Select your preferred provider
+2. Enter API credentials
+3. Choose a model
+4. Customize the system prompt
+
+Settings are saved in `data/settings.json`.
+
+### Provider Comparison
+
+| Provider | Type | Speed | Privacy | Cost | Models |
+|----------|------|-------|---------|------|--------|
+| LM Studio | Local | Medium | Full | Free | Any GGUF |
+| Cerebras | Cloud | Fastest | Partial | Pay/use | Llama models |
+| OpenRouter | Cloud | Fast | Partial | Pay/use | 100+ models |
+
+**Recommendations:**
+- **Privacy-focused**: Use LM Studio (local)
+- **Speed-critical**: Use Cerebras (fastest inference)
+- **Model variety**: Use OpenRouter (most options)
+- **Cost-sensitive**: Use LM Studio (free) or OpenRouter (pay per use)
+
 ## Configuration
 
 Edit `data/settings.json` or use the Settings modal:
-- Provider: LM Studio (local) or OpenRouter (cloud)
+- Provider selection (LM Studio, Cerebras, OpenRouter)
 - Model selection
-- System prompt
-- API keys (for OpenRouter)
+- System prompt customization
+- API key management for cloud providers
 
 ## Troubleshooting
 
