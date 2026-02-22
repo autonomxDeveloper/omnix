@@ -155,17 +155,23 @@ function setupEventListeners() {
     }
     
     // Sidebar toggle button (in header) - expands sidebar when collapsed
-    toggleSidebarBtn.addEventListener('click', () => {
-        sidebar.classList.remove('collapsed');
-        updateSidebarButtons();
-    });
+    // Note: toggleSidebarBtn may be null if the button was removed from HTML
+    if (toggleSidebarBtn) {
+        toggleSidebarBtn.addEventListener('click', () => {
+            sidebar.classList.remove('collapsed');
+            updateSidebarButtons();
+        });
+    }
     
     // Update buttons visibility based on sidebar state
     function updateSidebarButtons() {
         const isCollapsed = sidebar.classList.contains('collapsed');
         
         // Show header toggle button only when collapsed (to expand)
-        toggleSidebarBtn.style.display = isCollapsed ? 'flex' : 'none';
+        // Note: toggleSidebarBtn may be null if the button was removed from HTML
+        if (toggleSidebarBtn) {
+            toggleSidebarBtn.style.display = isCollapsed ? 'flex' : 'none';
+        }
         
         // Show floating expand button when collapsed
         const expandSidebarBtn = document.getElementById('expandSidebarBtn');
@@ -1677,6 +1683,68 @@ if (llamacppStopDownloadBtn) {
     });
 }
 
+// Suppress XMLHttpRequest 503/404 errors in console (normal during server startup)
+const originalXHR = window.XMLHttpRequest;
+window.XMLHttpRequest = function() {
+    const xhr = new originalXHR();
+    
+    // Store original open and send
+    const originalOpen = xhr.open.bind(xhr);
+    const originalSend = xhr.send.bind(xhr);
+    
+    xhr.open = function() {
+        // Store the URL for later filtering
+        this._xhrUrl = arguments[0];
+        return originalOpen.apply(this, arguments);
+    };
+    
+    // Override send to intercept errors for localhost:8080
+    xhr.send = function() {
+        const url = this._xhrUrl || '';
+        
+        // Check if this is a llama.cpp server check
+        const isLlamaCppCheck = url.includes('localhost:8080') && url.includes('/v1/models');
+        
+        if (isLlamaCppCheck) {
+            // Override onload and onerror for silent handling
+            const originalOnload = this.onload;
+            const originalOnerror = this.onerror;
+            const originalOntimeout = this.ontimeout;
+            
+            this.onload = function(e) {
+                // Only suppress 503/404 for llama.cpp server checks
+                if (this.status === 503 || this.status === 404) {
+                    // Don't log error, but still call original onload if exists
+                    if (originalOnload) {
+                        // Create a fake event that indicates success for retry logic
+                        const fakeEvent = { 
+                            target: this, 
+                            type: 'load',
+                            loaded: true
+                        };
+                        originalOnload.call(this, fakeEvent);
+                    }
+                    return;
+                }
+                if (originalOnload) originalOnload.call(this, e);
+            };
+            
+            this.onerror = function(e) {
+                // Don't propagate network errors for llama.cpp checks
+                // Let the timeout handle it
+            };
+            
+            this.ontimeout = function(e) {
+                if (originalOntimeout) originalOntimeout.call(this, e);
+            };
+        }
+        
+        return originalSend.apply(this, arguments);
+    };
+    
+    return xhr;
+};
+
 // ==================== LLAMA.CPP SERVER DOWNLOAD & CONTROL ====================
 
 // llama.cpp server download elements
@@ -1944,18 +2012,50 @@ async function autoStartLlamaCppServer() {
                         const checkInterval = 1000; // Check every 1 second
                         let waited = 0;
                         
+                        // Use XMLHttpRequest instead of fetch to avoid browser error logging for 503/404 responses
+                        const serverUrl = settings.llamacpp.base_url || 'http://localhost:8080';
+                        
                         while (waited < maxWaitTime) {
                             await new Promise(resolve => setTimeout(resolve, checkInterval));
                             waited += checkInterval;
                             
-                            try {
-                                const healthResponse = await fetch(settings.llamacpp.base_url || 'http://localhost:8080');
-                                if (healthResponse.ok) {
+                            // Use synchronous-style check with XMLHttpRequest
+                            const result = await new Promise((resolve) => {
+                                const xhr = new XMLHttpRequest();
+                                xhr.open('GET', serverUrl + '/v1/models', true);
+                                xhr.timeout = 5000;
+                                
+                                xhr.onload = function() {
+                                    resolve({ status: xhr.status, success: true });
+                                };
+                                
+                                xhr.onerror = function() {
+                                    resolve({ success: false, error: 'network' });
+                                };
+                                
+                                xhr.ontimeout = function() {
+                                    resolve({ success: false, error: 'timeout' });
+                                };
+                                
+                                xhr.send();
+                            });
+                            
+                            if (result.success) {
+                                const status = result.status;
+                                // Accept 200-299 as ready, treat 503/404 as "starting up, keep waiting"
+                                if (status >= 200 && status < 300) {
                                     console.log('[LLAMA.CPP] Server is ready after', waited/1000, 'seconds');
                                     break;
+                                } else if (status === 503 || status === 404) {
+                                    // Server is running but still initializing or endpoint doesn't exist
+                                    console.log('[LLAMA.CPP] Server responding (status ' + status + '), waiting for full initialization...');
+                                } else {
+                                    // Other status codes - keep waiting
+                                    console.log('[LLAMA.CPP] Server responding (status ' + status + '), waiting...');
                                 }
-                            } catch (e) {
-                                // Server not ready yet, continue waiting
+                            } else {
+                                // Network error or timeout - server not ready yet
+                                console.log('[LLAMA.CPP] Server not responding yet, waiting...');
                             }
                         }
                         
