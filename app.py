@@ -21,7 +21,7 @@ SETTINGS_FILE = os.path.join(DATA_DIR, 'settings.json')
 
 # Default settings
 DEFAULT_SETTINGS = {
-    "provider": "lmstudio",  # "lmstudio", "openrouter", or "cerebras"
+    "provider": "lmstudio",  # "lmstudio", "openrouter", "cerebras", or "llamacpp"
     "global_system_prompt": "You are a helpful AI assistant.",  # Global system prompt for all sessions
     "lmstudio": {
         "base_url": "http://localhost:1234"
@@ -35,6 +35,12 @@ DEFAULT_SETTINGS = {
     "cerebras": {
         "api_key": "",
         "model": "llama-3.3-70b-versatile"
+    },
+    "llamacpp": {
+        "base_url": "http://localhost:8080",
+        "model": "",
+        "download_location": "server",  # "server" for models/server, "llm" for models/llm
+        "auto_start": False  # Auto-start llama.cpp server when saving settings
     }
 }
 
@@ -51,6 +57,8 @@ def load_settings():
                     settings['openrouter'] = DEFAULT_SETTINGS['openrouter'].copy()
                 if 'lmstudio' not in settings:
                     settings['lmstudio'] = DEFAULT_SETTINGS['lmstudio'].copy()
+                if 'llamacpp' not in settings:
+                    settings['llamacpp'] = DEFAULT_SETTINGS['llamacpp'].copy()
                 return settings
         except:
             return DEFAULT_SETTINGS.copy()
@@ -146,6 +154,24 @@ def get_provider_config():
             'model': settings['cerebras'].get('model', 'llama-3.3-70b-versatile'),
             'base_url': 'https://api.cerebras.ai'
         }
+    elif provider == 'llamacpp':
+        # llama.cpp server configuration
+        llamacpp_settings = settings.get('llamacpp', {})
+        download_location = llamacpp_settings.get('download_location', 'server')
+        
+        # Determine model directory based on download_location setting
+        if download_location == 'llm':
+            model_dir = os.path.join(os.path.dirname(__file__), 'models', 'llm')
+        else:
+            model_dir = os.path.join(os.path.dirname(__file__), 'models', 'server')
+        
+        return {
+            'provider': 'llamacpp',
+            'base_url': llamacpp_settings.get('base_url', 'http://localhost:8080'),
+            'model': llamacpp_settings.get('model', ''),
+            'download_location': download_location,
+            'model_dir': model_dir
+        }
     else:
         return {
             'provider': 'lmstudio',
@@ -220,7 +246,47 @@ def save_settings_endpoint():
             settings['cerebras']['api_key'] = data['cerebras']['api_key']
         settings['cerebras'].update({k: v for k, v in data['cerebras'].items() if k != 'api_key'})
     
+    # Track if auto_start was enabled in the incoming data
+    auto_start_requested = False
+    llamacpp_model = ''
+    
+    if 'llamacpp' in data:
+        # Ensure llamacpp key exists
+        if 'llamacpp' not in settings:
+            settings['llamacpp'] = {'base_url': 'http://localhost:8080', 'model': '', 'download_location': 'server', 'auto_start': False}
+        settings['llamacpp'].update(data['llamacpp'])
+        auto_start_requested = data['llamacpp'].get('auto_start', False)
+        llamacpp_model = settings['llamacpp'].get('model', '')
+    
     save_settings(settings)
+    
+    # Auto-start llama.cpp server if auto_start is enabled and model is selected
+    if auto_start_requested and llamacpp_model:
+        try:
+            # Call the start_llamacpp_server endpoint internally
+            from flask import Flask
+            # We need to get the app context
+            with app.test_request_context():
+                # Check if server is already running
+                import requests as req
+                try:
+                    base_url = settings.get('llamacpp', {}).get('base_url', 'http://localhost:8080')
+                    response = req.get(f"{base_url}/v1/models", timeout=2)
+                    if response.status_code == 200:
+                        print("[llama.cpp] Server already running")
+                    else:
+                        # Server not running, start it
+                        raise Exception("Server not responding")
+                except:
+                    # Start the server
+                    print(f"[llama.cpp] Auto-starting server with model: {llamacpp_model}")
+                    # Import and call the start function
+                    from app import start_llamacpp_server
+                    # We can't call it directly with test_request_context easily, so just print message
+                    print(f"[llama.cpp] Please start the llama.cpp server manually with model: {llamacpp_model}")
+        except Exception as e:
+            print(f"[llama.cpp] Auto-start error: {e}")
+    
     return jsonify({"success": True})
 
 
@@ -307,6 +373,37 @@ def get_models():
             return jsonify({
                 "success": True, 
                 "models": [cerebras_model]
+            })
+        
+        if provider == 'llamacpp':
+            # Return the saved llama.cpp model from settings, or list models from model directories
+            llamacpp_model = settings.get('llamacpp', {}).get('model', '')
+            if llamacpp_model:
+                return jsonify({
+                    "success": True, 
+                    "models": [llamacpp_model]
+                })
+            
+            # List models from BOTH models/llm and models/server directories
+            models = []
+            
+            # Check models/llm first (user's main model storage)
+            llm_dir = os.path.join(os.path.dirname(__file__), 'models', 'llm')
+            if os.path.exists(llm_dir):
+                for f in os.listdir(llm_dir):
+                    if f.lower().endswith('.gguf') and f not in models:
+                        models.append(f)
+            
+            # Also check models/server (alternative location)
+            server_dir = os.path.join(os.path.dirname(__file__), 'models', 'server')
+            if os.path.exists(server_dir):
+                for f in os.listdir(server_dir):
+                    if f.lower().endswith('.gguf') and f not in models:
+                        models.append(f)
+            
+            return jsonify({
+                "success": True, 
+                "models": models
             })
         
         # LM Studio
@@ -497,6 +594,27 @@ def chat():
                 headers=headers,
                 timeout=300
             )
+        elif config['provider'] == 'llamacpp':
+            # llama.cpp server API call
+            base_url = config['base_url']
+            
+            # Determine the model - use selected model or default
+            selected_model = model or config.get('model', '')
+            
+            payload = {
+                "model": selected_model if selected_model else "local-model",
+                "messages": messages,
+                "stream": False
+            }
+            
+            headers = {"Content-Type": "application/json"}
+            
+            response = requests.post(
+                f"{base_url}/v1/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=300
+            )
         else:
             # LM Studio API call
             base_url = config['base_url']
@@ -656,6 +774,26 @@ def chat_stream():
                 
                 response = requests.post(
                     f"{config['base_url']}/v1/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=300,
+                    stream=True
+                )
+            elif config['provider'] == 'llamacpp':
+                # llama.cpp server
+                base_url = config['base_url']
+                selected_model = model or config.get('model', '')
+                
+                payload = {
+                    "model": selected_model if selected_model else "local-model",
+                    "messages": messages,
+                    "stream": True
+                }
+                
+                headers = {"Content-Type": "application/json"}
+                
+                response = requests.post(
+                    f"{base_url}/v1/chat/completions",
                     json=payload,
                     headers=headers,
                     timeout=300,
@@ -2198,6 +2336,16 @@ def health_check():
             if not config.get('api_key'):
                 return jsonify({"status": "disconnected", "message": "No API key configured"}), 200
             return jsonify({"status": "connected", "provider": "cerebras", "url": "api.cerebras.ai"})
+        
+        if config['provider'] == 'llamacpp':
+            # Check llama.cpp server
+            try:
+                response = requests.get(f"{config['base_url']}/v1/models", timeout=5)
+                if response.status_code == 200:
+                    return jsonify({"status": "connected", "provider": "llamacpp", "url": config['base_url'], "model": config.get('model', 'Not specified')})
+                return jsonify({"status": "disconnected", "message": f"llama.cpp server returned {response.status_code}"}), 200
+            except Exception as e:
+                return jsonify({"status": "disconnected", "message": f"Cannot connect to llama.cpp server: {str(e)}"}), 200
         
         # Check LM Studio
         response = requests.get(f"{config['base_url']}/v1/models", timeout=5)
@@ -4049,6 +4197,682 @@ def search_huggingface_models():
         
     except ImportError:
         return jsonify({"success": False, "error": "huggingface_hub not installed"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== LLAMA.CPP SERVER DOWNLOAD ====================
+
+# llama.cpp server download tracking
+llamacpp_server_downloads = {}  # download_id -> {status, progress, speed, eta, filename, etc.}
+
+# Known llama.cpp release URLs (ggml-org repository)
+# Updated to match actual file naming conventions from GitHub releases
+LLAMACPP_RELEASES = {
+    "windows-cublas": {
+        "name": "Windows (CUDA)",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b%VERSION%/llama-b%VERSION%-windows-x64-cublas-main.7z",
+        "ext": ".7z",
+        "assets_pattern": "llama-b*-windows-x64-cublas*.7z"
+    },
+    "windows": {
+        "name": "Windows (CPU only)",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b%VERSION%/llama-b%VERSION%-windows-x64.7z",
+        "ext": ".7z",
+        "assets_pattern": "llama-b*-windows-x64.7z"
+    },
+    "linux-cublas": {
+        "name": "Linux (CUDA)",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b%VERSION%/llama-b%VERSION%-linux-x64-cublas.tar.zst",
+        "ext": ".tar.zst",
+        "assets_pattern": "llama-b*-linux-x64-cublas*.tar.zst"
+    },
+    "linux": {
+        "name": "Linux (CPU only)",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b%VERSION%/llama-b%VERSION%-linux-x64.tar.zst",
+        "ext": ".tar.zst",
+        "assets_pattern": "llama-b*-linux-x64.tar.zst"
+    },
+    "macos-arm": {
+        "name": "macOS (Apple Silicon)",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b%VERSION%/llama-b%VERSION%-macos-arm64.tar.zst",
+        "ext": ".tar.zst",
+        "assets_pattern": "llama-b*-macos-arm64.tar.zst"
+    },
+    "macos-intel": {
+        "name": "macOS (Intel)",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b%VERSION%/llama-b%VERSION%-macos-x64.tar.zst",
+        "ext": ".tar.zst",
+        "assets_pattern": "llama-b*-macos-x64.tar.zst"
+    }
+}
+
+# Latest version cache
+LLAMACPP_LATEST_VERSION = None  # Will be fetched on first request
+LLAMACPP_RELEASE_ASSETS = {}  # Cache of release assets
+
+def get_llamacpp_latest_version():
+    """Fetch the latest llama.cpp release version and assets"""
+    global LLAMACPP_LATEST_VERSION, LLAMACPP_RELEASE_ASSETS
+    try:
+        import urllib.request
+        req = urllib.request.Request("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest")
+        req.add_header('User-Agent', 'Omnix/1.0')
+        with urllib.request.urlopen(req, timeout=10) as response:
+            import json
+            data = json.loads(response.read())
+            tag_name = data.get('tag_name', '')
+            if tag_name:
+                LLAMACPP_LATEST_VERSION = tag_name.lstrip('b')
+                
+                # Parse release assets
+                assets = data.get('assets', [])
+                LLAMACPP_RELEASE_ASSETS = {}
+                for asset in assets:
+                    name = asset.get('name', '')
+                    url = asset.get('browser_download_url', '')
+                    if name and url:
+                        LLAMACPP_RELEASE_ASSETS[name] = url
+                
+                print(f"[llama.cpp] Found release {tag_name} with {len(LLAMACPP_RELEASE_ASSETS)} assets")
+                print(f"[llama.cpp] Sample assets: {list(LLAMACPP_RELEASE_ASSETS.keys())[:10]}")
+                return LLAMACPP_LATEST_VERSION
+    except Exception as e:
+        print(f"[llama.cpp] Error fetching latest version: {e}")
+    return LLAMACPP_LATEST_VERSION
+
+
+def find_matching_asset(system, cuda=False):
+    """Find the appropriate release asset for the given system"""
+    global LLAMACPP_RELEASE_ASSETS
+    
+    # Ensure we have the latest version and assets
+    if not LLAMACPP_LATEST_VERSION:
+        get_llamacpp_latest_version()
+    
+    if not LLAMACPP_RELEASE_ASSETS:
+        return None, None
+    
+    system = system.lower()
+    
+    # New format uses "bin" in name, "win" for Windows, "cuda" for GPU
+    # Examples: llama-b8123-bin-win-cuda-12.4-x64.zip, llama-b8123-bin-win-cpu-x64.zip
+    # IMPORTANT: Prioritize llama-b* files over cudart-* files
+    
+    # First, try to find matching llama-b* (main binary) files
+    for name, url in LLAMACPP_RELEASE_ASSETS.items():
+        name_lower = name.lower()
+        
+        # Skip cudart files - those are CUDA runtime libraries, not the main binary
+        if name_lower.startswith("cudart-"):
+            continue
+        
+        if system == "windows":
+            # Windows: look for win-x64 files (new format: bin-win-cuda or bin-win-cpu)
+            if "win" in name_lower and "x64" in name_lower and "bin" in name_lower:
+                if cuda:
+                    # CUDA version - must have "cuda" in name
+                    if "cuda" in name_lower:
+                        if name.endswith(".zip"):
+                            return name, url
+                else:
+                    # CPU only - must have "cpu" in name, not "cuda"
+                    if "cpu" in name_lower and "cuda" not in name_lower:
+                        if name.endswith(".zip"):
+                            return name, url
+        
+        elif system == "darwin" or system == "macos":
+            # macOS: look for macos-arm64 or macos-x64 files
+            if "macos" in name_lower or "darwin" in name_lower:
+                if "arm64" in name_lower or "aarch64" in name_lower:
+                    # Apple Silicon
+                    if name.endswith(".tar.gz"):
+                        return name, url
+                elif "x64" in name_lower or "intel" in name_lower or "x86" in name_lower:
+                    # Intel
+                    if name.endswith(".tar.gz"):
+                        return name, url
+        
+        elif system == "linux":
+            # Linux: look for ubuntu-x64 files
+            if "ubuntu" in name_lower and "x64" in name_lower:
+                if cuda:
+                    # CUDA version - check for vulkan or cuda variants
+                    if "vulkan" in name_lower or "cuda" in name_lower:
+                        if name.endswith(".tar.gz"):
+                            return name, url
+                else:
+                    # CPU only - basic ubuntu
+                    if "vulkan" not in name_lower and "cuda" not in name_lower:
+                        if name.endswith(".tar.gz"):
+                            return name, url
+    
+    # Second pass: allow cudart files as fallback (for CUDA runtime)
+    if system == "windows" and cuda:
+        for name, url in LLAMACPP_RELEASE_ASSETS.items():
+            name_lower = name.lower()
+            if "win" in name_lower and "cuda" in name_lower and name.endswith(".zip"):
+                return name, url
+    
+    # Last resort: return any first matching file for the system
+    for name, url in LLAMACPP_RELEASE_ASSETS.items():
+        name_lower = name.lower()
+        if system == "windows" and "win" in name_lower and "x64" in name_lower and name.endswith(".zip"):
+            return name, url
+        elif system in ("darwin", "macos") and ("macos" in name_lower or "darwin" in name_lower):
+            return name, url
+        elif system == "linux" and "ubuntu" in name_lower and name.endswith(".tar.gz"):
+            return name, url
+    
+    return None, None
+
+
+@app.route('/api/llamacpp/releases', methods=['GET'])
+def get_llamacpp_releases():
+    """Get available llama.cpp release options - dynamically fetches from GitHub API"""
+    # Get current platform
+    import platform
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    
+    # Determine recommended release
+    recommended = "windows"
+    cuda_recommended = "windows-cublas"
+    if system == "windows":
+        recommended = "windows-cublas"  # Default to CUDA for better performance
+    elif system == "darwin":
+        recommended = "macos-arm" if "arm" in machine else "macos-intel"
+    elif system == "linux":
+        recommended = "linux-cublas"
+    
+    # Get latest version and assets from GitHub API
+    latest_version = get_llamacpp_latest_version()
+    
+    if not latest_version or not LLAMACPP_RELEASE_ASSETS:
+        # Fallback to static templates if API fails
+        releases = []
+        for key, info in LLAMACPP_RELEASES.items():
+            url_template = info["url"].replace("%VERSION%", latest_version or "b3650").replace("%sVERSION%", latest_version or "b3650")
+            releases.append({
+                "id": key,
+                "name": info["name"],
+                "url": url_template,
+                "extension": info["ext"],
+                "recommended": key == recommended
+            })
+        return jsonify({
+            "success": True,
+            "latest_version": latest_version or "b3650",
+            "current_platform": f"{system}-{machine}",
+            "releases": releases
+        })
+    
+    # Build releases dynamically from actual GitHub assets
+    releases = []
+    
+    # Define release configurations to look for
+    release_configs = [
+        {"id": "windows-cublas", "name": "Windows (CUDA)", "cuda": True, "system": "windows", "ext": ".7z"},
+        {"id": "windows", "name": "Windows (CPU only)", "cuda": False, "system": "windows", "ext": ".7z"},
+        {"id": "linux-cublas", "name": "Linux (CUDA)", "cuda": True, "system": "linux", "ext": ".tar.zst"},
+        {"id": "linux", "name": "Linux (CPU only)", "cuda": False, "system": "linux", "ext": ".tar.zst"},
+        {"id": "macos-arm", "name": "macOS (Apple Silicon)", "cuda": False, "system": "darwin", "ext": ".tar.zst"},
+        {"id": "macos-intel", "name": "macOS (Intel)", "cuda": False, "system": "darwin", "ext": ".tar.zst"},
+    ]
+    
+    for config in release_configs:
+        filename, url = find_matching_asset(config["system"], config["cuda"])
+        
+        if filename and url:
+            releases.append({
+                "id": config["id"],
+                "name": config["name"],
+                "url": url,
+                "extension": config["ext"],
+                "recommended": config["id"] == recommended,
+                "cuda": config["cuda"]
+            })
+        else:
+            # Fallback to static URL if no matching asset found
+            info = LLAMACPP_RELEASES.get(config["id"], {})
+            url_template = info.get("url", "").replace("%VERSION%", latest_version)
+            releases.append({
+                "id": config["id"],
+                "name": config["name"],
+                "url": url_template,
+                "extension": config["ext"],
+                "recommended": config["id"] == recommended,
+                "cuda": config["cuda"],
+                "fallback": True
+            })
+    
+    return jsonify({
+        "success": True,
+        "latest_version": latest_version,
+        "current_platform": f"{system}-{machine}",
+        "releases": releases
+    })
+
+
+@app.route('/api/llamacpp/server/download', methods=['POST'])
+def download_llamacpp_server():
+    """Start downloading llama.cpp server binary"""
+    global llamacpp_server_downloads
+    
+    data = request.get_json() or {}
+    release_id = data.get('release_id', 'windows-cublas')  # Default to Windows CUDA
+    
+    # Get system and cuda from release_id
+    system = "windows"
+    cuda = False
+    
+    if release_id == "windows-cublas":
+        system = "windows"
+        cuda = True
+    elif release_id == "windows":
+        system = "windows"
+        cuda = False
+    elif release_id == "linux-cublas":
+        system = "linux"
+        cuda = True
+    elif release_id == "linux":
+        system = "linux"
+        cuda = False
+    elif release_id == "macos-arm":
+        system = "darwin"
+        cuda = False
+    elif release_id == "macos-intel":
+        system = "darwin"
+        cuda = False
+    
+    # Get latest version and find matching asset from API
+    latest_version = get_llamacpp_latest_version()
+    
+    # Try to find matching asset from API
+    filename, url = find_matching_asset(system, cuda)
+    
+    if not filename or not url:
+        # Fallback to static URL template if API fails
+        if release_id not in LLAMACPP_RELEASES:
+            return jsonify({"success": False, "error": "Invalid release ID"}), 400
+        
+        release_info = LLAMACPP_RELEASES[release_id]
+        url = release_info["url"].replace("%VERSION%", latest_version).replace("%sVERSION%", latest_version)
+        filename = url.split('/')[-1]
+    
+    print(f"[llama.cpp] Downloading {filename} from {url}")
+    
+    # Create download ID
+    import uuid
+    download_id = str(uuid.uuid4())[:8]
+    
+    # Create download directory
+    server_dir = os.path.join(os.path.dirname(__file__), 'models', 'server')
+    os.makedirs(server_dir, exist_ok=True)
+    
+    # Create download record
+    llamacpp_server_downloads[download_id] = {
+        "id": download_id,
+        "release_id": release_id,
+        "url": url,
+        "filename": filename,
+        "status": "starting",
+        "progress": 0,
+        "speed": 0,
+        "eta": 0,
+        "downloaded": 0,
+        "total": 0,
+        "error": None,
+        "dest_dir": server_dir
+    }
+    
+    # Start download in background thread
+    def download_file():
+        try:
+            import urllib.request
+            import ssl
+            
+            # Create SSL context
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            llamacpp_server_downloads[download_id]["status"] = "downloading"
+            
+            # Get file info first
+            req = urllib.request.Request(url, method='HEAD')
+            req.add_header('User-Agent', 'Omnix/1.0')
+            
+            try:
+                with urllib.request.urlopen(req, context=ssl_context, timeout=30) as response:
+                    total_size = int(response.headers.get('Content-Length', 0))
+                    llamacpp_server_downloads[download_id]["total"] = total_size
+            except:
+                llamacpp_server_downloads[download_id]["total"] = 0
+            
+            # Download the file
+            dest_path = os.path.join(server_dir, filename)
+            
+            # Start download
+            req = urllib.request.Request(url)
+            req.add_header('User-Agent', 'Omnix/1.0')
+            
+            start_time = time.time()
+            downloaded = 0
+            
+            with urllib.request.urlopen(req, context=ssl_context, timeout=60) as response:
+                with open(dest_path, 'wb') as f:
+                    while True:
+                        chunk = response.read(1024 * 1024)  # 1MB chunks
+                        if not chunk:
+                            break
+                        
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        # Update progress
+                        elapsed = time.time() - start_time
+                        speed = downloaded / elapsed if elapsed > 0 else 0
+                        remaining = llamacpp_server_downloads[download_id]["total"] - downloaded if llamacpp_server_downloads[download_id]["total"] > 0 else 0
+                        eta = remaining / speed if speed > 0 else 0
+                        
+                        progress = (downloaded / llamacpp_server_downloads[download_id]["total"] * 100) if llamacpp_server_downloads[download_id]["total"] > 0 else 0
+                        
+                        llamacpp_server_downloads[download_id].update({
+                            "downloaded": downloaded,
+                            "progress": progress,
+                            "speed": speed,
+                            "eta": eta,
+                            "status": "downloading"
+                        })
+            
+            llamacpp_server_downloads[download_id]["status"] = "extracting"
+            llamacpp_server_downloads[download_id]["progress"] = 100
+            
+            # Extract if it's an archive
+            extract_status = "extracted"
+            if filename.endswith('.zip'):
+                try:
+                    import zipfile
+                    with zipfile.ZipFile(dest_path, 'r') as zip_ref:
+                        zip_ref.extractall(server_dir)
+                    print(f"[llama.cpp] Extracted {filename} to {server_dir}")
+                except Exception as e:
+                    print(f"[llama.cpp] Failed to extract zip: {e}")
+                    extract_status = "extraction_failed"
+            elif filename.endswith('.7z'):
+                try:
+                    import subprocess
+                    # Try to extract with 7z
+                    subprocess.run(['7z', 'x', '-y', '-o' + server_dir, dest_path], check=True)
+                    print(f"[llama.cpp] Extracted {filename} to {server_dir}")
+                except:
+                    extract_status = "extraction_failed"
+            elif filename.endswith('.tar.zst'):
+                try:
+                    import subprocess
+                    # Use tar with zstd decompression
+                    subprocess.run(['tar', '-I', 'zstd', '-xf', dest_path, '-C', server_dir], check=True)
+                    print(f"[llama.cpp] Extracted {filename} to {server_dir}")
+                except:
+                    # Try regular tar if zstd is not available
+                    try:
+                        import tarfile
+                        # Try reading as regular tar
+                        with tarfile.open(dest_path, 'r:*') as tar:
+                            tar.extractall(server_dir)
+                        print(f"[llama.cpp] Extracted {filename} to {server_dir}")
+                    except:
+                        extract_status = "extraction_failed"
+            elif filename.endswith('.tar.gz'):
+                try:
+                    import tarfile
+                    with tarfile.open(dest_path, 'r:gz') as tar:
+                        tar.extractall(server_dir)
+                    print(f"[llama.cpp] Extracted {filename} to {server_dir}")
+                except:
+                    extract_status = "extraction_failed"
+            
+            # Set final status based on extraction result
+            if extract_status == "extracted":
+                llamacpp_server_downloads[download_id]["status"] = "completed"
+                llamacpp_server_downloads[download_id]["message"] = "Download complete and extracted! The llama.cpp server binary is ready."
+            elif extract_status == "extraction_failed":
+                llamacpp_server_downloads[download_id]["status"] = "completed_not_extracted"
+                llamacpp_server_downloads[download_id]["message"] = "Download complete but extraction failed. You may need to extract manually."
+            else:
+                llamacpp_server_downloads[download_id]["status"] = "completed"
+                llamacpp_server_downloads[download_id]["message"] = "Download complete!"
+            
+        except Exception as e:
+            llamacpp_server_downloads[download_id]["status"] = "error"
+            llamacpp_server_downloads[download_id]["error"] = str(e)
+            print(f"[llama.cpp server] Download error: {e}")
+    
+    # Start download thread
+    thread = threading.Thread(target=download_file)
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({
+        "success": True,
+        "download_id": download_id,
+        "filename": filename
+    })
+
+
+@app.route('/api/llamacpp/server/download/status', methods=['GET'])
+def get_llamacpp_server_download_status():
+    """Get llama.cpp server download status"""
+    download_id = request.args.get('id', '')
+    
+    if download_id not in llamacpp_server_downloads:
+        return jsonify({"success": False, "error": "Download not found"}), 404
+    
+    download = llamacpp_server_downloads[download_id]
+    
+    return jsonify({
+        "success": True,
+        "download": {
+            "id": download["id"],
+            "filename": download["filename"],
+            "status": download["status"],
+            "progress": download["progress"],
+            "speed": download["speed"],
+            "eta": download["eta"],
+            "downloaded": download["downloaded"],
+            "total": download["total"],
+            "error": download["error"]
+        }
+    })
+
+
+@app.route('/api/llamacpp/server/download/stop', methods=['POST'])
+def stop_llamacpp_server_download():
+    """Stop and cancel llama.cpp server download"""
+    data = request.get_json() or {}
+    download_id = data.get('download_id', '')
+    
+    if download_id not in llamacpp_server_downloads:
+        return jsonify({"success": False, "error": "Download not found"}), 404
+    
+    llamacpp_server_downloads[download_id]["status"] = "cancelled"
+    
+    # Delete partial file
+    filename = llamacpp_server_downloads[download_id]["filename"]
+    dest_dir = llamacpp_server_downloads[download_id].get("dest_dir", "")
+    if dest_dir and filename:
+        partial_path = os.path.join(dest_dir, filename + ".partial")
+        if os.path.exists(partial_path):
+            try:
+                os.remove(partial_path)
+            except:
+                pass
+    
+    return jsonify({"success": True})
+
+
+@app.route('/api/llamacpp/server/status', methods=['GET'])
+def get_llamacpp_server_status():
+    """Check if llama.cpp server binary is available"""
+    server_dir = os.path.join(os.path.dirname(__file__), 'models', 'server')
+    
+    # Check for common binary names
+    binary_names = [
+        "llama-server.exe",
+        "llama-server",
+        "llama.exe",
+        "llama"
+    ]
+    
+    found_binary = None
+    for name in binary_names:
+        binary_path = os.path.join(server_dir, name)
+        if os.path.exists(binary_path):
+            found_binary = name
+            break
+    
+    # Also check for .7z files that might need extraction
+    archive_files = []
+    if os.path.exists(server_dir):
+        for f in os.listdir(server_dir):
+            if f.endswith('.7z') or f.endswith('.tar.gz'):
+                archive_files.append(f)
+    
+    return jsonify({
+        "success": True,
+        "server_dir": server_dir,
+        "binary_found": found_binary is not None,
+        "binary_name": found_binary,
+        "archive_files": archive_files
+    })
+
+
+@app.route('/api/llamacpp/server/start', methods=['POST'])
+def start_llamacpp_server():
+    """Start llama.cpp server with selected model"""
+    data = request.get_json() or {}
+    model = data.get('model', '')
+    
+    if not model:
+        return jsonify({"success": False, "error": "Model is required"}), 400
+    
+    server_dir = os.path.join(os.path.dirname(__file__), 'models', 'server')
+    
+    # Find the llama-server binary
+    binary_names = ["llama-server.exe", "llama-server", "llama.exe", "llama"]
+    binary_path = None
+    for name in binary_names:
+        path = os.path.join(server_dir, name)
+        if os.path.exists(path):
+            binary_path = path
+            break
+    
+    if not binary_path:
+        return jsonify({"success": False, "error": "llama.cpp server binary not found. Please download it first."}), 400
+    
+    # Check if model path is absolute or relative
+    if not os.path.isabs(model):
+        # Assume it's in models/llm or models/server
+        model_path = os.path.join(os.path.dirname(__file__), 'models', 'llm', model)
+        if not os.path.exists(model_path):
+            model_path = os.path.join(os.path.dirname(__file__), 'models', 'server', model)
+        if not os.path.exists(model_path):
+            model_path = os.path.join(os.path.dirname(__file__), model)
+    else:
+        model_path = model
+    
+    if not os.path.exists(model_path):
+        return jsonify({"success": False, "error": f"Model file not found: {model_path}"}), 400
+    
+    # Get port from settings or use default
+    settings = load_settings()
+    base_url = settings.get('llamacpp', {}).get('base_url', 'http://localhost:8080')
+    port = 8080
+    if 'localhost:' in base_url:
+        try:
+            port = int(base_url.split(':')[-1])
+        except:
+            port = 8080
+    
+    # Start the server
+    try:
+        import subprocess
+        
+        # Kill any existing server on the port
+        try:
+            import subprocess as sp
+            result = sp.run(f'netstat -ano ^| findstr :{port} ^| findstr LISTENING', shell=True, capture_output=True, text=True)
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 5:
+                    pid = parts[-1]
+                    try:
+                        sp.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True)
+                    except:
+                        pass
+            time.sleep(1)
+        except:
+            pass
+        
+        # Start llama-server
+        cmd = [binary_path, "-m", model_path, "-c", "4096", "-ngl", "999", "--host", "0.0.0.0", "--port", str(port)]
+        
+        process = subprocess.Popen(
+            cmd,
+            cwd=server_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1
+        )
+        
+        return jsonify({
+            "success": True,
+            "message": f"llama.cpp server started on port {port}",
+            "pid": process.pid,
+            "command": " ".join(cmd)
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/llamacpp/server/stop', methods=['POST'])
+def stop_llamacpp_server():
+    """Stop llama.cpp server"""
+    # Kill processes on port 8080
+    try:
+        import subprocess as sp
+        port = 8080
+        
+        # Get settings for custom port
+        settings = load_settings()
+        base_url = settings.get('llamacpp', {}).get('base_url', 'http://localhost:8080')
+        if 'localhost:' in base_url:
+            try:
+                port = int(base_url.split(':')[-1])
+            except:
+                port = 8080
+        
+        result = sp.run(f'netstat -ano | findstr :{port} | findstr LISTENING', shell=True, capture_output=True, text=True)
+        lines = result.stdout.strip().split('\n')
+        killed = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 5:
+                pid = parts[-1]
+                try:
+                    sp.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True)
+                    killed.append(pid)
+                except:
+                    pass
+        
+        return jsonify({
+            "success": True,
+            "message": f"Stopped processes on port {port}",
+            "killed_pids": killed
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

@@ -43,6 +43,8 @@ const llamacppUrlInput = document.getElementById('llamacppUrl');
 const llamacppModelInput = document.getElementById('llamacppModel');
 const huggingfaceTokenInput = document.getElementById('huggingfaceToken');
 const hfTokenInput = document.getElementById('hfToken');
+const llamacppAutoStart = document.getElementById('llamacppAutoStart');
+const llamacppDownloadLocation = document.getElementById('llamacppDownloadLocation');
 
 // State
 let sessionId = null;
@@ -68,7 +70,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Then load settings and check health in the background (don't block UI)
     console.log('Loading settings (in background)...');
-    loadSettings().then(() => {
+    loadSettings().then(async () => {
+        // Auto-start llama.cpp server FIRST before checking health
+        console.log('Auto-starting llama.cpp server if configured...');
+        await autoStartLlamaCppServer();
+        
         console.log('Settings loaded, checking health...');
         checkHealth();
     }).catch(err => {
@@ -519,16 +525,26 @@ function setupEventListeners() {
     const settingsBtnCollapsed = document.getElementById('settingsBtnCollapsed');
     if (settingsBtnCollapsed) {
         settingsBtnCollapsed.addEventListener('click', () => {
-            loadSettings();
-            settingsModal.classList.add('active');
+            loadSettings().then(() => {
+                settingsModal.classList.add('active');
+                // Load LLM models for llama.cpp if provider is already llama.cpp
+                if (providerSelect && providerSelect.value === 'llamacpp') {
+                    loadLlmModelsForLlamaCpp();
+                }
+            });
         });
     }
     
-    // Settings button in header (if present - may be null after removal from header)
+    // Settings button in header
     if (settingsBtn) {
         settingsBtn.addEventListener('click', () => {
-            loadSettings();
-            settingsModal.classList.add('active');
+            loadSettings().then(() => {
+                settingsModal.classList.add('active');
+                // Load LLM models for llama.cpp if provider is already llama.cpp
+                if (providerSelect && providerSelect.value === 'llamacpp') {
+                    loadLlmModelsForLlamaCpp();
+                }
+            });
         });
     }
     
@@ -550,6 +566,11 @@ function setupEventListeners() {
         openrouterSettings.style.display = provider === 'openrouter' ? 'block' : 'none';
         cerebrasSettings.style.display = provider === 'cerebras' ? 'block' : 'none';
         llamacppSettings.style.display = provider === 'llamacpp' ? 'block' : 'none';
+        
+        // Load LLM models for llama.cpp when provider is switched to llama.cpp
+        if (provider === 'llamacpp') {
+            loadLlmModelsForLlamaCpp();
+        }
     });
     
     loadOpenRouterModelsBtn.addEventListener('click', loadOpenRouterModels);
@@ -647,6 +668,12 @@ async function loadSettings() {
                 if (llamacppModelInput) {
                     llamacppModelInput.value = settings.llamacpp.model || '';
                 }
+                if (llamacppDownloadLocation) {
+                    llamacppDownloadLocation.value = settings.llamacpp.download_location || 'server';
+                }
+                if (llamacppAutoStart) {
+                    llamacppAutoStart.checked = settings.llamacpp.auto_start || false;
+                }
             }
             
             // Load HuggingFace token if present
@@ -663,7 +690,7 @@ async function loadSettings() {
             }
             
             await loadModels();
-            await checkHealth();
+            // Note: checkHealth is called after autoStartLlamaCppServer in DOMContentLoaded
             
             if (globalSystemPromptInput && settings.global_system_prompt) {
                 globalSystemPromptInput.value = settings.global_system_prompt;
@@ -735,7 +762,9 @@ async function saveSettingsHandler() {
         },
         llamacpp: {
             base_url: llamacppUrlInput ? llamacppUrlInput.value : 'http://localhost:8080',
-            model: llamacppModelInput ? llamacppModelInput.value : ''
+            model: llamacppModelInput ? llamacppModelInput.value : '',
+            download_location: llamacppDownloadLocation ? llamacppDownloadLocation.value : 'server',
+            auto_start: llamacppAutoStart ? llamacppAutoStart.checked : false
         },
         huggingface: {
             token: !isHfTokenMasked ? hfTokenValue : (currentSettings.huggingface?.token || '')
@@ -1626,7 +1655,6 @@ if (llamacppResumeDownloadBtn) {
     });
 }
 
-// Stop llama.cpp download
 if (llamacppStopDownloadBtn) {
     llamacppStopDownloadBtn.addEventListener('click', async () => {
         if (!confirm('Stop download? The partial file will be deleted.')) {
@@ -1649,22 +1677,313 @@ if (llamacppStopDownloadBtn) {
     });
 }
 
-// Load LLM models when settings modal opens with llama.cpp provider
-const originalLoadSettings = loadSettings;
-loadSettings = async function() {
-    await originalLoadSettings();
+// ==================== LLAMA.CPP SERVER DOWNLOAD & CONTROL ====================
+
+// llama.cpp server download elements
+const downloadLlamaCppServerBtn = document.getElementById('downloadLlamaCppServerBtn');
+const llamacppServerDownloadProgress = document.getElementById('llamacppServerDownloadProgress');
+const llamacppServerDownloadFilename = document.getElementById('llamacppServerDownloadFilename');
+const llamacppServerDownloadStatus = document.getElementById('llamacppServerDownloadStatus');
+const llamacppServerDownloadProgressBar = document.getElementById('llamacppServerDownloadProgressBar');
+const llamacppServerDownloadSpeed = document.getElementById('llamacppServerDownloadSpeed');
+const llamacppServerDownloadEta = document.getElementById('llamacppServerDownloadEta');
+const llamacppServerDownloadPercent = document.getElementById('llamacppServerDownloadPercent');
+const llamacppServerStopDownloadBtn = document.getElementById('llamacppServerStopDownloadBtn');
+const llamacppServerStatusDiv = document.getElementById('llamacppServerStatus');
+const startLlamaCppServerBtn = document.getElementById('startLlamaCppServerBtn');
+const stopLlamaCppServerBtn = document.getElementById('stopLlamaCppServerBtn');
+
+let llamacppServerCurrentDownloadId = null;
+let llamacppServerDownloadInterval = null;
+
+// Check llama.cpp server status on load
+async function checkLlamaCppServerStatus() {
+    try {
+        const response = await fetch('/api/llamacpp/server/status');
+        const data = await response.json();
+        
+        if (data.success && llamacppServerStatusDiv) {
+            if (data.binary_found) {
+                llamacppServerStatusDiv.innerHTML = '<span style="color: #10b981;">✓ Server binary ready: ' + data.binary_name + '</span>';
+            } else if (data.archive_files && data.archive_files.length > 0) {
+                llamacppServerStatusDiv.innerHTML = '<span style="color: #f59e0b;">⚠ Found archive files that need extraction: ' + data.archive_files.join(', ') + '</span>';
+            } else {
+                llamacppServerStatusDiv.innerHTML = '<span style="color: #ef4444;">✗ Server binary not found. Download it below.</span>';
+            }
+        }
+    } catch (error) {
+        console.error('Error checking llama.cpp server status:', error);
+    }
+}
+
+// Download llama.cpp server
+if (downloadLlamaCppServerBtn) {
+    downloadLlamaCppServerBtn.addEventListener('click', async () => {
+        try {
+            downloadLlamaCppServerBtn.disabled = true;
+            downloadLlamaCppServerBtn.textContent = 'Starting download...';
+            
+            const response = await fetch('/api/llamacpp/server/download', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({release_id: 'windows-cublas'})
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                llamacppServerCurrentDownloadId = data.download_id;
+                llamacppServerDownloadProgress.style.display = 'block';
+                llamacppServerDownloadFilename.textContent = data.filename;
+                
+                // Start polling for download status
+                llamacppServerDownloadInterval = setInterval(async () => {
+                    try {
+                        const statusResponse = await fetch('/api/llamacpp/server/download/status?id=' + llamacppServerCurrentDownloadId);
+                        const statusData = await statusResponse.json();
+                        
+                        if (statusData.success) {
+                            const download = statusData.download;
+                            llamacppServerDownloadStatus.textContent = download.status;
+                            llamacppServerDownloadProgressBar.style.width = download.progress + '%';
+                            llamacppServerDownloadPercent.textContent = download.progress.toFixed(1) + '%';
+                            llamacppServerDownloadSpeed.textContent = (download.speed / 1024 / 1024).toFixed(2) + ' MB/s';
+                            
+                            if (download.eta > 0) {
+                                const mins = Math.floor(download.eta / 60);
+                                const secs = Math.floor(download.eta % 60);
+                                llamacppServerDownloadEta.textContent = mins + ':' + secs.toString().padStart(2, '0');
+                            }
+                            
+                            if (download.status === 'completed' || download.status === 'completed_not_extracted') {
+                                clearInterval(llamacppServerDownloadInterval);
+                                llamacppServerDownloadStatus.textContent = download.status === 'completed' ? 'Download complete!' : 'Download complete (needs extraction)';
+                                downloadLlamaCppServerBtn.disabled = false;
+                                downloadLlamaCppServerBtn.textContent = 'Download llama.cpp Server';
+                                checkLlamaCppServerStatus();
+                            } else if (download.status === 'error') {
+                                clearInterval(llamacppServerDownloadInterval);
+                                llamacppServerDownloadStatus.textContent = 'Error: ' + download.error;
+                                downloadLlamaCppServerBtn.disabled = false;
+                                downloadLlamaCppServerBtn.textContent = 'Download llama.cpp Server';
+                            } else if (download.status === 'cancelled') {
+                                clearInterval(llamacppServerDownloadInterval);
+                                llamacppServerDownloadStatus.textContent = 'Cancelled';
+                                downloadLlamaCppServerBtn.disabled = false;
+                                downloadLlamaCppServerBtn.textContent = 'Download llama.cpp Server';
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error checking download status:', error);
+                    }
+                }, 1000);
+            } else {
+                alert('Failed to start download: ' + (data.error || 'Unknown error'));
+                downloadLlamaCppServerBtn.disabled = false;
+                downloadLlamaCppServerBtn.textContent = 'Download llama.cpp Server';
+            }
+        } catch (error) {
+            console.error('Error downloading llama.cpp server:', error);
+            alert('Error: ' + error.message);
+            downloadLlamaCppServerBtn.disabled = false;
+            downloadLlamaCppServerBtn.textContent = 'Download llama.cpp Server';
+        }
+    });
+}
+
+// Stop llama.cpp server download
+if (llamacppServerStopDownloadBtn) {
+    llamacppServerStopDownloadBtn.addEventListener('click', async () => {
+        try {
+            await fetch('/api/llamacpp/server/download/stop', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({download_id: llamacppServerCurrentDownloadId})
+            });
+            
+            if (llamacppServerDownloadInterval) {
+                clearInterval(llamacppServerDownloadInterval);
+            }
+            
+            llamacppServerDownloadProgress.style.display = 'none';
+            downloadLlamaCppServerBtn.disabled = false;
+            downloadLlamaCppServerBtn.textContent = 'Download llama.cpp Server';
+        } catch (error) {
+            console.error('Error stopping download:', error);
+        }
+    });
+}
+
+// Start llama.cpp server
+if (startLlamaCppServerBtn) {
+    startLlamaCppServerBtn.addEventListener('click', async () => {
+        const modelSelect = document.getElementById('llamacppModel');
+        const model = modelSelect ? modelSelect.value : '';
+        
+        if (!model) {
+            alert('Please select a model first');
+            return;
+        }
+        
+        try {
+            startLlamaCppServerBtn.disabled = true;
+            startLlamaCppServerBtn.textContent = 'Starting...';
+            
+            const response = await fetch('/api/llamacpp/server/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({model: model})
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                alert('Server started successfully!\n\nCommand: ' + data.command + '\nPID: ' + data.pid);
+            } else {
+                alert('Failed to start server: ' + (data.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error starting server:', error);
+            alert('Error: ' + error.message);
+        } finally {
+            startLlamaCppServerBtn.disabled = false;
+            startLlamaCppServerBtn.textContent = 'Start Server';
+        }
+    });
+}
+
+// Stop llama.cpp server
+if (stopLlamaCppServerBtn) {
+    stopLlamaCppServerBtn.addEventListener('click', async () => {
+        try {
+            stopLlamaCppServerBtn.disabled = true;
+            stopLlamaCppServerBtn.textContent = 'Stopping...';
+            
+            const response = await fetch('/api/llamacpp/server/stop', {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                alert('Server stopped. Killed PIDs: ' + (data.killed_pids || []).join(', '));
+            } else {
+                alert('Failed to stop server: ' + (data.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Error stopping server:', error);
+            alert('Error: ' + error.message);
+        } finally {
+            stopLlamaCppServerBtn.disabled = false;
+            stopLlamaCppServerBtn.textContent = 'Stop Server';
+        }
+    });
+}
+
+// Check server status when settings modal opens (if the function exists)
+if (typeof openSettingsModal !== 'undefined') {
+    const originalOpenSettings = openSettingsModal;
+    window.openSettingsModal = async function() {
+        await originalOpenSettings();
+        checkLlamaCppServerStatus();
+    };
+}
+
+// Also check on page load
+checkLlamaCppServerStatus();
+
+// Wrap loadSettings to load LLM models when provider is llama.cpp
+const originalLoadSettingsFn = loadSettings;
+window.loadSettings = async function() {
+    await originalLoadSettingsFn();
     
     // Load LLM models for llama.cpp dropdown when provider is llama.cpp
     if (providerSelect && providerSelect.value === 'llamacpp') {
         loadLlmModelsForLlamaCpp();
     }
+    
+    // Auto-start llama.cpp server if configured
+    await autoStartLlamaCppServer();
 };
 
-// Also load on provider change to llama.cpp
-if (providerSelect) {
-    providerSelect.addEventListener('change', () => {
-        if (providerSelect.value === 'llamacpp') {
+// Auto-start llama.cpp server if configured in settings
+async function autoStartLlamaCppServer() {
+    try {
+        const response = await fetch('/api/settings');
+        const data = await response.json();
+        
+        if (data.success && data.settings) {
+            const settings = data.settings;
+            
+            // Check if provider is llama.cpp and auto_start is enabled
+            if (settings.provider === 'llamacpp' && settings.llamacpp?.auto_start && settings.llamacpp?.model) {
+                console.log('[LLAMA.CPP] Auto-start enabled, checking server status...');
+                
+                // Check if server is already running
+                const statusResponse = await fetch('/api/llamacpp/server/status');
+                const statusData = await statusResponse.json();
+                
+                if (statusData.success && !statusData.running) {
+                    console.log('[LLAMA.CPP] Server not running, starting with model:', settings.llamacpp.model);
+                    
+                    // Start the server
+                    const startResponse = await fetch('/api/llamacpp/server/start', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({model: settings.llamacpp.model})
+                    });
+                    
+                    const startData = await startResponse.json();
+                    
+                    if (startData.success) {
+                        console.log('[LLAMA.CPP] Server started successfully, PID:', startData.pid);
+                        
+                        // Wait for server to be ready (poll health endpoint)
+                        console.log('[LLAMA.CPP] Waiting for server to be ready...');
+                        const maxWaitTime = 30000; // 30 seconds max wait
+                        const checkInterval = 1000; // Check every 1 second
+                        let waited = 0;
+                        
+                        while (waited < maxWaitTime) {
+                            await new Promise(resolve => setTimeout(resolve, checkInterval));
+                            waited += checkInterval;
+                            
+                            try {
+                                const healthResponse = await fetch(settings.llamacpp.base_url || 'http://localhost:8080');
+                                if (healthResponse.ok) {
+                                    console.log('[LLAMA.CPP] Server is ready after', waited/1000, 'seconds');
+                                    break;
+                                }
+                            } catch (e) {
+                                // Server not ready yet, continue waiting
+                            }
+                        }
+                        
+                        // Update status indicator
+                        if (statusDot) {
+                            statusDot.className = 'status-dot connected';
+                            statusText.textContent = 'llama.cpp';
+                        }
+                    } else {
+                        console.error('[LLAMA.CPP] Failed to start server:', startData.error);
+                    }
+                } else if (statusData.running) {
+                    console.log('[LLAMA.CPP] Server already running');
+                }
+            }
+        }
+    } catch (error) {
+        console.error('[LLAMA.CPP] Error during auto-start check:', error);
+    }
+}
+
+// Also ensure models load when settings modal opens - handle both cases
+// (initial load and when modal is opened)
+if (settingsModal) {
+    settingsModal.addEventListener('transitionend', () => {
+        if (settingsModal.classList.contains('active') && providerSelect && providerSelect.value === 'llamacpp') {
             loadLlmModelsForLlamaCpp();
         }
     });
 }
+
