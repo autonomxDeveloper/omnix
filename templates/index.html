@@ -444,6 +444,51 @@
 
                 <!-- llama.cpp Settings -->
                 <div id="llamacppSettings" style="display: none;">
+                    <!-- llama.cpp Server Binary Download Section -->
+                    <div class="setting-group">
+                        <label>Download llama.cpp Server</label>
+                        <p style="font-size: 0.75rem; color: #666; margin-bottom: 8px;">Download the llama.cpp server binary to run GGUF models locally</p>
+                        <button id="downloadLlamaCppServerBtn" class="btn-primary" style="width: 100%; margin-bottom: 8px;">Download llama.cpp Server</button>
+                        <div id="llamacppServerDownloadProgress" class="download-progress" style="display: none; margin-top: 8px;">
+                            <div class="download-item">
+                                <div class="download-info">
+                                    <span class="download-filename" id="llamacppServerDownloadFilename">llama-server.exe</span>
+                                    <span class="download-status" id="llamacppServerDownloadStatus">Downloading...</span>
+                                </div>
+                                <div class="progress-bar-container">
+                                    <div id="llamacppServerDownloadProgressBar" class="progress-bar"></div>
+                                </div>
+                                <div class="download-stats">
+                                    <span id="llamacppServerDownloadSpeed">0 MB/s</span>
+                                    <span id="llamacppServerDownloadEta">--:--</span>
+                                    <span id="llamacppServerDownloadPercent">0%</span>
+                                </div>
+                                <div class="download-controls">
+                                    <button id="llamacppServerStopDownloadBtn" class="btn-danger">Stop</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="llamacppServerStatus" style="margin-top: 8px; font-size: 0.8rem;"></div>
+                    </div>
+                    
+                    <!-- Server Start/Stop Controls -->
+                    <div class="setting-group">
+                        <label>Server Control</label>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="startLlamaCppServerBtn" class="btn-primary" style="flex: 1;">Start Server</button>
+                            <button id="stopLlamaCppServerBtn" class="btn-danger" style="flex: 1;">Stop Server</button>
+                        </div>
+                    </div>
+                    
+                    <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 16px 0;">
+                    
+                    <div class="setting-group">
+                        <label>Model Download Location</label>
+                        <select id="llamacppDownloadLocation" class="model-select">
+                            <option value="server">models/server (for llama.cpp server)</option>
+                            <option value="llm">models/llm (general storage)</option>
+                        </select>
+                    </div>
                     <div class="setting-group">
                         <label>Base URL</label>
                         <input type="text" id="llamacppUrl" class="system-prompt-input" value="http://localhost:8080">
@@ -453,6 +498,13 @@
                         <select id="llamacppModel" class="model-select">
                             <option value="">-- Select a model --</option>
                         </select>
+                    </div>
+                    <div class="setting-group">
+                        <label>
+                            <input type="checkbox" id="llamacppAutoStart" style="margin-right: 8px;">
+                            Auto-start llama.cpp server when saving settings
+                        </label>
+                        <p style="margin-top: 4px; font-size: 0.75rem; color: #666;">When enabled, the server will start automatically with the selected model.</p>
                     </div>
                     <div class="setting-group">
                         <label>HuggingFace Token (optional, for private models)</label>
