@@ -3963,3 +3963,116 @@ pre:hover .code-copy-btn {
 .podcast-transcript::-webkit-scrollbar-thumb:hover {
     background: var(--accent);
 }
+
+/* ==================== VOICE PERSONALITY INLINE EDIT ==================== */
+
+/* Personality badge - sparkle indicator */
+.personality-badge {
+    font-size: 0.85rem;
+    margin-left: 4px;
+    opacity: 0.8;
+}
+
+/* Personality preview text under voice name */
+.saved-voice-personality-preview {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    border-left: 2px solid var(--accent);
+    font-style: italic;
+    line-height: 1.4;
+}
+
+/* Edit button for voices */
+.edit-voice-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.edit-voice-btn:hover {
+    background: rgba(124, 58, 237, 0.2);
+    color: var(--accent);
+}
+
+/* Saved voice item in editing mode */
+.saved-voice-item.editing {
+    flex-direction: column;
+    align-items: stretch;
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+}
+
+/* Voice personality edit form */
+.voice-personality-edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+}
+
+.voice-personality-edit-form .edit-form-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.voice-personality-edit-form .edit-form-title {
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 0.95rem;
+}
+
+.voice-personality-edit-form .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.voice-personality-edit-form .form-group label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.voice-personality-edit-form .personality-name-input,
+.voice-personality-edit-form .personality-text-input {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 10px 12px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.9rem;
+    resize: vertical;
+    transition: var(--transition);
+}
+
+.voice-personality-edit-form .personality-name-input:focus,
+.voice-personality-edit-form .personality-text-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.voice-personality-edit-form .personality-text-input {
+    min-height: 80px;
+    line-height: 1.5;
+}
+
+.voice-personality-edit-form .form-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 8px;
+}

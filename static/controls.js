@@ -366,9 +366,13 @@ if (document.readyState === 'loading') {
 // ============================================================
 
 // Support both sidebar button formats (expanded and collapsed)
-const voiceCloneBtn = document.getElementById('voiceCloneBtn') || 
-                       document.getElementById('voiceCloneBtnOption') ||
-                       document.getElementById('voiceCloneBtnCollapsed');
+// Get all possible voice clone buttons (they all should work)
+const voiceCloneBtns = [
+    document.getElementById('voiceCloneBtn'),
+    document.getElementById('voiceCloneBtnOption'),
+    document.getElementById('voiceCloneBtnCollapsed')
+].filter(btn => btn !== null);
+
 const voiceCloneModal = document.getElementById('voiceCloneModal');
 const closeVoiceClone = document.getElementById('closeVoiceClone');
 const voiceNameInput = document.getElementById('voiceName');
@@ -432,12 +436,17 @@ function updateSaveButton() {
 }
 
 function setupVoiceClone() {
-    if (!voiceCloneBtn) return;
+    if (voiceCloneBtns.length === 0) return;
     
-    voiceCloneBtn.addEventListener('click', () => { 
-        voiceCloneModal.classList.add('active');
-        // Reset to record tab
-        showVoiceTab('record');
+    // Add click handler to ALL voice clone buttons
+    voiceCloneBtns.forEach(btn => {
+        btn.addEventListener('click', () => { 
+            voiceCloneModal.classList.add('active');
+            // Reset to record tab
+            showVoiceTab('record');
+            // Load saved voices
+            loadSavedVoices();
+        });
     });
     
     closeVoiceClone.addEventListener('click', () => { voiceCloneModal.classList.remove('active'); });
@@ -699,28 +708,53 @@ if (document.readyState === 'loading') {
 // MANAGE SAVED VOICES
 // ============================================================
 
-const savedVoicesList = document.getElementById('savedVoicesList');
-
 // Load saved voices when modal opens
 function loadSavedVoices() {
-    if (!savedVoicesList) return;
+    console.log('[VOICE CLONES] loadSavedVoices called');
+    
+    // Get the element fresh each time to avoid stale references
+    const savedVoicesListEl = document.getElementById('savedVoicesList');
+    
+    if (!savedVoicesListEl) {
+        console.error('[VOICE CLONES] savedVoicesList element not found!');
+        return;
+    }
+    
+    console.log('[VOICE CLONES] Fetching from /api/voice_clones...');
     
     fetch('/api/voice_clones')
-        .then(response => response.json())
+        .then(response => {
+            console.log('[VOICE CLONES] Response status:', response.status);
+            return response.json();
+        })
         .then(data => {
+            console.log('[VOICE CLONES] Response data:', data);
             if (data.success && data.voices && data.voices.length > 0) {
-                renderSavedVoices(data.voices);
+                console.log('[VOICE CLONES] Rendering', data.voices.length, 'voices');
+                renderSavedVoices(data.voices, savedVoicesListEl);
             } else {
-                savedVoicesList.innerHTML = '<p class="no-voices">No saved voices yet</p>';
+                console.log('[VOICE CLONES] No voices found');
+                savedVoicesListEl.innerHTML = '<p class="no-voices">No saved voices yet. Create your first voice clone above!</p>';
             }
         })
         .catch(e => {
-            savedVoicesList.innerHTML = '<p class="no-voices">Error loading voices</p>';
+            console.error('[VOICE CLONES] Error loading voices:', e);
+            savedVoicesListEl.innerHTML = '<p class="no-voices">Error loading voices. Please check if the server is running.</p>';
         });
 }
 
-function renderSavedVoices(voices) {
-    savedVoicesList.innerHTML = voices.map(voice => `
+function renderSavedVoices(voices, containerEl) {
+    // Get existing voice profiles (personalities)
+    const profiles = typeof getVoiceProfiles === 'function' ? getVoiceProfiles() : {};
+    
+    containerEl.innerHTML = voices.map(voice => {
+        const profile = profiles[voice.id];
+        const hasPersonality = profile && profile.personality;
+        const personalityPreview = hasPersonality 
+            ? (profile.personality.length > 50 ? profile.personality.substring(0, 50) + '...' : profile.personality)
+            : '';
+        
+        return `
         <div class="saved-voice-item" data-voice-id="${voice.id}">
             <div class="saved-voice-info">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -729,8 +763,16 @@ function renderSavedVoices(voices) {
                     <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                 </svg>
                 <span class="saved-voice-name">${voice.id}</span>
+                ${hasPersonality ? '<span class="personality-badge" title="Has personality">✨</span>' : ''}
             </div>
+            ${personalityPreview ? `<div class="saved-voice-personality-preview">${escapeHtml(personalityPreview)}</div>` : ''}
             <div class="saved-voice-actions">
+                <button class="edit-voice-btn" onclick="editVoicePersonalityInline('${voice.id}')" title="Edit personality">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="2"/>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                </button>
                 <button class="delete-voice-btn" onclick="deleteSavedVoice('${voice.id}')" title="Delete voice">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                         <path d="M3 6H5H21" stroke="currentColor" stroke-width="2"/>
@@ -740,8 +782,99 @@ function renderSavedVoices(voices) {
                 </button>
             </div>
         </div>
-    `).join('');
+    `}).join('');
 }
+
+// Escape HTML for safe display
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Edit voice personality inline
+function editVoicePersonalityInline(voiceId) {
+    const profiles = typeof getVoiceProfiles === 'function' ? getVoiceProfiles() : {};
+    const profile = profiles[voiceId] || {};
+    
+    // Find the voice item
+    const savedVoicesListEl = document.getElementById('savedVoicesList');
+    if (!savedVoicesListEl) return;
+    
+    const voiceItem = savedVoicesListEl.querySelector(`[data-voice-id="${voiceId}"]`);
+    if (!voiceItem) return;
+    
+    // Replace with edit form
+    voiceItem.classList.add('editing');
+    voiceItem.innerHTML = `
+        <div class="voice-personality-edit-form">
+            <div class="edit-form-header">
+                <span class="edit-form-title">${voiceId}</span>
+            </div>
+            <div class="form-group">
+                <label>Character Name (optional)</label>
+                <input type="text" class="personality-name-input" value="${escapeHtml(profile.name || voiceId)}" placeholder="e.g., Sofia">
+            </div>
+            <div class="form-group">
+                <label>Personality & Background</label>
+                <textarea class="personality-text-input" rows="3" placeholder="Describe the character's personality, background, mannerisms...">${escapeHtml(profile.personality || '')}</textarea>
+            </div>
+            <div class="form-actions">
+                <button class="btn-secondary" onclick="cancelEditVoicePersonality('${voiceId}')">Cancel</button>
+                <button class="btn-primary" onclick="saveVoicePersonalityInline('${voiceId}')">Save</button>
+            </div>
+        </div>
+    `;
+}
+
+// Cancel editing
+function cancelEditVoicePersonality(voiceId) {
+    // Reload the voices list
+    loadSavedVoices();
+}
+
+// Save voice personality
+function saveVoicePersonalityInline(voiceId) {
+    const savedVoicesListEl = document.getElementById('savedVoicesList');
+    if (!savedVoicesListEl) return;
+    
+    const voiceItem = savedVoicesListEl.querySelector(`[data-voice-id="${voiceId}"]`);
+    if (!voiceItem) return;
+    
+    const nameInput = voiceItem.querySelector('.personality-name-input');
+    const personalityInput = voiceItem.querySelector('.personality-text-input');
+    
+    const name = nameInput?.value?.trim() || voiceId;
+    const personality = personalityInput?.value?.trim() || '';
+    
+    // Save using the features.js function if available
+    if (typeof saveVoiceProfile === 'function') {
+        saveVoiceProfile(voiceId, {
+            name: name,
+            personality: personality,
+            updatedAt: new Date().toISOString()
+        });
+    } else {
+        // Fallback: save directly to localStorage
+        const voiceProfilesKey = 'chatbot-voice-profiles';
+        const saved = localStorage.getItem(voiceProfilesKey);
+        const profiles = saved ? JSON.parse(saved) : {};
+        profiles[voiceId] = {
+            name: name,
+            personality: personality,
+            updatedAt: new Date().toISOString()
+        };
+        localStorage.setItem(voiceProfilesKey, JSON.stringify(profiles));
+    }
+    
+    // Reload the voices list
+    loadSavedVoices();
+}
+
+// Make functions globally accessible
+window.editVoicePersonalityInline = editVoicePersonalityInline;
+window.cancelEditVoicePersonality = cancelEditVoicePersonality;
+window.saveVoicePersonalityInline = saveVoicePersonalityInline;
 
 // Make deleteSavedVoice globally accessible
 window.deleteSavedVoice = deleteSavedVoice;
@@ -771,19 +904,8 @@ async function deleteSavedVoice(voiceId) {
     }
 }
 
-// Load saved voices when modal opens - patch into existing event
-const voiceCloneBtnOriginal = voiceCloneBtn ? voiceCloneBtn.onclick : null;
-if (voiceCloneBtn) {
-    voiceCloneBtn.addEventListener('click', () => {
-        // Small delay to ensure modal is visible
-        setTimeout(loadSavedVoices, 100);
-    });
-}
-
-// Also load voices immediately if modal is already open
-if (voiceCloneModal && voiceCloneModal.classList.contains('active')) {
-    loadSavedVoices();
-}
+// Make loadSavedVoices globally accessible for other modules
+window.loadSavedVoices = loadSavedVoices;
 
 // ============================================================
 // AUDIOBOOK

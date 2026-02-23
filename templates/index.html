@@ -667,31 +667,10 @@
 <!-- Manage Voices Section -->
                 <div class="manage-voices-section" style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-color);">
                     <h4 style="margin-bottom: 12px; font-size: 0.9rem; color: var(--text-secondary);">Saved Voices</h4>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">Click the edit button to add a personality for each voice.</p>
                     <div id="savedVoicesList" class="saved-voices-list">
                         <p style="color: var(--text-muted); font-size: 0.8rem;">Loading...</p>
                     </div>
-                </div>
-                
-                <!-- Voice Personalities Section -->
-                <div class="voice-personalities-section" style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-color);">
-                    <h4 style="margin-bottom: 12px; font-size: 0.9rem; color: var(--text-secondary);">AI Character Personalities</h4>
-                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">Define unique personalities for each AI voice. These are added to the global system prompt.</p>
-                    
-                    <!-- Voice Selector for Personality -->
-                    <div class="setting-group">
-                        <label>Select Voice to Add Personality</label>
-                        <select id="voicePersonalitySelect" class="model-select">
-                            <option value="">-- Select a voice --</option>
-                        </select>
-                    </div>
-                    
-                    <div id="voicePersonalitiesList" class="voice-personalities-list">
-                        <!-- Populated dynamically -->
-                    </div>
-                    
-                    <button id="addVoicePersonalityBtn" class="btn-secondary" style="margin-top: 12px; width: 100%;">
-                        + Add Character Personality
-                    </button>
                 </div>
             </div>
         </div>
