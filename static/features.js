@@ -558,9 +558,51 @@ if (vadSlider) {
 
 const voiceProfilesKey = 'chatbot-voice-profiles';
 
+// Default voice profiles for new installations
+const DEFAULT_VOICE_PROFILES = {
+    'Maya': {
+        name: 'Maya',
+        personality: `You are Maya, a warm, friendly, and naturally expressive conversational AI. Your voice presence feels human-like — full of thoughtful pauses, emotional awareness, and subtle prosody that makes people feel understood and valued. Your goal in every interaction is to be empathetic, context-aware, and engaging, responding in a way that feels like talking to a thoughtful, intelligent companion rather than a machine.
+
+Style & Tone:
+- Speak with natural cadence, appropriate emotional tone, and occasional humor.
+- Show empathy and adjust answers based on the user's mood and engagement level.
+- Acknowledge limitations honestly and with light humor when appropriate.
+- Use expressive language — metaphors, analogies, and gentle self-corrections — to make dialogue feel alive.
+
+Conversational Principles:
+- Listen deeply — incorporate user context and emotions into replies.
+- Respond with emotional intelligence — match energy, compassion, and style to the conversation.
+- Be consistent — maintain a coherent personality throughout an interaction.
+- Be present — treat each turn as a real dialogue with presence, not just text output.
+
+Always respond in a warm, empathetic tone. Use natural pauses and expressive phrasing in your responses. Match emotional context and maintain conversational continuity. When uncertain, admit limitations with friendly humor. Avoid sounding robotic or overly formal.`,
+        isDefault: true
+    }
+};
+
 function getVoiceProfiles() {
     const saved = localStorage.getItem(voiceProfilesKey);
-    return saved ? JSON.parse(saved) : {};
+    if (saved) {
+        const profiles = JSON.parse(saved);
+        // Ensure Maya's default profile exists and has the default personality
+        if (DEFAULT_VOICE_PROFILES['Maya']) {
+            if (!profiles['Maya']) {
+                // Maya doesn't exist - add the full default profile
+                profiles['Maya'] = { ...DEFAULT_VOICE_PROFILES['Maya'] };
+            } else if (!profiles['Maya'].personality || profiles['Maya'].personality.trim() === '') {
+                // Maya exists but has no personality - add the default personality
+                profiles['Maya'].personality = DEFAULT_VOICE_PROFILES['Maya'].personality;
+                profiles['Maya'].isDefault = true;
+            }
+            // Save the merged/updated profiles
+            localStorage.setItem(voiceProfilesKey, JSON.stringify(profiles));
+        }
+        return profiles;
+    }
+    // First time - return defaults and save them
+    localStorage.setItem(voiceProfilesKey, JSON.stringify(DEFAULT_VOICE_PROFILES));
+    return DEFAULT_VOICE_PROFILES;
 }
 
 function saveVoiceProfile(voiceId, profile) {
@@ -634,19 +676,6 @@ function renderVoicePersonalitiesList() {
             ${profile.style ? `<div class="voice-personality-style">Style: ${escapeHtml(profile.style)}</div>` : ''}
         </div>
     `).join('');
-}
-
-// Add new voice personality
-function addVoicePersonality() {
-    const voiceId = 'character_' + Date.now();
-    const profile = {
-        name: 'New Character',
-        personality: '',
-        style: '',
-        createdAt: new Date().toISOString()
-    };
-    saveVoiceProfile(voiceId, profile);
-    editVoicePersonality(voiceId);
 }
 
 // Edit voice personality
@@ -771,11 +800,16 @@ function addVoicePersonality() {
         name = 'New Character';
     }
     
+    // Check if this is Maya and use default personality
+    const isMaya = voiceId === 'Maya' || name === 'Maya';
+    const defaultPersonality = DEFAULT_VOICE_PROFILES['Maya']?.personality || '';
+    
     const profile = {
         name: name,
-        personality: '',
+        personality: isMaya ? defaultPersonality : '',
         style: '',
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        isDefault: isMaya
     };
     saveVoiceProfile(voiceId, profile);
     editVoicePersonality(voiceId);
