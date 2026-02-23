@@ -531,26 +531,26 @@ function setupEventListeners() {
     const settingsBtnCollapsed = document.getElementById('settingsBtnCollapsed');
     if (settingsBtnCollapsed) {
         settingsBtnCollapsed.addEventListener('click', () => {
-            loadSettings().then(() => {
-                settingsModal.classList.add('active');
-                // Load LLM models for llama.cpp if provider is already llama.cpp
-                if (providerSelect && providerSelect.value === 'llamacpp') {
-                    loadLlmModelsForLlamaCpp();
-                }
-            });
+            // Open modal immediately for responsiveness, load settings in background
+            settingsModal.classList.add('active');
+            loadSettings();
+            // Load LLM models for llama.cpp if provider is already llama.cpp
+            if (providerSelect && providerSelect.value === 'llamacpp') {
+                loadLlmModelsForLlamaCpp();
+            }
         });
     }
     
     // Settings button in header
     if (settingsBtn) {
         settingsBtn.addEventListener('click', () => {
-            loadSettings().then(() => {
-                settingsModal.classList.add('active');
-                // Load LLM models for llama.cpp if provider is already llama.cpp
-                if (providerSelect && providerSelect.value === 'llamacpp') {
-                    loadLlmModelsForLlamaCpp();
-                }
-            });
+            // Open modal immediately for responsiveness, load settings in background
+            settingsModal.classList.add('active');
+            loadSettings();
+            // Load LLM models for llama.cpp if provider is already llama.cpp
+            if (providerSelect && providerSelect.value === 'llamacpp') {
+                loadLlmModelsForLlamaCpp();
+            }
         });
     }
     
