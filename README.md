@@ -11,8 +11,8 @@ A modern AI voice platform by Autonomx - featuring chat, audiobook generation, A
 - **🎙️ AI Podcast Generator**: Create AI-generated podcast episodes
 - **🎤 Live Conversation**: Real-time voice-based conversation with AI
 - **👤 Voice Cloning**: Clone your voice from audio recordings
-- **🗣️ Text-to-Speech (TTS)**: Using Chatterbox for natural voice synthesis
-- **👂 Speech-to-Text (STT)**: Using Parakeet for voice transcription
+- **🗣️ Text-to-Speech (TTS)**: Using Chatterbox TTS Turbo for natural voice synthesis (~200ms latency)
+- **👂 Speech-to-Text (STT)**: Using NVIDIA Parakeet TDT 0.6B for fast, accurate voice transcription
 - **🎭 AI Roleplay** *(coming soon)*: Interactive role-playing experiences
 - **🔌 Multiple Providers**: Cerebras (fastest), OpenRouter (cloud), LM Studio (local), llama.cpp (local)
 
@@ -361,12 +361,19 @@ Edit `data/settings.json` or use the Settings modal:
 - Install dependencies: `pip install -r requirements.txt`
 
 ### TTS not working
-- Make sure XTTS server is running
+- Make sure Chatterbox TTS server is running (port 8020)
 - Check status in the header - click to manage
+- For Docker, ensure the container has GPU access
 
 ### STT not working
-- Make sure Parakeet STT is running
+- Make sure Parakeet STT is running (port 8000)
 - Check microphone permissions in browser
+- For Docker, ensure the container has GPU access
+
+### Docker build fails
+- Ensure you have the latest NVIDIA drivers
+- Try rebuilding with `docker-compose build --no-cache`
+- Check that Docker has access to your GPU
 
 ### LM Studio not connecting
 - Verify LM Studio is running
