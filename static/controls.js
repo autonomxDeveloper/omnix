@@ -365,7 +365,10 @@ if (document.readyState === 'loading') {
 // VOICE CLONING
 // ============================================================
 
-const voiceCloneBtn = document.getElementById('voiceCloneBtn');
+// Support both sidebar button formats (expanded and collapsed)
+const voiceCloneBtn = document.getElementById('voiceCloneBtn') || 
+                       document.getElementById('voiceCloneBtnOption') ||
+                       document.getElementById('voiceCloneBtnCollapsed');
 const voiceCloneModal = document.getElementById('voiceCloneModal');
 const closeVoiceClone = document.getElementById('closeVoiceClone');
 const voiceNameInput = document.getElementById('voiceName');
@@ -786,7 +789,10 @@ if (voiceCloneModal && voiceCloneModal.classList.contains('active')) {
 // AUDIOBOOK
 // ============================================================
 
-const audiobookBtn = document.getElementById('audiobookBtn');
+// Support both sidebar button formats (expanded and collapsed)
+const audiobookBtn = document.getElementById('audiobookBtn') || 
+                      document.getElementById('audiobookBtnOption') ||
+                      document.getElementById('audiobookBtnCollapsed');
 
 function setupAudiobook() {
     if (!audiobookBtn) return;
@@ -802,4 +808,29 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', setupAudiobook);
 } else {
     setupAudiobook();
+}
+
+// ============================================================
+// PODCAST
+// ============================================================
+
+// Support both sidebar button formats (expanded and collapsed)
+const podcastBtn = document.getElementById('podcastBtn') || 
+                    document.getElementById('podcastBtnOption') ||
+                    document.getElementById('podcastBtnCollapsed');
+
+function setupPodcast() {
+    if (!podcastBtn) return;
+    
+    podcastBtn.addEventListener('click', () => {
+        if (typeof openPodcastModal === 'function') {
+            openPodcastModal();
+        }
+    });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupPodcast);
+} else {
+    setupPodcast();
 }
