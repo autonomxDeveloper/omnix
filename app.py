@@ -3395,10 +3395,21 @@ def generate_podcast_episode():
             
             script_prompt_parts.extend([
                 "",
-                "Write a script with natural dialogue. Each line should be:",
-                "SPEAKER_NAME: Their dialogue here.",
+                "=== OUTPUT FORMAT ===",
+                "Each line MUST be in this exact format:",
+                "SPEAKER_NAME: Their dialogue text here.",
                 "",
-                "Make it conversational with natural speech patterns. Write approximately 100-150 words per minute of content.",
+                "Example:",
+                "Host: Welcome to our show! Today we're discussing an interesting topic.",
+                "Guest: Thanks for having me! I'm excited to share my thoughts.",
+                "Host: Let's dive right in. What's your take on this?",
+                "",
+                "RULES:",
+                "- Each line MUST start with a speaker name followed by a colon",
+                "- Only one speaker per line",
+                "- No narration or stage directions in brackets",
+                "- Natural, conversational dialogue",
+                "",
                 "Generate 10-15 dialogue turns for each speaker."
             ])
             
