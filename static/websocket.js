@@ -38,6 +38,8 @@ let streamingAudioContext = null;
 let streamingSource = null;
 let audioChunkQueue = [];
 let isPlayingAudioChunk = false;
+let lastChunkEndTime = 0;
+let previousChunkEnd = null; // For cross-fading
 
 // ============================================================
 // STREAMING STT WEBSOCKET
@@ -240,6 +242,12 @@ function connectStreamingTTS() {
 
 // Play streaming audio chunk immediately (with queue for sequential playback)
 async function playStreamingAudioChunk(audioBase64, sampleRate = 24000) {
+    // Check if stop was requested
+    if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
+        console.log('[WS-AUDIO] Skipping chunk - stop requested');
+        return;
+    }
+    
     // Add to queue
     audioChunkQueue.push({ audioBase64, sampleRate });
     
@@ -253,13 +261,26 @@ async function playStreamingAudioChunk(audioBase64, sampleRate = 24000) {
 }
 
 async function playNextAudioChunk() {
+    // Check if stop was requested
+    if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
+        console.log('[WS-AUDIO] Stopping playback - stop requested');
+        audioChunkQueue = [];
+        isPlayingAudioChunk = false;
+        previousChunkEnd = null;
+        return;
+    }
+    
     if (audioChunkQueue.length === 0) {
         isPlayingAudioChunk = false;
+        previousChunkEnd = null;
         return;
     }
     
     isPlayingAudioChunk = true;
     const { audioBase64, sampleRate } = audioChunkQueue.shift();
+    
+    // Track if this is the first chunk
+    const isFirstChunk = (previousChunkEnd === null);
     
     try {
         // Decode base64 to bytes
@@ -280,22 +301,55 @@ async function playNextAudioChunk() {
             await streamingAudioContext.resume();
         }
         
-        // Convert PCM16 to float32 and create AudioBuffer
-        // Handle odd byte lengths by padding with zero
+        // Convert PCM16 to float32 with proper handling
         let buffer = uint8Array.buffer;
         if (buffer.byteLength % 2 !== 0) {
-            // Pad with a zero byte to make it even
             const paddedBuffer = new ArrayBuffer(buffer.byteLength + 1);
             new Uint8Array(paddedBuffer).set(uint8Array);
-            paddedBuffer[buffer.byteLength] = 0;
             buffer = paddedBuffer;
         }
         
         const pcm16 = new Int16Array(buffer);
-        const float32 = new Float32Array(pcm16.length);
-        for (let i = 0; i < pcm16.length; i++) {
-            float32[i] = pcm16[i] / 32767.0;
+        const numSamples = pcm16.length;
+        const float32 = new Float32Array(numSamples);
+        
+        // Convert to float32 - use proper scaling for signed 16-bit
+        // Scale by 1/32768 for symmetric range
+        for (let i = 0; i < numSamples; i++) {
+            float32[i] = pcm16[i] / 32768.0;
         }
+        
+        // Only apply fade-in to the FIRST chunk to avoid startup click
+        if (isFirstChunk) {
+            const fadeLength = Math.min(64, Math.floor(numSamples / 4)); // ~2.7ms fade
+            for (let i = 0; i < fadeLength; i++) {
+                const t = i / fadeLength;
+                float32[i] *= t; // Linear fade-in
+            }
+        }
+        
+        // Save end of this chunk BEFORE any modifications for cross-fade with next chunk
+        const crossFadeLength = Math.min(32, Math.floor(numSamples / 32)); // ~1.3ms
+        
+        // Save the raw end samples for cross-fading with the next chunk
+        const chunkEnd = new Float32Array(crossFadeLength);
+        for (let i = 0; i < crossFadeLength; i++) {
+            chunkEnd[i] = float32[numSamples - crossFadeLength + i];
+        }
+        
+        // Cross-fade start of this chunk with end of previous chunk
+        if (previousChunkEnd && previousChunkEnd.length === crossFadeLength) {
+            for (let i = 0; i < crossFadeLength; i++) {
+                const t = i / crossFadeLength;
+                // Equal-power cross-fade for smoother transitions
+                const fadeIn = Math.sin(t * Math.PI / 2);
+                const fadeOut = Math.cos(t * Math.PI / 2);
+                float32[i] = previousChunkEnd[i] * fadeOut + float32[i] * fadeIn;
+            }
+        }
+        
+        // Store end samples for next chunk's cross-fade
+        previousChunkEnd = chunkEnd;
         
         const audioBuffer = streamingAudioContext.createBuffer(1, float32.length, sampleRate);
         audioBuffer.getChannelData(0).set(float32);

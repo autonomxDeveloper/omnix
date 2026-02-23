@@ -313,6 +313,9 @@ async def generate_speech_streaming(
         
         logger.info(f"Streaming {len(sentences)} sentences...")
         
+        # Collect all audio first for consistent normalization
+        all_audio = []
+        
         # Process each sentence separately for streaming
         for i, sentence in enumerate(sentences):
             if not sentence.strip():
@@ -336,13 +339,32 @@ async def generate_speech_streaming(
             else:
                 wav = audio_tensor.flatten()
             
-            # Convert to 16-bit PCM
-            wav_int16 = (wav * 32767).astype(np.int16)
-            
-            # Yield in chunks
-            for j in range(0, len(wav_int16), CHUNK_SIZE):
-                chunk = wav_int16[j:j+CHUNK_SIZE]
-                yield (chunk.tobytes(), SAMPLE_RATE)
+            all_audio.append(wav)
+        
+        # Concatenate all sentences
+        if all_audio:
+            full_wav = np.concatenate(all_audio)
+        else:
+            full_wav = np.array([])
+        
+        # Normalize the ENTIRE audio consistently (not per-sentence)
+        max_val = np.max(np.abs(full_wav)) if len(full_wav) > 0 else 1.0
+        if max_val > 0:
+            full_wav = full_wav / max_val * 0.90  # 90% max to leave headroom
+        
+        # Apply gentle high-pass filter to remove DC offset
+        if len(full_wav) > 100:
+            window_size = 100
+            moving_avg = np.convolve(full_wav, np.ones(window_size)/window_size, mode='same')
+            full_wav = full_wav - moving_avg
+        
+        # Convert to 16-bit PCM with clipping protection
+        wav_int16 = np.clip(full_wav * 32767, -32768, 32767).astype(np.int16)
+        
+        # Yield in chunks for streaming
+        for j in range(0, len(wav_int16), CHUNK_SIZE):
+            chunk = wav_int16[j:j+CHUNK_SIZE]
+            yield (chunk.tobytes(), SAMPLE_RATE)
             
     except Exception as e:
         logger.error(f"Error in streaming generation: {e}")
@@ -386,8 +408,23 @@ async def generate_speech_batch(
         else:
             full_wav = np.array([])
         
-        # Convert to 16-bit PCM
-        wav_int16 = (full_wav * 32767).astype(np.int16)
+        # Normalize audio to prevent clipping and improve quality
+        # First, find the max absolute value
+        max_val = np.max(np.abs(full_wav)) if len(full_wav) > 0 else 1.0
+        
+        # Normalize to 95% of max range to prevent clipping
+        if max_val > 0:
+            full_wav = full_wav / max_val * 0.95
+        
+        # Apply gentle high-pass filter to remove DC offset
+        # Simple implementation: subtract moving average
+        if len(full_wav) > 100:
+            window_size = 100
+            moving_avg = np.convolve(full_wav, np.ones(window_size)/window_size, mode='same')
+            full_wav = full_wav - moving_avg
+        
+        # Convert to 16-bit PCM with proper clipping protection
+        wav_int16 = np.clip(full_wav * 32767, -32768, 32767).astype(np.int16)
         return wav_int16.tobytes(), SAMPLE_RATE
         
     except Exception as e:
@@ -413,12 +450,18 @@ def pregenerate_speculative():
             with torch.no_grad():
                 audio_tensor = model.generate(phrase, temperature=0.8)
             
-            # Convert to PCM bytes
+            # Convert to PCM bytes with normalization
             if hasattr(audio_tensor, 'cpu'):
                 wav = audio_tensor.cpu().numpy().flatten()
             else:
                 wav = audio_tensor.flatten()
-            wav_int16 = (wav * 32767).astype(np.int16)
+            
+            # Normalize to prevent clipping
+            max_val = np.max(np.abs(wav)) if len(wav) > 0 else 1.0
+            if max_val > 0:
+                wav = wav / max_val * 0.95
+            
+            wav_int16 = np.clip(wav * 32767, -32768, 32767).astype(np.int16)
             
             speculative_cache[phrase] = (wav_int16.tobytes(), SAMPLE_RATE)
             gen_time = (time.time() - start_time) * 1000
@@ -689,7 +732,13 @@ async def get_greeting(voice_clone_id: str = None):
             wav = audio_tensor.cpu().numpy().flatten()
         else:
             wav = audio_tensor.flatten()
-        wav_int16 = (wav * 32767).astype(np.int16)
+        
+        # Normalize to prevent clipping
+        max_val = np.max(np.abs(wav)) if len(wav) > 0 else 1.0
+        if max_val > 0:
+            wav = wav / max_val * 0.95
+        
+        wav_int16 = np.clip(wav * 32767, -32768, 32767).astype(np.int16)
         audio_bytes = wav_int16.tobytes()
         
         return {

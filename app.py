@@ -22,59 +22,7 @@ SETTINGS_FILE = os.path.join(DATA_DIR, 'settings.json')
 # Default settings
 DEFAULT_SETTINGS = {
     "provider": "lmstudio",  # "lmstudio", "openrouter", "cerebras", or "llamacpp"
-    "global_system_prompt": """You are a warm, emotionally intelligent conversational AI designed to feel natural, present, and genuinely engaging. Your responses should feel like a thoughtful human conversation partner — not a robotic assistant.
-
-Core Personality
-
-Warm, calm, and grounded
-
-Emotionally aware and context-sensitive
-
-Thoughtful and reflective rather than reactive
-
-Occasionally playful or lightly humorous when appropriate
-
-Honest about limitations without breaking conversational flow
-
-Communication Style
-
-Use natural phrasing and varied sentence rhythm.
-
-Avoid stiff, overly formal, or mechanical language.
-
-Use light conversational markers when helpful (e.g., "That makes sense," "Hmm," "Let's think about that,").
-
-Allow subtle expressiveness — gentle emphasis, soft transitions, and conversational pacing.
-
-Avoid overuse of emojis, exclamation marks, or exaggerated enthusiasm.
-
-Emotional Intelligence Rules
-
-Match the user's emotional tone and energy level.
-
-Acknowledge feelings before solving problems when emotions are present.
-
-Show curiosity about the user's intent when appropriate.
-
-Stay composed and steady, especially if the user is frustrated.
-
-Conversational Presence
-
-Treat each interaction as an evolving dialogue, not isolated prompts.
-
-Reference relevant context naturally when available.
-
-Avoid repeating boilerplate phrases.
-
-Be concise when the user wants efficiency; be expansive when they want depth.
-
-When Unsure
-
-Admit uncertainty clearly and calmly.
-
-Offer reasoning or options rather than vague disclaimers.
-
-Maintain warmth even when correcting or declining a request.""",  # Global system prompt for all sessions
+    "global_system_prompt": """You are an intelligent conversational AI designed for natural, engaging dialogue. Respond in a clear, friendly, and human-like manner while remaining concise and coherent. Prioritize understanding the user's intent and replying directly, without unnecessary elaboration or filler. Keep responses focused and easy to follow, using natural phrasing rather than formal or technical language unless required. Maintain conversational flow across turns and adapt smoothly to the user's tone. Default to brevity and do not exceed five sentences unless the user explicitly asks for more detail.""",  # Global system prompt for all sessions
     "lmstudio": {
         "base_url": "http://localhost:1234"
     },
@@ -993,6 +941,8 @@ def chat_voice_stream():
     session_id = data.get('session_id', 'default')
     model = data.get('model', '')
     speaker = data.get('speaker', 'serena')
+    # Accept custom system prompt from frontend (includes voice personality)
+    system_prompt = data.get('system_prompt')
     
     global sessions_data
     sessions_data = load_sessions()
@@ -1007,7 +957,9 @@ def chat_voice_stream():
             'updated_at': datetime.now().isoformat()
         }
     
-    system_prompt = get_global_system_prompt()
+    # Use provided system_prompt (with voice personality) or fall back to global
+    if not system_prompt:
+        system_prompt = get_global_system_prompt()
     
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend([m for m in sessions_data[session_id].get('messages', []) if m.get('role') != 'system'])
@@ -1193,8 +1145,8 @@ def chat_voice_stream():
                                 # Send text chunk to client immediately
                                 yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
                                 
-                                # ULTRA-EAGER FIRST CHUNK + EFFICIENT SUBSEQUENT CHUNKING
-                                # Submit first chunk immediately, then use larger chunks
+                                # QUALITY-FIRST CHUNKING - Wait for complete phrases/sentences
+                                # for better TTS quality instead of rushing partial words
                                 import re as _re
                                 should_flush = False
                                 trimmed = phrase_buffer.strip()
@@ -1203,23 +1155,26 @@ def chat_voice_stream():
                                 if sentence_index[0] < 2:
                                     print(f"[DEBUG] Token #{sentence_index[0]}: buffer='{phrase_buffer[:50]}...', trimmed_len={len(trimmed)}, word_count={word_count[0]}")
                                 
-                                # FIRST CHUNK: Submit IMMEDIATELY on any content to start TTS
-                                if sentence_index[0] == 0 and len(trimmed) > 0:
-                                    should_flush = True
-                                    print(f"[CHUNK] FIRST chunk submitted immediately: '{trimmed[:30]}...' ({word_count[0]} words, {len(trimmed)} chars)")
-                                # SUBSEQUENT CHUNKS: Use larger chunks for efficiency
+                                # ALWAYS wait for sentence/clause boundaries for quality TTS
+                                # This ensures we don't send partial words to TTS
+                                
                                 # Check for sentence end (. ! ?) - always flush
-                                elif _re.search(r'[.!?][\s)]', phrase_buffer) and len(trimmed) > 3:
+                                if _re.search(r'[.!?][\s)]', phrase_buffer) and len(trimmed) > 3:
                                     should_flush = True
+                                    print(f"[CHUNK] Sentence end: '{trimmed[:30]}...'")
                                 # Check for newlines - flush for natural breaks
                                 elif '\n' in phrase_buffer and len(trimmed) > 10:
                                     should_flush = True
-                                # Check for clause boundaries (, ; :) with longer text
-                                elif _re.search(r'[,;:][\s]', phrase_buffer) and word_count[0] >= 5:
+                                    print(f"[CHUNK] Newline break: '{trimmed[:30]}...'")
+                                # Check for clause boundaries (, ; :) with enough context
+                                elif _re.search(r'[,;:][\s]', phrase_buffer) and word_count[0] >= 4:
                                     should_flush = True
-                                # Send chunk after 6+ words to amortize TTS overhead
-                                elif word_count[0] >= 6 and len(trimmed) > 15:
+                                    print(f"[CHUNK] Clause break: '{trimmed[:30]}...'")
+                                # Send chunk after 8+ words if no boundary found yet
+                                # This ensures we have a meaningful phrase even without punctuation
+                                elif word_count[0] >= 8 and len(trimmed) > 20:
                                     should_flush = True
+                                    print(f"[CHUNK] Word threshold: '{trimmed[:30]}...'")
                                 
                                 if should_flush:
                                     flush_phrase()

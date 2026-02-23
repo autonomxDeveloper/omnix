@@ -21,10 +21,16 @@ cd /d "%~dp0"
 echo [Setup] Installing Python dependencies...
 pip install -q fastapi uvicorn websockets aiohttp pydub numpy soundfile 2>nul
 
+:: Set PARAKEET_FORCE_CPU=true if you want STT to use CPU (e.g., if GPU memory is limited)
+:: Default is GPU mode - both LLM and STT share the GPU
+if not defined PARAKEET_FORCE_CPU (
+    set PARAKEET_FORCE_CPU=false
+)
+
 :: Start Parakeet STT Server in background
 echo [1/4] Starting Parakeet STT Server on port 8000...
 if exist "%~dp0parakeet_stt_server.py" (
-    start "Parakeet STT" cmd /k "cd /d "%~dp0" && python parakeet_stt_server.py"
+    start "Parakeet STT" cmd /k "cd /d "%~dp0" && set PARAKEET_FORCE_CPU=%PARAKEET_FORCE_CPU% && python parakeet_stt_server.py"
 ) else (
     echo WARNING: parakeet_stt_server.py not found - STT will not be available
     echo Run setup to install nemo_toolkit[asr].

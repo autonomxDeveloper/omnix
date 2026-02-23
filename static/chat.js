@@ -617,6 +617,11 @@ async function speakText(text, speaker = 'en') {
         return;
     }
     
+    // Reset stop flag - this function is called from "Speak" button in regular chat
+    if (typeof stopAudioRequested !== 'undefined') {
+        stopAudioRequested = false;
+    }
+    
     console.log('[TTS] speakText called with text length:', text.length, 'speaker:', speaker);
     
     if (conversationMode) {
@@ -772,6 +777,13 @@ async function speakText(text, speaker = 'en') {
 function playTTS(audioBase64, sampleRate = null) {
     return new Promise((resolve, reject) => {
         try {
+            // Check if stop was requested (from voice.js)
+            if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
+                console.log('[TTS] Skipping playback - stop requested');
+                resolve();
+                return;
+            }
+            
             if (currentAudio) {
                 currentAudio.pause();
                 currentAudio = null;

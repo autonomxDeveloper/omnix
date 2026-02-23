@@ -3,7 +3,7 @@
  * Voice recording, VAD, and conversation mode
  */
 
-// Conversation Mode State
+// Voice Mode State
 let conversationMode = false;
 let alwaysListening = false;
 let isRecording = false;
@@ -49,6 +49,7 @@ const conversationMicBtn = document.getElementById('conversationMicBtn');
 const conversationInput = document.getElementById('conversationInput');
 const conversationSendBtn = document.getElementById('conversationSendBtn');
 const alwaysListeningBtn = document.getElementById('alwaysListeningBtn');
+const tapToTalkBtn = document.getElementById('tapToTalkBtn');
 
 // Initialize conversation mode
 function initConversationMode() {
@@ -72,7 +73,7 @@ function toggleConversationMode() {
         messageInput.placeholder = 'Type or hold mic to speak...';
         switchToConversationView();
     } else {
-        conversationStatus.textContent = 'Conversation Mode';
+        conversationStatus.textContent = 'Voice Mode';
         micBtn.style.display = 'none';
         messageInput.placeholder = 'Type your message...';
         switchToRegularView();
@@ -81,6 +82,11 @@ function toggleConversationMode() {
 
 // Exit conversation mode
 function exitConversationMode() {
+    console.log('[VOICE] Exit conversation mode requested');
+    
+    // Signal all audio to stop
+    stopAudioRequested = true;
+    
     // Stop always listening first
     if (alwaysListening) {
         stopAlwaysListening();
@@ -105,11 +111,20 @@ function exitConversationMode() {
     // Reset processing state
     isProcessing = false;
     
-    // Stop any playing audio
+    // Stop any playing audio immediately
     if (currentAudio) {
         currentAudio.pause();
+        currentAudio.currentTime = 0;
         currentAudio = null;
+        console.log('[VOICE] Stopped current audio on exit');
     }
+    
+    // Clear global audio queue
+    globalAudioPlayQueue = [];
+    globalAudioPlaying = false;
+    
+    // Clear TTS queue
+    clearTTSQueue();
     
     // Hide the circle indicator
     hideCircleIndicator();
@@ -118,7 +133,7 @@ function exitConversationMode() {
     alwaysListening = false;
     conversationToggle.classList.remove('active');
     conversationControls.style.display = 'none';
-    conversationStatus.textContent = 'Conversation Mode';
+    conversationStatus.textContent = 'Voice Mode';
     micBtn.style.display = 'none';
     messageInput.placeholder = 'Type your message...';
     switchToRegularView();
@@ -139,6 +154,10 @@ function toggleAlwaysListening() {
     }
     
     if (alwaysListening) {
+        // Hide tap to talk button when auto is ON
+        if (tapToTalkBtn) {
+            tapToTalkBtn.classList.remove('visible');
+        }
         updateConversationStatus('🎤 Auto-listening - Speak now!', 'listening');
         showCircleIndicator('listening');
         startAlwaysListening();
@@ -162,9 +181,112 @@ function toggleAlwaysListening() {
         // Reset processing state
         isProcessing = false;
         
-        updateConversationStatus('Ready to chat');
+        // Show tap to talk button when auto is OFF
+        if (tapToTalkBtn) {
+            tapToTalkBtn.classList.add('visible');
+        }
+        updateConversationStatus('Tap to speak');
         showCircleIndicator('idle');
         stopAlwaysListening();
+    }
+}
+
+// Start tap to talk recording
+async function startTapToTalkRecording() {
+    if (!mediaRecorderSupported || !conversationMode || isRecording) return;
+    
+    if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+        console.log('TTS interrupted by tap to talk');
+    }
+    
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        
+        audioChunks = [];
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+        
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+                audioChunks.push(event.data);
+            }
+        };
+        
+        mediaRecorder.onstop = async () => {
+            stream.getTracks().forEach(track => track.stop());
+            
+            if (audioChunks.length > 0) {
+                await transcribeTapToTalkAudio();
+            }
+        };
+        
+        mediaRecorder.start();
+        isRecording = true;
+        
+        if (tapToTalkBtn) {
+            tapToTalkBtn.classList.add('recording');
+            tapToTalkBtn.querySelector('span').textContent = 'Listening...';
+        }
+        updateConversationStatus('🎤 Listening...', 'listening');
+    } catch (e) {
+        console.error('Failed to start tap to talk recording:', e);
+        stopTapToTalkRecording();
+    }
+}
+
+// Stop tap to talk recording
+function stopTapToTalkRecording() {
+    if (!isRecording) return;
+    
+    isRecording = false;
+    
+    if (tapToTalkBtn) {
+        tapToTalkBtn.classList.remove('recording');
+        tapToTalkBtn.querySelector('span').textContent = 'Tap to Talk';
+    }
+    
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+    }
+    
+    updateConversationStatus('Processing...', 'speaking');
+}
+
+// Transcribe tap to talk audio
+async function transcribeTapToTalkAudio() {
+    if (audioChunks.length === 0) return;
+    
+    const sttStartTime = performance.now();
+    
+    try {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'recording.webm');
+        
+        const response = await fetch('/api/stt', { method: 'POST', body: formData });
+        const data = await response.json();
+        
+        const sttDuration = (performance.now() - sttStartTime).toFixed(0);
+        console.log(`⏱️ [TIMING] STT (Audio → Text): ${sttDuration}ms`);
+        
+        if (data.success && data.text && data.text.trim()) {
+            conversationInput.value = data.text;
+            await processVADTranscript(data.text, sttDuration);
+        } else {
+            updateConversationStatus('Tap to speak');
+            if (tapToTalkBtn) {
+                tapToTalkBtn.classList.add('visible');
+            }
+        }
+    } catch (error) {
+        console.error('Tap to talk STT Error:', error);
+        updateConversationStatus('Tap to speak');
+        if (tapToTalkBtn) {
+            tapToTalkBtn.classList.add('visible');
+        }
+    } finally {
+        audioChunks = [];
     }
 }
 
@@ -464,6 +586,16 @@ function setupConversationMode() {
     micBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
     micBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
     
+    // Tap to Talk button events
+    if (tapToTalkBtn) {
+        tapToTalkBtn.addEventListener('mousedown', startTapToTalkRecording);
+        tapToTalkBtn.addEventListener('mouseup', stopTapToTalkRecording);
+        tapToTalkBtn.addEventListener('mouseleave', stopTapToTalkRecording);
+        
+        tapToTalkBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTapToTalkRecording(); });
+        tapToTalkBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTapToTalkRecording(); });
+    }
+    
     setupConversationViewInput();
 }
 
@@ -530,6 +662,9 @@ function addConversationMessageAI(content) {
 
 // Switch to conversation view
 async function switchToConversationView() {
+    // Reset the stop flag when entering conversation mode
+    stopAudioRequested = false;
+    
     welcomeMessage.classList.add('hidden');
     messagesContainer.style.display = 'none';
     typingIndicator.style.display = 'none';
@@ -915,6 +1050,11 @@ let ttsAudioQueue = [];
 let ttsPlaying = false;
 let ttsFetchQueue = []; // Pre-fetch audio while previous is playing
 
+// Global audio playback control
+let globalAudioPlayQueue = [];
+let globalAudioPlaying = false;
+let stopAudioRequested = false;
+
 function enqueueTTS(text, speaker) {
     if (!text.trim()) return Promise.resolve();
     
@@ -974,6 +1114,9 @@ function clearTTSQueue() {
 async function sendConversationMessageREST(message, totalStartTime = null, sttDuration = null) {
     if (!message || isLoading) return;
     
+    // Reset stop flag at start of new conversation
+    stopAudioRequested = false;
+    
     // Start timing if not provided
     if (!totalStartTime) {
         totalStartTime = performance.now();
@@ -1010,40 +1153,55 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
     let firstAudioReceivedTime = null;
     let lastContentReceivedTime = null;
     
-    // Audio playback queue - plays audio chunks in order from server
-    let audioPlayQueue = [];
-    let audioPlaying = false;
+    // Use global audio playback queue
+    globalAudioPlayQueue = [];
+    globalAudioPlaying = false;
     let totalAudioPlayTime = 0;
     let audioPlayStartTime = 0;
     
     async function playNextAudio() {
-        // If already playing or nothing in queue, just return
-        // The next chunk will trigger playNextAudio when it arrives
-        if (audioPlaying || audioPlayQueue.length === 0) return;
+        // Check if stop was requested
+        if (stopAudioRequested) {
+            globalAudioPlaying = false;
+            globalAudioPlayQueue = [];
+            return;
+        }
         
-        audioPlaying = true;
+        // If already playing or nothing in queue, just return
+        if (globalAudioPlaying || globalAudioPlayQueue.length === 0) return;
+        
+        globalAudioPlaying = true;
         audioPlayStartTime = performance.now();
         
-        const { audioBase64, sampleRate } = audioPlayQueue.shift();
+        const { audioBase64, sampleRate } = globalAudioPlayQueue.shift();
         try {
             await playTTS(audioBase64, sampleRate);
         } catch (e) {
             console.error('Audio playback error:', e);
         }
         
+        // Check stop flag again after playback
+        if (stopAudioRequested) {
+            globalAudioPlaying = false;
+            globalAudioPlayQueue = [];
+            return;
+        }
+        
         totalAudioPlayTime += (performance.now() - audioPlayStartTime);
-        audioPlaying = false;
+        globalAudioPlaying = false;
         
         // Immediately check for more in queue - recursive call without delay
-        if (audioPlayQueue.length > 0) {
+        if (globalAudioPlayQueue.length > 0 && !stopAudioRequested) {
             // Use setTimeout to allow event loop to process
             setTimeout(() => playNextAudio(), 0);
         }
     }
     
     function enqueueAudio(audioBase64, sampleRate) {
-        const isFirst = audioPlayQueue.length === 0;
-        audioPlayQueue.push({ audioBase64, sampleRate });
+        // Don't queue more audio if stop requested
+        if (stopAudioRequested) return;
+        
+        globalAudioPlayQueue.push({ audioBase64, sampleRate });
         
         updateConversationStatus('🔊 Speaking...', 'speaking');
         showCircleIndicator('speaking');
@@ -1054,6 +1212,16 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
     }
     
     try {
+        // Get combined system prompt (global + voice personality)
+        const speaker = ttsSpeaker.value;
+        let systemPrompt = null;
+        
+        // Use the combined system prompt if available
+        if (typeof getCombinedSystemPrompt === 'function') {
+            systemPrompt = getCombinedSystemPrompt(speaker);
+            console.log('[VOICE] Using combined system prompt for speaker:', speaker);
+        }
+        
         const response = await fetch('/api/chat/voice-stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1061,7 +1229,8 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
                 message: message,
                 session_id: sessionId,
                 model: modelSelect.value,
-                speaker: ttsSpeaker.value
+                speaker: speaker,
+                system_prompt: systemPrompt
             })
         });
         
@@ -1135,8 +1304,8 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
             }
         }
         
-        // Wait for all queued audio to finish playing
-        while (audioPlaying || audioPlayQueue.length > 0) {
+        // Wait for all queued audio to finish playing (or stop requested)
+        while ((globalAudioPlaying || globalAudioPlayQueue.length > 0) && !stopAudioRequested) {
             await new Promise(r => setTimeout(r, 100));
         }
         
@@ -1176,6 +1345,12 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
         if (alwaysListening) {
             updateConversationStatus('🎤 Auto-listening - Speak now!', 'listening');
             showCircleIndicator('listening');
+        } else {
+            // Show tap to talk button when auto is OFF
+            updateConversationStatus('Tap to speak');
+            if (tapToTalkBtn) {
+                tapToTalkBtn.classList.add('visible');
+            }
         }
         
         renderSessionList();

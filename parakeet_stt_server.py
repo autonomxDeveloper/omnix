@@ -21,24 +21,98 @@ from pydantic import BaseModel, Field
 import uvicorn
 import asyncio
 import base64
+import os
+import traceback
 
 # Configuration
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "cpu"  # Default to CPU to avoid GPU conflicts with LLM
 MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v2"
 
 # Global model instance
 model = None
 
-def load_model():
-    """Load the ASR model on startup"""
-    global model
+# Track if we're in fallback mode
+gpu_fallback_to_cpu = False
+
+def safe_cuda_sync():
+    """Safely synchronize CUDA device if available"""
     try:
-        model = ASRModel.from_pretrained(model_name=MODEL_NAME)
-        model.eval()
-        print(f"Model {MODEL_NAME} loaded successfully on {device}")
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
     except Exception as e:
-        print(f"Failed to load model: {e}")
-        model = None
+        print(f"[STT] CUDA sync warning: {e}")
+
+def load_model():
+    """Load the ASR model on startup - CPU by default to avoid LLM conflicts"""
+    global model, device, gpu_fallback_to_cpu
+    
+    # Check environment for mode preference
+    # Default to CPU because LLM (llama.cpp) typically uses GPU
+    # and CUDA context conflicts cause crashes
+    force_cpu = os.environ.get('PARAKEET_FORCE_CPU', 'true').lower() == 'true'
+    try_gpu = os.environ.get('PARAKEET_TRY_GPU', 'false').lower() == 'true'
+    
+    print(f"[STT] Environment: PARAKEET_FORCE_CPU={force_cpu}, PARAKEET_TRY_GPU={try_gpu}")
+    
+    if force_cpu:
+        print("[STT] CPU mode (default) - avoiding GPU conflicts with LLM")
+        device = "cpu"
+    elif try_gpu and torch.cuda.is_available():
+        print("[STT] Attempting GPU mode (experimental)")
+        device = "cuda"
+    else:
+        print("[STT] CPU mode - stable operation")
+        device = "cpu"
+    
+    print(f"[STT] Loading model on {device}...")
+    
+    try:
+        # Set CUDA device explicitly if using GPU
+        if device == "cuda":
+            torch.cuda.set_device(0)
+            # Clear any existing CUDA state
+            torch.cuda.empty_cache()
+            gc.collect()
+        
+        model = ASRModel.from_pretrained(model_name=MODEL_NAME)
+        model.to(device)
+        model.eval()
+        
+        print(f"[STT] Model {MODEL_NAME} loaded successfully on {device}")
+        
+        # Log GPU info if available
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            print(f"[STT] GPU available: {gpu_name} ({gpu_memory:.1f} GB)")
+            if device == "cpu":
+                print(f"[STT] Running on CPU to avoid GPU conflicts with LLM")
+                
+    except Exception as e:
+        print(f"[STT] Failed to load model on {device}: {e}")
+        traceback.print_exc()
+        
+        # If GPU failed, try CPU fallback
+        if device == "cuda":
+            print("[STT] GPU failed, falling back to CPU...")
+            device = "cpu"
+            gpu_fallback_to_cpu = True
+            
+            try:
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+                model = ASRModel.from_pretrained(model_name=MODEL_NAME)
+                model.to(device)
+                model.eval()
+                print(f"[STT] Model loaded on {device} (CPU fallback)")
+            except Exception as e2:
+                print(f"[STT] CPU fallback also failed: {e2}")
+                traceback.print_exc()
+                model = None
+        else:
+            model = None
 
 # Pydantic models for API
 class TranscriptionSegment(BaseModel):

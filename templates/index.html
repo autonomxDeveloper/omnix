@@ -300,6 +300,15 @@
                                 <path d="M12 17V21M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                             </svg>
                         </div>
+                        <!-- Tap to Talk Button (shown when auto is OFF) -->
+                        <button id="tapToTalkBtn" class="tap-to-talk-btn" title="Tap to talk">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                                <path d="M12 1C10.9 1 10 1.9 10 3V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V3C14 1.9 13.1 1 12 1Z" stroke="currentColor" stroke-width="2"/>
+                                <path d="M19 10V12C19 15.866 15.866 19 12 19C8.13401 19 5 15.866 5 12V10" stroke="currentColor" stroke-width="2"/>
+                                <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                            <span>Tap to Talk</span>
+                        </button>
                     </div>
 
                     <div class="conversation-status-message" id="conversationStatusMessage" style="display: none;">
@@ -333,13 +342,13 @@
                 <!-- Conversation Mode Controls -->
                 <div class="conversation-controls" id="conversationControls" style="display: none;">
                     <div class="conversation-header">
-                        <span class="conversation-status" id="conversationStatus">Conversation Mode</span>
+                        <span class="conversation-status" id="conversationStatus">Voice Mode</span>
                         <span class="tts-lang-label">TTS:</span>
                     </div>
                 </div>
                 
                 <div class="input-container">
-                    <button id="micBtn" class="mic-btn" title="Hold to speak (Conversation Mode)">
+                    <button id="micBtn" class="mic-btn" title="Hold to speak (Voice Mode)">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
                             <path d="M12 1C10.9 1 10 1.9 10 3V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V3C14 1.9 13.1 1 12 1Z" stroke="currentColor" stroke-width="2"/>
                             <path d="M19 10V12C19 15.866 15.866 19 12 19C8.13401 19 5 15.866 5 12V10" stroke="currentColor" stroke-width="2"/>
@@ -359,7 +368,7 @@
                             <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2"/>
                         </svg>
                     </button>
-                    <button id="conversationToggle" class="conversation-toggle" title="Toggle Conversation Mode">
+                    <button id="conversationToggle" class="conversation-toggle" title="Voice Mode - Talk to AI with your voice">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
                             <path d="M12 2C8.13 2 5 5.13 5 9C5 11.38 6.19 13.47 8 14.74V17" stroke="currentColor" stroke-width="2"/>
                             <path d="M12 14.74C13.81 13.47 15 11.38 15 9C15 5.13 11.87 2 8 2" stroke="currentColor" stroke-width="2"/>
