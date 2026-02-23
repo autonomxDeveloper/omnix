@@ -14,7 +14,7 @@ A modern AI voice platform by Autonomx - featuring chat, audiobook generation, A
 - **🗣️ Text-to-Speech (TTS)**: Using Chatterbox for natural voice synthesis
 - **👂 Speech-to-Text (STT)**: Using Parakeet for voice transcription
 - **🎭 AI Roleplay** *(coming soon)*: Interactive role-playing experiences
-- **🔌 Multiple Providers**: Cerebras (fastest), OpenRouter (cloud), LM Studio (local)
+- **🔌 Multiple Providers**: Cerebras (fastest), OpenRouter (cloud), LM Studio (local), llama.cpp (local)
 
 ## Prerequisites
 
@@ -59,39 +59,66 @@ Then open your browser to http://localhost:5000
 
 ## Docker Deployment
 
-### Build the Docker Image
+### Option 1: Build and Run Separately (Recommended)
+
+This approach gives you more control over the build process:
+
+**Step 1: Build the Docker Image**
 
 ```bash
 docker build -t omnix .
 ```
 
-### Run with Docker
+**Step 2: Run with Docker Compose**
 
 ```bash
-docker run -d -p 5000:5000 -p 8080:8080 -p 8000:8000 \
-  --name omnix \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/voice_clones:/app/voice_clones \
-  omnix
+docker-compose up -d --no-build
 ```
 
-### Run with Docker Compose (Recommended)
+This will:
+- Start the Omnix container using the pre-built image
+- Expose ports 5000 (main app), 8000 (STT), 8001 (realtime), 8020 (TTS)
+- Mount volumes for data persistence, voice clones, and models
+- Auto-restart on failure
 
-A `docker-compose.yml` file is included. Simply run:
+### Option 2: Build and Run Together
+
+Build and start in one command:
 
 ```bash
 docker-compose up -d
 ```
 
-This will:
-- Build and start the Omnix container
-- Expose ports 5000 (main app), 8080 (realtime), 8000 (STT), 8020 (TTS)
-- Mount volumes for data persistence and voice clones
-- Auto-restart on failure
+This will automatically build the image if not present, then start the container.
+
+### Run with Plain Docker
+
+```bash
+docker run -d -p 5000:5000 -p 8000:8000 -p 8001:8001 -p 8020:8020 \
+  --name omnix \
+  --gpus all \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/voice_clones:/app/voice_clones \
+  -v $(pwd)/models:/app/models \
+  omnix
+```
+
+### Managing the Container
 
 To stop:
 ```bash
 docker-compose down
+```
+
+To rebuild after changes:
+```bash
+docker-compose build --no-cache
+docker-compose up -d --no-build
+```
+
+To view logs:
+```bash
+docker-compose logs -f
 ```
 
 Open your browser to http://localhost:5000
@@ -245,6 +272,54 @@ OpenRouter provides unified access to 100+ models from various providers (OpenAI
 - `context_size` - Maximum context window (default: 128000)
 - `thinking_budget` - Extended reasoning tokens (for supported models)
 
+### llama.cpp (Local - Pure GGUF)
+
+llama.cpp provides pure, efficient local inference using GGUF model files. No external server needed.
+
+**Setup:**
+1. In Omnix Settings, select "llama.cpp" as provider
+2. Download the llama.cpp server binary (or it will be downloaded automatically)
+3. Select a GGUF model from the dropdown or download a new one
+
+**Downloading Models:**
+- Click the download button (cloud icon) in the header
+- Enter a HuggingFace model URL (e.g., `https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF`)
+- Or paste a direct GGUF download link
+- Models are saved to `models/llm/`
+
+**Downloading llama.cpp Server:**
+- In Settings, under llama.cpp section, click "Download llama.cpp Server"
+- Select your platform (Windows with CUDA, CPU only, etc.)
+- The server will be downloaded and extracted automatically
+
+**Configuration:**
+- Base URL: `http://localhost:8080` (default)
+- Auto-start: Enable to automatically start llama.cpp server when Omnix loads
+
+**Recommended Models:**
+- `mistral-7b-instruct-v0.2.Q4_K_M.gguf` - Default, good balance (~4GB)
+- `qwen2.5-coder-7b-instruct-q4_k_m.gguf` - Code-focused model (~4.5GB)
+- `llama-3.1-8b-instruct-q4_0.gguf` - Meta's latest (~4GB)
+
+**Configuration:**
+```json
+{
+  "provider": "llamacpp",
+  "llamacpp": {
+    "base_url": "http://localhost:8080",
+    "model": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+    "auto_start": true
+  }
+}
+```
+
+**Benefits:**
+- ✅ Runs entirely locally - full privacy
+- ✅ No LM Studio or external servers needed
+- ✅ GPU acceleration with CUDA
+- ✅ Supports any GGUF model format
+- ✅ Efficient quantization (Q2-Q8)
+
 ### Switching Providers
 
 Use the Settings modal (gear icon) in the UI to:
@@ -260,14 +335,16 @@ Settings are saved in `data/settings.json`.
 | Provider | Type | Speed | Privacy | Cost | Models |
 |----------|------|-------|---------|------|--------|
 | LM Studio | Local | Medium | Full | Free | Any GGUF |
+| llama.cpp | Local | Medium | Full | Free | Any GGUF |
 | Cerebras | Cloud | Fastest | Partial | Pay/use | Llama models |
 | OpenRouter | Cloud | Fast | Partial | Pay/use | 100+ models |
 
 **Recommendations:**
-- **Privacy-focused**: Use LM Studio (local)
+- **Privacy-focused**: Use llama.cpp or LM Studio (local)
 - **Speed-critical**: Use Cerebras (fastest inference)
 - **Model variety**: Use OpenRouter (most options)
-- **Cost-sensitive**: Use LM Studio (free) or OpenRouter (pay per use)
+- **Cost-sensitive**: Use llama.cpp or LM Studio (free) or OpenRouter (pay per use)
+- **No external dependencies**: Use llama.cpp (runs standalone)
 
 ## Configuration
 

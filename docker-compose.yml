@@ -3,6 +3,7 @@ version: '3.8'
 services:
   # Main Omnix service - runs all services in one container
   omnix:
+    image: omnix:latest
     build: .
     container_name: omnix
     ports:
@@ -10,10 +11,12 @@ services:
       - "8000:8000"    # STT server (Parakeet)
       - "8001:8001"    # Realtime WebSocket server
       - "8020:8020"    # TTS server (Chatterbox)
+      - "8080:8080"    # llama.cpp server
     volumes:
       - ./data:/app/data
       - ./voice_clones:/app/voice_clones
       - ./models/llm:/app/models/llm
+      - ./models/server:/app/models/server
       - ~/.cache/huggingface:/root/.cache/huggingface  # Cache HuggingFace models
     environment:
       - PYTHONUNBUFFERED=1
@@ -32,58 +35,25 @@ services:
       bash -c "
         echo 'Starting Parakeet STT Server...' &&
         python parakeet_stt_server.py &
-        sleep 10 &&
+        sleep 30 &&
         echo 'Starting Chatterbox TTS Server...' &&
         python chatterbox_tts_server.py &
-        sleep 5 &&
+        sleep 15 &&
+        echo 'Waiting for TTS model to fully load...' &&
+        sleep 10 &&
         echo 'Starting Realtime Server...' &&
         python realtime_server.py &
         sleep 3 &&
+        echo 'Starting llama.cpp Server...' &&
+        chmod +x /app/start_llama_server.sh &&
+        /app/start_llama_server.sh &
+        sleep 5 &&
         echo 'Starting Main App...' &&
         python app.py
       "
 
-  # llama.cpp server for local LLM inference
-  # Place your GGUF model file in models/llm/ folder and set LLAMA_MODEL env var
-  llama-cpp:
-    image: ghcr.io/ggerganov/llama.cpp:server
-    container_name: llama-cpp
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./models/llm:/models
-    environment:
-      - HOST=0.0.0.0
-      - PORT=8080
-      # Default model: Mistral-7B GGUF (auto-loaded if present)
-      - LLAMA_MODEL=${LLAMA_MODEL:-mistral-7b-instruct-v0.2.Q4_K_M.gguf}
-    # Default context size and GPU layers
-    command: >
-      sh -c "
-        if [ -n \"$$LLAMA_MODEL\" ]; then
-          echo \"Loading model: $$LLAMA_MODEL\";
-          /usr/bin/llama-server -m /models/$$LLAMA_MODEL -c 512 -ngl 33 --host 0.0.0.0 --port 8080;
-        else
-          echo 'No model specified. Place GGUF files in models/llm/ and set LLAMA_MODEL environment variable.';
-          echo 'Example: docker compose up -e LLAMA_MODEL=mistral-7b-instruct-v0.2.Q4_K_M.gguf';
-          # Keep container running for healthcheck
-          tail -f /dev/null;
-        fi
-      "
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/models"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
+  # Note: llama.cpp server removed - use local installation or run separately
+  # To enable LLM: download GGUF model to models/llm/ and run llama.cpp locally
   # Optional: Separate TTS service (Chatterbox)
   # Uncomment if running TTS as separate container
   # chatterbox-tts:

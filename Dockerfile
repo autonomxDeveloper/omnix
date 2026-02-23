@@ -1,6 +1,6 @@
 # Omnix Dockerfile
-# Use NVIDIA CUDA base image for GPU support
-FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
+# Use NVIDIA CUDA devel image for GPU support (includes CUDA toolkit for building)
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -12,11 +12,12 @@ RUN apt-get update && apt-get install -y \
     python3.10 \
     python3.10-venv \
     python3-pip \
-    gcc \
-    g++ \
+    cmake \
+    build-essential \
     libsndfile1 \
     ffmpeg \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set python3.10 as default
@@ -36,6 +37,10 @@ RUN pip install --no-cache-dir \
     torchaudio==2.5.1+cu124 \
     --index-url https://download.pytorch.org/whl/cu124
 
+# Force reinstall torchaudio to ensure it's properly linked
+# (nemo may have installed an incompatible version)
+RUN pip install --no-cache-dir torchaudio==2.5.1+cu124 --force-reinstall --index-url https://download.pytorch.org/whl/cu124
+
 # Copy requirements file
 COPY requirements.txt .
 
@@ -48,8 +53,43 @@ RUN pip install --no-cache-dir chatterbox-tts==0.1.6
 # Install NeMo ASR for Parakeet STT
 RUN pip install --no-cache-dir "nemo_toolkit[asr]"
 
+# Install compatible transformers version for Chatterbox TTS
+# (nemo_toolkit installs transformers 4.53+ which breaks LlamaModel import)
+# Must be installed AFTER nemo to override its version
+# Also need to pin tokenizers to compatible version
+RUN pip install --no-cache-dir transformers==4.46.3 tokenizers==0.20.3 --force-reinstall
+
+# Force reinstall ALL torch packages together to fix C++ operator linking
+# nemo_toolkit breaks the torch library links, must reinstall all three together
+RUN pip install --no-cache-dir \
+    torch==2.6.0+cu124 \
+    torchvision==0.21.0+cu124 \
+    torchaudio==2.6.0+cu124 \
+    --force-reinstall --index-url https://download.pytorch.org/whl/cu124
+
+# Fix numpy and other dependencies for chatterbox compatibility
+RUN pip install --no-cache-dir numpy==1.25.2 safetensors==0.5.3 fsspec==2024.12.0 pillow==11.0.0 --force-reinstall
+
 # Pre-download Parakeet TDT 0.6B model
-RUN python -c "from nemo.collections.asr.models import ASRModel; ASRModel.from_pretrained('nvidia/parakeet-tdt-0.6b-v2'); print('Parakeet model downloaded!')"
+RUN python -c "\
+from nemo.collections.asr.models import ASRModel; \
+ASRModel.from_pretrained('nvidia/parakeet-tdt-0.6b-v2'); \
+print('Parakeet model downloaded!')"
+
+# Create directories for models
+RUN mkdir -p /app/models/llm /app/models/server
+
+# Copy download scripts FIRST (before running them)
+COPY download_model_docker.py /app/download_model_docker.py
+COPY download_llamacpp_docker.py /app/download_llamacpp_docker.py
+
+# Download default GGUF model to models/llm
+RUN pip install --no-cache-dir huggingface-hub && \
+    python /app/download_model_docker.py
+
+# Install llama-cpp-python for LLM inference (includes pre-compiled binaries)
+# This is faster than building from source
+RUN pip install --no-cache-dir llama-cpp-python sse-starlette starlette-context pydantic-settings --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 
 # Copy application files
 COPY . .
@@ -57,12 +97,16 @@ COPY . .
 # Create directories
 RUN mkdir -p /app/data
 
+# Make startup scripts executable
+RUN chmod +x /app/start_llama_server.sh
+
 # Expose ports
 # 5000: Main Flask app
 # 8000: STT server (Parakeet)
 # 8001: Realtime server
 # 8020: TTS server (Chatterbox)
-EXPOSE 5000 8000 8001 8020
+# 8080: llama.cpp server
+EXPOSE 5000 8000 8001 8020 8080
 
 # Set environment variables
 ENV FLASK_APP=app.py
@@ -103,5 +147,3 @@ CMD ["python", "app.py"]
 # Note: On first run, the Parakeet STT model (~600MB) and Chatterbox TTS 
 # model will be downloaded. Check logs for progress.
 # ============================================================================
-
-

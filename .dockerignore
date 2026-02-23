@@ -1,0 +1,49 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+.eggs
+dist
+build
+
+# Virtual environments
+venv
+env
+.venv
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+tests/
+
+# Local data
+data/
+# voice_clones/ - included for voice cloning feature
+
+# Large model files - these are downloaded inside the container
+models/
+
+# Large downloads and temp files
+*.zip
+*.tar
+*.tar.gz
+*.tar.zst
+
+# Documentation - keep only README
+*.md
+!README.md

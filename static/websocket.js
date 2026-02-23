@@ -66,19 +66,23 @@ function connectStreamingSTT() {
                     
                     if (data.type === 'ready') {
                         console.log('STT ready for streaming');
-                    } else if (data.type === 'text') {
-                        // Update the input with transcribed text in real-time
+                    } else if (data.type === 'text' || data.type === 'done') {
+                        // Update the input with transcribed text
+                        // 'text' for partial results, 'done' for final result
+                        const text = data.text || '';
                         if (conversationMode && conversationInput) {
-                            conversationInput.value = data.text;
-                            conversationSendBtn.disabled = !data.text.trim();
+                            conversationInput.value = text;
+                            conversationSendBtn.disabled = !text.trim();
                         } else if (messageInput) {
-                            messageInput.value = data.text;
-                            sendBtn.disabled = !data.text.trim();
+                            messageInput.value = text;
+                            sendBtn.disabled = !text.trim();
+                        }
+                        
+                        if (data.type === 'done') {
+                            console.log('STT streaming done, text:', text);
                         }
                     } else if (data.type === 'error') {
                         console.error('STT streaming error:', data.error);
-                    } else if (data.type === 'done') {
-                        console.log('STT streaming done');
                     }
                 } catch (e) {
                     console.error('Error parsing STT message:', e);
@@ -277,7 +281,17 @@ async function playNextAudioChunk() {
         }
         
         // Convert PCM16 to float32 and create AudioBuffer
-        const pcm16 = new Int16Array(uint8Array.buffer);
+        // Handle odd byte lengths by padding with zero
+        let buffer = uint8Array.buffer;
+        if (buffer.byteLength % 2 !== 0) {
+            // Pad with a zero byte to make it even
+            const paddedBuffer = new ArrayBuffer(buffer.byteLength + 1);
+            new Uint8Array(paddedBuffer).set(uint8Array);
+            paddedBuffer[buffer.byteLength] = 0;
+            buffer = paddedBuffer;
+        }
+        
+        const pcm16 = new Int16Array(buffer);
         const float32 = new Float32Array(pcm16.length);
         for (let i = 0; i < pcm16.length; i++) {
             float32[i] = pcm16[i] / 32767.0;

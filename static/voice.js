@@ -240,51 +240,29 @@ async function startVADRecording() {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         
         audioChunks = [];
-        sttStreamingAudioChunks = [];
         
-        // Try to connect to streaming STT
-        try {
-            await connectStreamingSTT();
-            console.log('Connected to streaming STT');
-        } catch (e) {
-            console.log('Streaming STT not available, using batch mode');
-        }
+        // Use batch mode only - WebSocket streaming doesn't work with webm chunks
+        // MediaRecorder produces chunks with individual headers that can't be concatenated
         
         mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
         
         mediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
                 audioChunks.push(event.data);
-                
-                // Send to streaming STT if connected
-                if (sttWs && sttWs.readyState === WebSocket.OPEN) {
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                        const base64 = reader.result.split(',')[1];
-                        sttWs.send(JSON.stringify({
-                            type: 'audio',
-                            data: base64
-                        }));
-                    };
-                    reader.readAsDataURL(event.data);
-                }
             }
         };
         
         mediaRecorder.onstop = async () => {
             stream.getTracks().forEach(track => track.stop());
             
-            // Send final signal to streaming STT
-            if (sttWs && sttWs.readyState === WebSocket.OPEN) {
-                finalizeStreamingSTT();
-            }
-            
             if (audioChunks.length > 0) {
                 await transcribeVADAudio();
             }
         };
         
-        mediaRecorder.start(100);
+        // Start without timeslice - this produces a single valid webm file
+        // Using timeslice creates chunks that can't be concatenated into valid webm
+        mediaRecorder.start();
         isRecording = true;
         
         conversationMicBtn.classList.add('recording');
@@ -782,7 +760,8 @@ async function startConversationRecording() {
             await transcribeConversationAudio();
         };
         
-        mediaRecorder.start(100);
+        // Start without timeslice - produces valid webm file
+        mediaRecorder.start();
         
         isRecording = true;
         conversationMicBtn.classList.add('recording');
@@ -864,7 +843,8 @@ async function startRecording() {
             await transcribeAudio();
         };
         
-        mediaRecorder.start(100);
+        // Start without timeslice - produces valid webm file
+        mediaRecorder.start();
         
         isRecording = true;
         micBtn.classList.add('recording');
