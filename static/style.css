@@ -1710,6 +1710,55 @@ body::before {
     }
 }
 
+/* Tap to Talk Button - positioned below the circle indicator */
+.tap-to-talk-btn {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 16px 28px;
+    background: linear-gradient(135deg, var(--accent) 0%, #8b5cf6 100%);
+    border: none;
+    border-radius: 50px;
+    color: white;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 0 4px 20px rgba(124, 58, 237, 0.4);
+    position: fixed;
+    top: calc(50% + 160px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    pointer-events: auto;
+}
+
+.tap-to-talk-btn:hover {
+    transform: translateX(-50%) scale(1.05);
+    box-shadow: 0 6px 25px rgba(124, 58, 237, 0.5);
+}
+
+.tap-to-talk-btn:active,
+.tap-to-talk-btn.recording {
+    transform: translateX(-50%) scale(0.98);
+    background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+    box-shadow: 0 2px 15px rgba(16, 185, 129, 0.5);
+}
+
+.tap-to-talk-btn svg {
+    color: white;
+}
+
+.tap-to-talk-btn span {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+.tap-to-talk-btn.visible {
+    display: flex;
+}
+
 /* Conversation mode input */
 .conversation-input-container {
     display: none;
