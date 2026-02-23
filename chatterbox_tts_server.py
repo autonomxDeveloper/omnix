@@ -14,6 +14,13 @@ Usage:
 """
 import os
 import sys
+
+# FIX: Import transformers BEFORE torch/torchvision to avoid circular import
+# This must be done before any other imports that might load torchvision
+import transformers
+import torch
+import numpy as np
+
 import asyncio
 import base64
 import io
@@ -25,7 +32,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-import numpy as np
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware

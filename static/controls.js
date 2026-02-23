@@ -45,7 +45,9 @@ function setupXTTSControl() {
     xttsRestartBtn.addEventListener('click', restartXTTS);
     xttsRefreshLogsBtn.addEventListener('click', refreshXTTSLogs);
     
-    checkXTTSStatus();
+    // Initial status check with more retries for Docker startup
+    // Give services time to initialize (they start sequentially)
+    setTimeout(() => checkXTTSStatus(), 3000);
     xttsStatusInterval = setInterval(checkXTTSStatus, 5000);
 }
 
@@ -55,20 +57,31 @@ async function checkXTTSStatus() {
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            const response = await fetch('/api/services/xtts/logs', { timeout: 5000 });
-            const statusResponse = await fetch('/api/services/status');
-            const statusData = await statusResponse.json();
-            if (statusData.tts && statusData.tts.running) {
+            // Check TTS health directly first (faster, more reliable)
+            const healthResponse = await fetch('http://localhost:8020/health', { timeout: 3000 });
+            if (healthResponse.status === 200) {
                 updateXTTSStatus(true, 'TTS: Running');
                 return;
             }
         } catch (e) {
-            // Continue to retry
+            // TTS not responding, continue to retry
         }
         
         if (attempt < maxRetries) {
             await new Promise(resolve => setTimeout(resolve, retryDelay));
         }
+    }
+    
+    // Also try the Flask API endpoint as fallback
+    try {
+        const statusResponse = await fetch('/api/services/status', { timeout: 5000 });
+        const statusData = await statusResponse.json();
+        if (statusData.tts && statusData.tts.running) {
+            updateXTTSStatus(true, 'TTS: Running');
+            return;
+        }
+    } catch (e) {
+        // Fallback also failed
     }
     
     updateXTTSStatus(false, 'TTS: Stopped');
@@ -215,11 +228,24 @@ function setupSTTControl() {
     sttRestartBtn.addEventListener('click', restartSTT);
     sttRefreshLogsBtn.addEventListener('click', refreshSTTLogs);
     
-    checkSTTStatus();
+    // Initial status check with delay for Docker startup
+    setTimeout(() => checkSTTStatus(), 3000);
     setInterval(checkSTTStatus, 5000);
 }
 
 async function checkSTTStatus() {
+    // First try direct health check for faster response
+    try {
+        const healthResponse = await fetch('http://localhost:8000/health', { timeout: 3000 });
+        if (healthResponse.status === 200) {
+            updateSTTStatus(true, 'STT: Running');
+            return;
+        }
+    } catch (e) {
+        // STT not responding, continue to fallback
+    }
+    
+    // Fallback to Flask API endpoint
     try {
         const response = await fetch('/api/services/status', { timeout: 5000 });
         const data = await response.json();

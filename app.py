@@ -263,27 +263,63 @@ def save_settings_endpoint():
     # Auto-start llama.cpp server if auto_start is enabled and model is selected
     if auto_start_requested and llamacpp_model:
         try:
-            # Call the start_llamacpp_server endpoint internally
-            from flask import Flask
-            # We need to get the app context
-            with app.test_request_context():
-                # Check if server is already running
-                import requests as req
+            # Check if server is already running
+            import requests as req
+            base_url = settings.get('llamacpp', {}).get('base_url', 'http://localhost:8080')
+            try:
+                response = req.get(f"{base_url}/v1/models", timeout=2)
+                if response.status_code == 200:
+                    print("[llama.cpp] Server already running")
+                else:
+                    raise Exception("Server not responding")
+            except:
+                # Server not running - start it by calling the internal function
+                print(f"[llama.cpp] Auto-starting server with model: {llamacpp_model}")
                 try:
-                    base_url = settings.get('llamacpp', {}).get('base_url', 'http://localhost:8080')
-                    response = req.get(f"{base_url}/v1/models", timeout=2)
-                    if response.status_code == 200:
-                        print("[llama.cpp] Server already running")
+                    # Get the model path
+                    download_location = settings.get('llamacpp', {}).get('download_location', 'server')
+                    if download_location == 'llm':
+                        model_dir = os.path.join(os.path.dirname(__file__), 'models', 'llm')
                     else:
-                        # Server not running, start it
-                        raise Exception("Server not responding")
-                except:
-                    # Start the server
-                    print(f"[llama.cpp] Auto-starting server with model: {llamacpp_model}")
-                    # Import and call the start function
-                    from app import start_llamacpp_server
-                    # We can't call it directly with test_request_context easily, so just print message
-                    print(f"[llama.cpp] Please start the llama.cpp server manually with model: {llamacpp_model}")
+                        model_dir = os.path.join(os.path.dirname(__file__), 'models', 'server')
+                    
+                    model_path = os.path.join(model_dir, llamacpp_model)
+                    if not os.path.exists(model_path):
+                        # Try alternate location
+                        alt_model_path = os.path.join(os.path.dirname(__file__), 'models', 'llm', llamacpp_model)
+                        if os.path.exists(alt_model_path):
+                            model_path = alt_model_path
+                    
+                    # Start the llama.cpp server using Python module (for Docker/Linux)
+                    import subprocess
+                    import sys
+                    
+                    # Kill any existing process on port 8080
+                    try:
+                        subprocess.run('lsof -ti:8080 | xargs kill -9 2>/dev/null || true', shell=True)
+                    except:
+                        pass
+                    
+                    # Start llama-cpp-python server
+                    cmd = [
+                        sys.executable, '-m', 'llama_cpp.server',
+                        '--model', model_path,
+                        '--host', '0.0.0.0',
+                        '--port', '8080'
+                    ]
+                    
+                    # Run in background
+                    subprocess.Popen(
+                        cmd,
+                        cwd=os.path.dirname(__file__),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
+                    
+                    print(f"[llama.cpp] Server started with model: {llamacpp_model}")
+                except Exception as start_err:
+                    print(f"[llama.cpp] Failed to start server: {start_err}")
         except Exception as e:
             print(f"[llama.cpp] Auto-start error: {e}")
     
@@ -2007,46 +2043,82 @@ def speech_to_text():
     
     audio_file = request.files['audio']
     
+    # Debug: Log incoming audio details
+    print(f"[STT] Received audio file: {audio_file.filename}, content_type: {audio_file.content_type}")
+    
     try:
+        # Read the audio data first to check size
+        audio_data = audio_file.read()
+        audio_size = len(audio_data)
+        print(f"[STT] Audio size: {audio_size} bytes")
+        
+        if audio_size < 100:
+            return jsonify({
+                "success": False,
+                "error": f"Audio file too small ({audio_size} bytes). Please speak longer."
+            }), 400
+        
         # Send audio to Parakeet STT API
         files = {
-            'file': (audio_file.filename, audio_file.stream, audio_file.content_type or 'audio/webm')
+            'file': (audio_file.filename or 'audio.webm', audio_data, audio_file.content_type or 'audio/webm')
         }
         
+        print(f"[STT] Sending to STT server at {STT_BASE_URL}/transcribe")
         response = requests.post(
             f"{STT_BASE_URL}/transcribe",
             files=files,
             timeout=120
         )
         
+        print(f"[STT] STT server response: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
+            print(f"[STT] Response data: success={data.get('success')}, segments={len(data.get('segments', []))}, duration={data.get('duration')}")
+            
             if data.get('success'):
                 # Combine all segments into full transcript
-                full_text = ' '.join([seg['text'] for seg in data.get('segments', [])])
+                segments = data.get('segments', [])
+                full_text = ' '.join([seg['text'] for seg in segments])
+                
+                if not full_text.strip():
+                    print(f"[STT] WARNING: Empty transcription result!")
+                    return jsonify({
+                        "success": False,
+                        "error": "No speech detected. Please try speaking louder or closer to the microphone."
+                    }), 400
+                
                 return jsonify({
                     "success": True,
                     "text": full_text,
-                    "segments": data.get('segments', []),
+                    "segments": segments,
                     "duration": data.get('duration')
                 })
             else:
+                error_msg = data.get('message', 'Transcription failed')
+                print(f"[STT] Transcription failed: {error_msg}")
                 return jsonify({
                     "success": False,
-                    "error": data.get('message', 'Transcription failed')
+                    "error": error_msg
                 }), 500
         else:
+            error_text = response.text[:500] if response.text else "No error details"
+            print(f"[STT] STT API error: {response.status_code} - {error_text}")
             return jsonify({
                 "success": False,
-                "error": f"STT API error: {response.status_code} - {response.text[:200]}"
+                "error": f"STT API error: {response.status_code}"
             }), response.status_code
             
-    except requests.exceptions.ConnectionError:
+    except requests.exceptions.ConnectionError as e:
+        print(f"[STT] Connection error: {e}")
         return jsonify({
             "success": False,
             "error": "Cannot connect to STT server. Make sure Parakeet STT is running on port 8000."
         }), 503
     except Exception as e:
+        print(f"[STT] Exception: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 

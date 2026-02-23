@@ -564,8 +564,18 @@ try {
                                     copyToClipboard(streamedContent, e.target);
                                 });
                                 
-                                headerDiv.querySelector('.speak-btn').addEventListener('click', (e) => {
-                                    speakText(streamedContent, ttsSpeaker ? ttsSpeaker.value : 'en');
+                                headerDiv.querySelector('.speak-btn').addEventListener('click', async (e) => {
+                                    const btn = e.target;
+                                    btn.disabled = true;
+                                    btn.textContent = 'Speaking...';
+                                    try {
+                                        await speakText(streamedContent, ttsSpeaker ? ttsSpeaker.value : 'en');
+                                    } catch (err) {
+                                        console.error('[TTS] Speak button error:', err);
+                                    } finally {
+                                        btn.disabled = false;
+                                        btn.textContent = 'Speak';
+                                    }
                                 });
                                 
                                 messageDiv.appendChild(headerDiv);
@@ -602,9 +612,12 @@ try {
 
 // Speak text using TTS with streaming for faster audio start
 async function speakText(text, speaker = 'en') {
-    if (!text) return;
+    if (!text) {
+        console.warn('[TTS] speakText called with empty text');
+        return;
+    }
     
-    console.log('[TTS] speakText called with speaker:', speaker);
+    console.log('[TTS] speakText called with text length:', text.length, 'speaker:', speaker);
     
     if (conversationMode) {
         micBtn.disabled = true;
@@ -614,20 +627,27 @@ async function speakText(text, speaker = 'en') {
     // Audio playback queue for streaming
     let audioQueue = [];
     let isPlaying = false;
+    let playbackPromise = Promise.resolve(); // Track ongoing playback
     
     async function playNextAudio() {
-        if (isPlaying || audioQueue.length === 0) return;
+        if (isPlaying) return; // Already playing
+        if (audioQueue.length === 0) return; // Nothing to play
+        
         isPlaying = true;
+        console.log('[TTS] Starting playback, queue length:', audioQueue.length);
         
         while (audioQueue.length > 0) {
             const { audio, sampleRate } = audioQueue.shift();
             try {
+                console.log('[TTS] Playing audio chunk, sample rate:', sampleRate);
                 await playTTS(audio, sampleRate);
             } catch (e) {
                 console.error('[TTS] Playback error:', e);
             }
         }
+        
         isPlaying = false;
+        console.log('[TTS] Playback complete');
     }
     
     try {
@@ -640,9 +660,11 @@ async function speakText(text, speaker = 'en') {
             body: JSON.stringify({ text: text, speaker: speaker })
         });
         
+        console.log('[TTS] Response status:', response.status);
+        
         if (!response.ok) {
             // Fall back to batch TTS
-            console.log('[TTS] Streaming not available, using batch');
+            console.log('[TTS] Streaming not available (' + response.status + '), using batch');
             const batchResponse = await fetch('/api/tts', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -650,8 +672,11 @@ async function speakText(text, speaker = 'en') {
             });
             
             const data = await batchResponse.json();
+            console.log('[TTS] Batch response:', data.success, data.error);
             if (data.success && data.audio) {
                 await playTTS(data.audio);
+            } else {
+                console.error('[TTS] Batch TTS failed:', data.error);
             }
             return;
         }
@@ -659,10 +684,14 @@ async function speakText(text, speaker = 'en') {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let chunkCount = 0;
         
         while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) {
+                console.log('[TTS] Stream ended');
+                break;
+            }
             
             buffer += decoder.decode(value, { stream: true });
             
@@ -681,24 +710,23 @@ async function speakText(text, speaker = 'en') {
                             const data = JSON.parse(dataStr);
                             
                             if (data.type === 'audio') {
+                                chunkCount++;
                                 // Queue audio chunk
                                 audioQueue.push({
                                     audio: data.audio,
                                     sampleRate: data.sample_rate
                                 });
-                                console.log(`[TTS] Received audio chunk ${data.index + 1}`);
+                                console.log(`[TTS] Received audio chunk ${chunkCount}, queue: ${audioQueue.length}`);
                                 
                                 // Start playing immediately
-                                if (!isPlaying) {
-                                    playNextAudio();
-                                }
+                                playNextAudio();
                             } else if (data.type === 'done') {
-                                console.log('[TTS] Streaming complete');
+                                console.log('[TTS] Streaming complete, chunks:', chunkCount);
                             } else if (data.type === 'error') {
-                                console.error('[TTS] Error:', data.error);
+                                console.error('[TTS] Server error:', data.error);
                             }
                         } catch (e) {
-                            console.error('[TTS] Parse error:', e);
+                            console.error('[TTS] Parse error:', e, 'data:', dataStr.substring(0, 100));
                         }
                     }
                 }
@@ -706,12 +734,31 @@ async function speakText(text, speaker = 'en') {
         }
         
         // Wait for all audio to finish playing
+        console.log('[TTS] Waiting for playback to complete, queue:', audioQueue.length, 'isPlaying:', isPlaying);
         while (isPlaying || audioQueue.length > 0) {
             await new Promise(r => setTimeout(r, 100));
         }
         
+        console.log('[TTS] All playback complete');
+        
     } catch (error) {
-        console.error('TTS Error:', error);
+        console.error('[TTS] Error:', error);
+        // Try batch TTS as fallback on any error
+        try {
+            console.log('[TTS] Trying batch TTS as fallback');
+            const batchResponse = await fetch('/api/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: text, speaker: speaker })
+            });
+            
+            const data = await batchResponse.json();
+            if (data.success && data.audio) {
+                await playTTS(data.audio);
+            }
+        } catch (fallbackError) {
+            console.error('[TTS] Fallback also failed:', fallbackError);
+        }
     } finally {
         if (conversationMode) {
             micBtn.disabled = false;
