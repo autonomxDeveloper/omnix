@@ -1326,6 +1326,19 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
                                 // Server generated TTS audio for a sentence - play it
                                 enqueueAudio(data.audio, data.sample_rate);
                                 
+                            } else if (data.type === 'tts_sentence') {
+                                // Streaming sentence TTS - audio for a complete sentence
+                                if (!firstAudioReceivedTime) {
+                                    firstAudioReceivedTime = performance.now();
+                                    console.log(`🕐 [CLIENT] First sentence TTS at: ${firstAudioReceivedTime - totalStartTime}ms`);
+                                    if (llmStartTime) {
+                                        console.log(`🕐 [CLIENT] Time from LLM start to first TTS: ${firstAudioReceivedTime - llmStartTime}ms`);
+                                    }
+                                }
+                                // Queue the sentence audio for sequential playback
+                                console.log(`🔊 [TTS] Received sentence ${data.index}: "${data.text?.substring(0, 30)}..."`);
+                                enqueueAudio(data.audio, data.sample_rate);
+                                
                             } else if (data.type === 'done') {
                                 // LLM finished generating
                                 llmEndTime = performance.now();
