@@ -35,6 +35,9 @@ soundfile>=0.12.0
 pydub==0.25.1
 librosa==0.11.0
 
+# Speech enhancement (optional - for studio-quality voice)
+deepfilternet>=0.5.0
+
 # ============================================
 # CHATTERBOX TTS TURBO
 # ============================================
