@@ -3,7 +3,57 @@
  * DOM Elements, State, and Initialization
  */
 
+// ============================================================
+// GLOBAL TTS PLAYBACK MODE - ONLY ONE CAN BE ACTIVE
+// ============================================================
+window.TTS_PLAYBACK_MODE = "wav"; 
+// Allowed values: "wav", "websocket"
+// "wav" = Use <audio> elements with WAV files (clean, no streaming)
+// "websocket" = Use AudioContext for streaming PCM chunks
+
+// Debug: Log mode periodically
+setInterval(() => {
+    const audioElements = document.querySelectorAll("audio");
+    const audioContexts = window.streamingAudioContext ? 1 : 0;
+    console.log("[AUDIO-DIAG] Mode:", window.TTS_PLAYBACK_MODE,
+        "| Audio elements:", audioElements.length,
+        "| AudioContext:", audioContexts ? "active" : "none");
+}, 2000);
+
+// ============================================================
+// HARD AUDIOCONTEXT CLEANUP - Call when switching to WAV mode
+// ============================================================
+function destroyAllAudioContexts() {
+    // Close streaming AudioContext from websocket.js
+    if (window.streamingAudioContext) {
+        try {
+            window.streamingAudioContext.close();
+            console.log("[AUDIO] Closed streamingAudioContext");
+        } catch (e) {}
+        window.streamingAudioContext = null;
+    }
+    
+    // Close any other AudioContext references
+    if (window.wsAudioCtx) {
+        try {
+            window.wsAudioCtx.close();
+            console.log("[AUDIO] Closed wsAudioCtx");
+        } catch (e) {}
+        window.wsAudioCtx = null;
+    }
+    
+    // Reset state variables
+    if (typeof previousChunkEnd !== 'undefined') {
+        previousChunkEnd = null;
+    }
+    if (typeof nextChunkStartTime !== 'undefined') {
+        nextChunkStartTime = 0;
+    }
+}
+
+// ============================================================
 // DOM Elements
+// ============================================================
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const messagesContainer = document.getElementById('messages');
@@ -53,8 +103,15 @@ let sessions = [];
 
 // WebSocket Configuration
 const WS_REALTIME_URL = "ws://localhost:8001/ws/voice";
-const USE_WEBSOCKET = true; // Set to true for lower latency (requires realtime_server.py on port 8001)
+// USE_WEBSOCKET is now controlled by TTS_PLAYBACK_MODE
+// In "wav" mode: USE_WEBSOCKET = false (use REST API + <audio> elements)
+// In "websocket" mode: USE_WEBSOCKET = true (use WebSocket + AudioContext streaming)
 const ENABLE_STREAMING_TTS = true; // Set to true for streaming TTS
+
+// Dynamic getter for USE_WEBSOCKET based on playback mode
+function getUseWebSocket() {
+    return window.TTS_PLAYBACK_MODE === "websocket";
+}
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {

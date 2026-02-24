@@ -40,6 +40,7 @@ let audioChunkQueue = [];
 let isPlayingAudioChunk = false;
 let lastChunkEndTime = 0;
 let previousChunkEnd = null; // For cross-fading
+let nextChunkStartTime = 0; // Precise scheduling time for next chunk
 
 // ============================================================
 // STREAMING STT WEBSOCKET
@@ -240,7 +241,7 @@ function connectStreamingTTS() {
     });
 }
 
-// Play streaming audio chunk immediately (with queue for sequential playback)
+// Play streaming audio chunk immediately (schedule directly, no queue wait)
 async function playStreamingAudioChunk(audioBase64, sampleRate = 24000) {
     // Check if stop was requested
     if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
@@ -248,16 +249,108 @@ async function playStreamingAudioChunk(audioBase64, sampleRate = 24000) {
         return;
     }
     
-    // Add to queue
-    audioChunkQueue.push({ audioBase64, sampleRate });
-    
-    // If already playing, just queue it - the playback loop will handle it
-    if (isPlayingAudioChunk) {
+    // Schedule this chunk immediately - don't wait for queue
+    // This ensures gapless playback by scheduling as soon as we receive data
+    await scheduleAudioChunk(audioBase64, sampleRate);
+}
+
+// Direct scheduling function - schedules chunk immediately using Web Audio API
+async function scheduleAudioChunk(audioBase64, sampleRate) {
+    // PHASE 2: GUARD - Only schedule audio in websocket mode
+    if (window.TTS_PLAYBACK_MODE !== "websocket") {
+        console.log("[WS-AUDIO] Skipping AudioContext scheduling (WAV mode active)");
         return;
     }
     
-    // Start playing from queue
-    await playNextAudioChunk();
+    // Track if this is the first chunk
+    const isFirstChunk = (previousChunkEnd === null);
+    
+    try {
+        // Decode base64 to bytes
+        const audioBytes = atob(audioBase64);
+        const arrayBuffer = new ArrayBuffer(audioBytes.length);
+        const uint8Array = new Uint8Array(arrayBuffer);
+        for (let i = 0; i < audioBytes.length; i++) {
+            uint8Array[i] = audioBytes.charCodeAt(i);
+        }
+        
+        // Create audio context if needed - use browser's native sample rate (usually 48kHz)
+        // PHASE 7: Don't force 24kHz - let browser use native rate to avoid resampling artifacts
+        if (!streamingAudioContext) {
+            streamingAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+                latencyHint: 'interactive'
+            });
+            console.log('[WS-AUDIO] Created AudioContext at native', streamingAudioContext.sampleRate + 'Hz');
+        }
+        
+        // Resume audio context if suspended (browser autoplay policy)
+        if (streamingAudioContext.state === 'suspended') {
+            await streamingAudioContext.resume();
+        }
+        
+        // Convert PCM16 to float32
+        let buffer = uint8Array.buffer;
+        if (buffer.byteLength % 2 !== 0) {
+            const paddedBuffer = new ArrayBuffer(buffer.byteLength + 1);
+            new Uint8Array(paddedBuffer).set(uint8Array);
+            buffer = paddedBuffer;
+        }
+        
+        const pcm16 = new Int16Array(buffer);
+        const numSamples = pcm16.length;
+        const float32 = new Float32Array(numSamples);
+        
+        for (let i = 0; i < numSamples; i++) {
+            float32[i] = pcm16[i] / 32768.0;
+        }
+        
+        // Apply fade-in to first chunk only (avoid startup click)
+        if (isFirstChunk) {
+            const fadeLength = Math.min(144, Math.floor(numSamples / 8)); // ~6ms fade
+            for (let i = 0; i < fadeLength; i++) {
+                float32[i] *= i / fadeLength;
+            }
+        }
+        
+        // Apply short fade-out to EVERY chunk to avoid click at end
+        // Each sentence is generated independently, so add small fade at boundaries
+        const fadeOutLength = Math.min(48, Math.floor(numSamples / 16)); // ~2ms fade
+        for (let i = 0; i < fadeOutLength; i++) {
+            const t = 1 - (i / fadeOutLength);
+            float32[numSamples - fadeOutLength + i] *= t;
+        }
+        
+        // Apply short fade-in to all NON-FIRST chunks
+        if (!isFirstChunk) {
+            const fadeInLength = Math.min(48, Math.floor(numSamples / 16)); // ~2ms fade
+            for (let i = 0; i < fadeInLength; i++) {
+                float32[i] *= i / fadeInLength;
+            }
+        }
+        
+        // Create audio buffer
+        const audioBuffer = streamingAudioContext.createBuffer(1, float32.length, sampleRate);
+        audioBuffer.getChannelData(0).set(float32);
+        
+        // Create source
+        const source = streamingAudioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(streamingAudioContext.destination);
+        
+        // PRECISE SCHEDULING: Use AudioContext time for gapless playback
+        const currentTime = streamingAudioContext.currentTime;
+        const duration = numSamples / sampleRate;
+        
+        // First chunk plays now, subsequent chunks scheduled after previous
+        const startTime = isFirstChunk ? currentTime : Math.max(currentTime, nextChunkStartTime);
+        source.start(startTime);
+        
+        // Track when this chunk ends for next chunk scheduling
+        nextChunkStartTime = startTime + duration;
+        
+    } catch (error) {
+        console.error('[WS-AUDIO] Error scheduling chunk:', error);
+    }
 }
 
 async function playNextAudioChunk() {
@@ -267,12 +360,14 @@ async function playNextAudioChunk() {
         audioChunkQueue = [];
         isPlayingAudioChunk = false;
         previousChunkEnd = null;
+        nextChunkStartTime = 0; // Reset scheduling time
         return;
     }
     
     if (audioChunkQueue.length === 0) {
         isPlayingAudioChunk = false;
         previousChunkEnd = null;
+        nextChunkStartTime = 0; // Reset scheduling time for next session
         return;
     }
     
@@ -291,9 +386,14 @@ async function playNextAudioChunk() {
             uint8Array[i] = audioBytes.charCodeAt(i);
         }
         
-        // Create audio context if needed
+        // Create audio context if needed - use same sample rate as TTS server (24kHz)
         if (!streamingAudioContext) {
-            streamingAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            // IMPORTANT: Match the TTS server's sample rate to avoid resampling artifacts
+            streamingAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: sampleRate || 24000,
+                latencyHint: 'interactive'
+            });
+            console.log('[WS-AUDIO] Created AudioContext at', streamingAudioContext.sampleRate + 'Hz');
         }
         
         // Resume audio context if suspended (browser autoplay policy)
@@ -359,12 +459,23 @@ async function playNextAudioChunk() {
         source.buffer = audioBuffer;
         source.connect(streamingAudioContext.destination);
         
+        // PRECISE SCHEDULING: Schedule chunk to play immediately after the previous one
+        const currentTime = streamingAudioContext.currentTime;
+        const duration = numSamples / sampleRate;
+        
+        // Start immediately if first chunk, otherwise schedule after previous
+        const startTime = isFirstChunk ? currentTime : Math.max(currentTime, nextChunkStartTime);
+        source.start(startTime);
+        
+        // Update the time for the next chunk
+        nextChunkStartTime = startTime + duration;
+        
+        console.log(`[WS-AUDIO] Scheduled ${numSamples} samples at ${startTime.toFixed(3)}s, duration=${duration.toFixed(3)}s, next=${nextChunkStartTime.toFixed(3)}s`);
+        
         source.onended = () => {
             // Play next chunk when this one ends
             playNextAudioChunk();
         };
-        
-        source.start(0);
         
     } catch (error) {
         console.error('[AUDIO] Error playing chunk:', error);

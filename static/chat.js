@@ -3,6 +3,9 @@
  * Session management and chat functionality
  */
 
+// Current audio element for playback - SEPARATE from voice.js currentAudio
+let chatCurrentAudio = null;
+
 // Load sessions
 async function loadSessions() {
     try {
@@ -1134,6 +1137,13 @@ async function speakTextViaWebSocket(text, voiceCloneId = null) {
 function playTTS(audioBase64, sampleRate = null) {
     return new Promise((resolve, reject) => {
         try {
+            // PHASE 3: GUARD - Only use <audio> playback in WAV mode
+            if (window.TTS_PLAYBACK_MODE !== "wav") {
+                console.log("[TTS] Skipping WAV playback (WebSocket mode active)");
+                resolve();
+                return;
+            }
+            
             // Check if stop was requested (from voice.js)
             if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
                 console.log('[TTS] Skipping playback - stop requested');
@@ -1141,10 +1151,35 @@ function playTTS(audioBase64, sampleRate = null) {
                 return;
             }
             
-            if (currentAudio) {
-                currentAudio.pause();
-                currentAudio = null;
+            // AGGRESSIVE CLEANUP: Stop and remove ALL orphaned audio elements
+            const allAudios = [...document.querySelectorAll("audio")];
+            console.log('[TTS-DIAG] Before play - Active audio elements:', allAudios.length);
+            
+            if (allAudios.length > 0) {
+                console.log('[TTS-DIAG] Cleaning up', allAudios.length, 'orphaned audio elements');
+                allAudios.forEach((audio, i) => {
+                    try {
+                        if (!audio.paused) {
+                            console.log('[TTS-DIAG] Stopping playing audio', i);
+                            audio.pause();
+                        }
+                        if (audio.src && audio.src.startsWith('blob:')) {
+                            URL.revokeObjectURL(audio.src);
+                        }
+                        audio.removeAttribute('src');
+                        audio.load(); // Force release
+                        // Remove from DOM if attached
+                        if (audio.parentNode) {
+                            audio.parentNode.removeChild(audio);
+                        }
+                    } catch (e) {
+                        console.warn('[TTS-DIAG] Error cleaning audio', i, e);
+                    }
+                });
             }
+            
+            // Clear our reference
+            chatCurrentAudio = null;
             
             // Decode base64 to binary
             const binaryString = atob(audioBase64);
@@ -1173,10 +1208,23 @@ function playTTS(audioBase64, sampleRate = null) {
             
             const audioUrl = URL.createObjectURL(blob);
             
-            currentAudio = new Audio(audioUrl);
+            chatCurrentAudio = new Audio(audioUrl);
+            
+            // DIAGNOSTIC: Continuous monitoring during playback
+            let diagInterval = setInterval(() => {
+                const audios = [...document.querySelectorAll("audio")];
+                const playing = audios.filter(a => !a.paused);
+                if (playing.length > 1) {
+                    console.error('[TTS-DIAG] OVERLAP DETECTED! Multiple audio elements playing:', playing.length);
+                    playing.forEach((a, i) => {
+                        console.error(`[TTS-DIAG]   Audio ${i}: currentTime=${a.currentTime.toFixed(3)}, src=${a.src.substring(0, 30)}...`);
+                    });
+                }
+            }, 100);
             
             // Resolve promise when audio finishes playing
-            currentAudio.onended = () => {
+            chatCurrentAudio.onended = () => {
+                clearInterval(diagInterval);
                 URL.revokeObjectURL(audioUrl);
                 if (conversationMode) {
                     micBtn.disabled = false;
@@ -1184,7 +1232,7 @@ function playTTS(audioBase64, sampleRate = null) {
                 resolve();
             };
             
-            currentAudio.onerror = (e) => {
+            chatCurrentAudio.onerror = (e) => {
                 URL.revokeObjectURL(audioUrl);
                 console.error('[TTS] Playback error:', e);
                 if (conversationMode) {
@@ -1193,7 +1241,7 @@ function playTTS(audioBase64, sampleRate = null) {
                 resolve(); // Still resolve to continue queue
             };
             
-            currentAudio.play().then(() => {
+            chatCurrentAudio.play().then(() => {
                 // Audio started successfully
             }).catch((e) => {
                 console.error('[TTS] Play error:', e);

@@ -469,8 +469,8 @@ async function transcribeRawFloat32Audio() {
         
         console.log(`[VOICE] Sending ${totalLength} Float32 samples (${(totalLength / 48000).toFixed(2)}s) to STT`);
         
-        // Send raw Float32 to server via WebSocket for lowest latency
-        if (USE_WEBSOCKET && voiceWs && voiceWs.readyState === WebSocket.OPEN) {
+        // Send raw Float32 to server via WebSocket for lowest latency (only in websocket mode)
+        if (typeof getUseWebSocket === 'function' && getUseWebSocket() && voiceWs && voiceWs.readyState === WebSocket.OPEN) {
             voiceWs.send(concatenated.buffer);  // Send raw binary Float32
             return;
         }
@@ -543,8 +543,8 @@ async function processVADTranscript(text, sttDuration = null) {
     
     const totalStartTime = performance.now();
     
-    // Use unified voice WebSocket for real-time streaming pipeline
-    if (USE_WEBSOCKET) {
+    // Use unified voice WebSocket for real-time streaming pipeline (only in websocket mode)
+    if (typeof getUseWebSocket === 'function' && getUseWebSocket()) {
         try {
             await sendVoiceText(text);
             return;
@@ -751,6 +751,11 @@ function addConversationMessageAI(content) {
 
 // Switch to conversation view
 async function switchToConversationView() {
+    // In WAV mode: Use REST API for conversation (audio via <audio> elements)
+    // In WebSocket mode: Use WebSocket pipeline for conversation (streaming audio)
+    // Default is WAV mode - which uses REST API + <audio> playback
+    console.log('[VOICE] TTS_PLAYBACK_MODE:', window.TTS_PLAYBACK_MODE || 'wav');
+    
     // Reset the stop flag when entering conversation mode
     stopAudioRequested = false;
     
@@ -905,8 +910,8 @@ async function sendConversationMessage() {
     const totalStartTime = performance.now();
     const sttDuration = null; // No STT for typed messages
     
-    // Use unified voice WebSocket for real-time streaming pipeline
-    if (USE_WEBSOCKET) {
+    // Use unified voice WebSocket for real-time streaming pipeline (only in websocket mode)
+    if (typeof getUseWebSocket === 'function' && getUseWebSocket()) {
         try {
             const handled = await sendVoiceTextWithFallback(message);
             if (handled) return; // WebSocket handled it successfully
@@ -923,7 +928,7 @@ async function sendConversationMessage() {
 // Combined function that handles WebSocket with fallback
 async function sendVoiceTextWithFallback(message) {
     console.log('[WS] sendVoiceTextWithFallback called');
-    console.log('[WS] USE_WEBSOCKET:', USE_WEBSOCKET);
+    console.log('[WS] getUseWebSocket():', typeof getUseWebSocket === 'function' ? getUseWebSocket() : 'N/A');
     console.log('[WS] voiceWs:', voiceWs);
     console.log('[WS] voiceWs.readyState:', voiceWs ? voiceWs.readyState : 'N/A');
     
