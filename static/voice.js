@@ -359,14 +359,26 @@ async function startVADRecording() {
     }
     
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // High-quality audio capture: 128kbps Opus for clear STT
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 48000
+            } 
+        });
         
         audioChunks = [];
         
         // Use batch mode only - WebSocket streaming doesn't work with webm chunks
         // MediaRecorder produces chunks with individual headers that can't be concatenated
         
-        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+        // High bitrate Opus (128kbps) for better STT accuracy
+        mediaRecorder = new MediaRecorder(stream, { 
+            mimeType: 'audio/webm;codecs=opus',
+            audioBitsPerSecond: 128000
+        });
         
         mediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
