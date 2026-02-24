@@ -408,22 +408,29 @@ async def generate_speech_batch(
         else:
             full_wav = np.array([])
         
-        # Normalize audio to prevent clipping and improve quality
-        # First, find the max absolute value
-        max_val = np.max(np.abs(full_wav)) if len(full_wav) > 0 else 1.0
-        
-        # Normalize to 95% of max range to prevent clipping
-        if max_val > 0:
-            full_wav = full_wav / max_val * 0.95
-        
-        # Apply gentle high-pass filter to remove DC offset
-        # Simple implementation: subtract moving average
+        # Apply gentle high-pass filter FIRST to remove DC offset
+        # This prevents low-frequency rumble that causes artifacts
         if len(full_wav) > 100:
             window_size = 100
             moving_avg = np.convolve(full_wav, np.ones(window_size)/window_size, mode='same')
             full_wav = full_wav - moving_avg
         
-        # Convert to 16-bit PCM with proper clipping protection
+        # Consistent normalization using RMS (loudness-based) for consistent volume
+        # This prevents volume jumps between different chunks
+        if len(full_wav) > 0:
+            rms = np.sqrt(np.mean(full_wav ** 2))
+            if rms > 0:
+                # Target RMS of 0.1 (about -20dB) for consistent loudness
+                target_rms = 0.1
+                full_wav = full_wav * (target_rms / rms)
+            
+            # Apply soft limiting to prevent harsh clipping
+            # Uses tanh for smooth saturation instead of hard clipping
+            max_val = np.max(np.abs(full_wav))
+            if max_val > 0.95:
+                full_wav = np.tanh(full_wav * 0.9) * 0.95
+        
+        # Convert to 16-bit PCM
         wav_int16 = np.clip(full_wav * 32767, -32768, 32767).astype(np.int16)
         return wav_int16.tobytes(), SAMPLE_RATE
         

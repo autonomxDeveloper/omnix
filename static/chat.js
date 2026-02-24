@@ -622,6 +622,9 @@ async function speakText(text, speaker = 'en') {
         stopAudioRequested = false;
     }
     
+    // Reset crossfade state for new TTS session
+    resetCrossfadeState();
+    
     console.log('[TTS] speakText called with text length:', text.length, 'speaker:', speaker);
     
     if (conversationMode) {
@@ -772,7 +775,11 @@ async function speakText(text, speaker = 'en') {
     }
 }
 
-// Play TTS audio - handles both WAV and raw PCM
+// Cross-fade state for smooth chunk transitions
+let previousChunkEndSamples = null;
+let isFirstAudioChunk = true;
+
+// Play TTS audio - handles both WAV and raw PCM with crossfade
 // Returns a promise that resolves when playback is complete
 function playTTS(audioBase64, sampleRate = null) {
     return new Promise((resolve, reject) => {
@@ -790,6 +797,7 @@ function playTTS(audioBase64, sampleRate = null) {
             }
             
             let blob;
+            let pcmDataForCrossfade = null;
             
             if (sampleRate) {
                 // Raw PCM - create WAV container on client for low latency
@@ -802,8 +810,14 @@ function playTTS(audioBase64, sampleRate = null) {
                     pcmView[i] = binaryString.charCodeAt(i) & 0xFF; // Mask to 8 bits
                 }
                 
+                // Store for crossfade
+                pcmDataForCrossfade = pcmBuffer;
+                
+                // Apply crossfade to PCM data for smooth transitions
+                const processedPcm = applyCrossfade(pcmBuffer, sampleRate);
+                
                 // Create WAV header + PCM data
-                const wavBuffer = createWavBuffer(pcmBuffer, sampleRate);
+                const wavBuffer = createWavBuffer(processedPcm, sampleRate);
                 blob = new Blob([wavBuffer], { type: 'audio/wav' });
             } else {
                 // Assume WAV (backward compatibility)
@@ -855,6 +869,63 @@ function playTTS(audioBase64, sampleRate = null) {
             resolve(); // Resolve to continue queue
         }
     });
+}
+
+// Apply crossfade to PCM audio for smooth chunk transitions
+function applyCrossfade(pcmBuffer, sampleRate) {
+    const pcm16 = new Int16Array(pcmBuffer);
+    const numSamples = pcm16.length;
+    const float32 = new Float32Array(numSamples);
+    
+    // Convert to float32
+    for (let i = 0; i < numSamples; i++) {
+        float32[i] = pcm16[i] / 32768.0;
+    }
+    
+    const crossFadeLength = Math.min(32, Math.floor(numSamples / 32)); // ~1.3ms
+    const fadeLength = Math.min(64, Math.floor(numSamples / 4)); // ~2.7ms fade-in
+    
+    // Apply fade-in to first chunk to avoid startup click
+    if (isFirstAudioChunk) {
+        for (let i = 0; i < fadeLength; i++) {
+            const t = i / fadeLength;
+            float32[i] *= t; // Linear fade-in
+        }
+        isFirstAudioChunk = false;
+    }
+    
+    // Cross-fade start of this chunk with end of previous chunk
+    if (previousChunkEndSamples && previousChunkEndSamples.length === crossFadeLength) {
+        for (let i = 0; i < crossFadeLength; i++) {
+            const t = i / crossFadeLength;
+            // Equal-power cross-fade for smoother transitions
+            const fadeIn = Math.sin(t * Math.PI / 2);
+            const fadeOut = Math.cos(t * Math.PI / 2);
+            float32[i] = previousChunkEndSamples[i] * fadeOut + float32[i] * fadeIn;
+        }
+    }
+    
+    // Save end samples for cross-fade with next chunk
+    previousChunkEndSamples = new Float32Array(crossFadeLength);
+    for (let i = 0; i < crossFadeLength; i++) {
+        previousChunkEndSamples[i] = float32[numSamples - crossFadeLength + i];
+    }
+    
+    // Convert back to int16 PCM
+    const result = new Int16Array(numSamples);
+    for (let i = 0; i < numSamples; i++) {
+        // Clamp to [-1, 1] and convert to 16-bit
+        const sample = Math.max(-1, Math.min(1, float32[i]));
+        result[i] = sample < 0 ? sample * 32768 : sample * 32767;
+    }
+    
+    return result.buffer;
+}
+
+// Reset crossfade state when starting new TTS session
+function resetCrossfadeState() {
+    previousChunkEndSamples = null;
+    isFirstAudioChunk = true;
 }
 
 // Create WAV buffer from raw PCM - client-side for low latency
