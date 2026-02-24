@@ -922,15 +922,16 @@ def chat_stream():
 
 @app.route('/api/chat/voice-stream', methods=['POST'])
 def chat_voice_stream():
-    """Stream chat response with interleaved TTS audio generation.
+    """Stream chat response with TTS audio generation.
     
-    Streams LLM tokens as 'content' events, and as sentences complete,
-    generates TTS audio in a background thread and sends 'audio' events.
-    The client gets both text and audio from a single SSE connection.
+    QUALITY-FIRST APPROACH: Wait for complete LLM response, then generate
+    ONE complete TTS audio file. This eliminates static caused by 
+    concatenating multiple sentence-by-sentence audio chunks.
+    
+    Streams LLM tokens as 'content' events first, then sends ONE 'audio' 
+    event with the complete audio at the end.
     """
     from flask import Response
-    from concurrent.futures import ThreadPoolExecutor
-    import queue as q
     
     data = request.get_json()
     
@@ -975,83 +976,12 @@ def chat_voice_stream():
         voice_clone_id = voice_data.get("voice_clone_id")
         print(f"[voice-stream] Resolved speaker '{speaker}' -> voice_clone_id: {voice_clone_id}")
     
-    def generate_tts_for_sentence(text, clone_id):
-        """Generate TTS audio for a phrase in a thread. Returns (pcm_base64, sample_rate) or None."""
-        tts_req_start = time_module.time()
-        try:
-            clean_text = remove_emojis(text)
-            if not clean_text.strip():
-                return None
-            
-            # Use Chatterbox TTS - simple text input, optional voice cloning
-            request_data = {
-                "text": clean_text,
-                "language": "en"
-            }
-            if clone_id:
-                request_data["voice_clone_id"] = clone_id
-            
-            req_prep_time = (time_module.time() - tts_req_start) * 1000
-            
-            resp = requests.post(
-                f"{TTS_BASE_URL}/tts",
-                json=request_data,
-                timeout=60
-            )
-            
-            req_time = (time_module.time() - tts_req_start) * 1000
-            
-            if resp.status_code == 200:
-                result = resp.json()
-                if result.get('success'):
-                    # Return raw PCM directly - skip WAV conversion for speed
-                    audio_data = result.get('audio', '')
-                    sample_rate = result.get('sample_rate', TTS_SAMPLE_RATE)
-                    print(f"[TTS] '{text[:30]}...' prep: {req_prep_time:.0f}ms, http: {req_time:.0f}ms")
-                    return (audio_data, sample_rate)
-        except Exception as e:
-            print(f"[voice-stream] TTS error for '{text[:30]}...': {e}")
-        return None
-    
-    # Timing tracking
-    import time as time_module
-    llm_start_time = time_module.time()
-    first_token_time = None
-    first_tts_submit_time = None
-    first_tts_complete_time = None
-    
     def generate():
-        # Thread pool for parallel TTS generation - more workers for faster processing
-        executor = ThreadPoolExecutor(max_workers=4)
-        tts_futures = []  # list of (sentence_index, future)
-        audio_queue = q.Queue()  # (sentence_index, audio_base64)
-        next_audio_index = [0]  # mutable counter for ordered playback
-        pending_audio = {}  # index -> audio_base64 for out-of-order completions
-        
-        sentence_index = [0]
-        
-        def submit_tts(sentence_text, idx):
-            """Submit TTS job and put result in audio_queue when done"""
-            nonlocal first_tts_submit_time
-            if first_tts_submit_time is None:
-                first_tts_submit_time = time_module.time()
-                print(f"[TIMING] First TTS submitted at: {first_tts_submit_time - llm_start_time:.3f}s after message")
-            
-            def task():
-                nonlocal first_tts_complete_time
-                audio = generate_tts_for_sentence(sentence_text, voice_clone_id)
-                if first_tts_complete_time is None and audio:
-                    first_tts_complete_time = time_module.time()
-                    print(f"[TIMING] First TTS completed at: {first_tts_complete_time - llm_start_time:.3f}s after message")
-                if audio:
-                    audio_queue.put((idx, audio))
-                else:
-                    audio_queue.put((idx, None))
-            future = executor.submit(task)
-            tts_futures.append(future)
+        import time as time_module
         
         try:
             config = get_provider_config()
+            llm_start_time = time_module.time()
             
             if config['provider'] == 'openrouter':
                 headers = {
@@ -1102,19 +1032,8 @@ def chat_voice_stream():
             
             ai_message = ""
             thinking = ""
-            phrase_buffer = ""
-            word_count = [0]
             
-            def flush_phrase():
-                nonlocal phrase_buffer
-                trimmed = phrase_buffer.strip()
-                if len(trimmed) > 0:
-                    idx = sentence_index[0]
-                    sentence_index[0] += 1
-                    submit_tts(trimmed, idx)
-                    phrase_buffer = ""
-                    word_count[0] = 0
-            
+            # Step 1: Stream all LLM tokens first
             for line in response.iter_lines():
                 if line:
                     line = line.decode('utf-8')
@@ -1132,73 +1051,16 @@ def chat_voice_stream():
                             
                             content = delta.get('content', '')
                             if content:
-                                nonlocal first_token_time
-                                if first_token_time is None:
-                                    first_token_time = time_module.time()
-                                    print(f"[TIMING] First LLM token received at: {first_token_time - llm_start_time:.3f}s after message")
-                                    print(f"[DEBUG] First token content: '{content}' ({len(content)} chars)")
-                                
                                 ai_message += content
-                                phrase_buffer += content
-                                word_count[0] += len(content.split())
-                                
                                 # Send text chunk to client immediately
                                 yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
-                                
-                                # QUALITY-FIRST CHUNKING - Wait for complete phrases/sentences
-                                # for better TTS quality instead of rushing partial words
-                                import re as _re
-                                should_flush = False
-                                trimmed = phrase_buffer.strip()
-                                
-                                # Debug: print state on every token for first few
-                                if sentence_index[0] < 2:
-                                    print(f"[DEBUG] Token #{sentence_index[0]}: buffer='{phrase_buffer[:50]}...', trimmed_len={len(trimmed)}, word_count={word_count[0]}")
-                                
-                                # ALWAYS wait for sentence/clause boundaries for quality TTS
-                                # This ensures we don't send partial words to TTS
-                                
-                                # Check for sentence end (. ! ?) - always flush
-                                if _re.search(r'[.!?][\s)]', phrase_buffer) and len(trimmed) > 3:
-                                    should_flush = True
-                                    print(f"[CHUNK] Sentence end: '{trimmed[:30]}...'")
-                                # Check for newlines - flush for natural breaks
-                                elif '\n' in phrase_buffer and len(trimmed) > 10:
-                                    should_flush = True
-                                    print(f"[CHUNK] Newline break: '{trimmed[:30]}...'")
-                                # Check for clause boundaries (, ; :) with enough context
-                                elif _re.search(r'[,;:][\s]', phrase_buffer) and word_count[0] >= 4:
-                                    should_flush = True
-                                    print(f"[CHUNK] Clause break: '{trimmed[:30]}...'")
-                                # Send chunk after 8+ words if no boundary found yet
-                                # This ensures we have a meaningful phrase even without punctuation
-                                elif word_count[0] >= 8 and len(trimmed) > 20:
-                                    should_flush = True
-                                    print(f"[CHUNK] Word threshold: '{trimmed[:30]}...'")
-                                
-                                if should_flush:
-                                    flush_phrase()
-                                
-                                # Also check audio queue for completed TTS
-                                while not audio_queue.empty():
-                                    try:
-                                        idx, audio = audio_queue.get_nowait()
-                                        if audio:
-                                            pending_audio[idx] = audio
-                                    except:
-                                        break
-                                
-                                # Send audio in order
-                                while next_audio_index[0] in pending_audio:
-                                    audio_data, sample_rate = pending_audio.pop(next_audio_index[0])
-                                    yield f"data: {json.dumps({'type': 'audio', 'audio': audio_data, 'sample_rate': sample_rate, 'index': next_audio_index[0]})}\n\n"
-                                    next_audio_index[0] += 1
                         
                         except json.JSONDecodeError:
                             continue
             
-            # Flush remaining phrase
-            flush_phrase()
+            llm_end_time = time_module.time()
+            llm_duration = llm_end_time - llm_start_time
+            print(f"[voice-stream] LLM complete in {llm_duration:.2f}s, total chars: {len(ai_message)}")
             
             # Extract thinking if not already captured
             if not thinking:
@@ -1218,28 +1080,60 @@ def chat_voice_stream():
             sessions_data[session_id]['updated_at'] = datetime.now().isoformat()
             save_sessions(sessions_data)
             
-            # Wait for all TTS jobs to complete and send remaining audio
-            executor.shutdown(wait=True)
-            
-            while not audio_queue.empty():
+            # Step 2: Generate TTS for the COMPLETE response as ONE audio file
+            # This eliminates static from sentence-by-sentence concatenation
+            if ai_message.strip():
+                tts_start_time = time_module.time()
+                
+                clean_text = remove_emojis(ai_message)
+                
+                # Send status to client
+                yield f"data: {json.dumps({'type': 'tts_start', 'text_length': len(clean_text)})}\n\n"
+                
+                # Generate complete audio
+                request_data = {
+                    "text": clean_text,
+                    "language": "en"
+                }
+                if voice_clone_id:
+                    request_data["voice_clone_id"] = voice_clone_id
+                
                 try:
-                    idx, audio = audio_queue.get_nowait()
-                    if audio:
-                        pending_audio[idx] = audio
-                except:
-                    break
+                    resp = requests.post(
+                        f"{TTS_BASE_URL}/tts",
+                        json=request_data,
+                        timeout=120
+                    )
+                    
+                    tts_end_time = time_module.time()
+                    tts_duration = (tts_end_time - tts_start_time) * 1000
+                    
+                    if resp.status_code == 200:
+                        result = resp.json()
+                        if result.get('success'):
+                            audio_data = result.get('audio', '')
+                            sample_rate = result.get('sample_rate', TTS_SAMPLE_RATE)
+                            
+                            print(f"[voice-stream] TTS complete in {tts_duration:.0f}ms for {len(clean_text)} chars")
+                            
+                            # Send the complete audio as one event
+                            yield f"data: {json.dumps({'type': 'audio', 'audio': audio_data, 'sample_rate': sample_rate, 'index': 0, 'complete': True})}\n\n"
+                        else:
+                            print(f"[voice-stream] TTS failed: {result.get('error')}")
+                            yield f"data: {json.dumps({'type': 'tts_error', 'error': result.get('error', 'TTS failed')})}\n\n"
+                    else:
+                        print(f"[voice-stream] TTS HTTP error: {resp.status_code}")
+                        yield f"data: {json.dumps({'type': 'tts_error', 'error': f'TTS HTTP error: {resp.status_code}'})}\n\n"
+                        
+                except Exception as e:
+                    print(f"[voice-stream] TTS exception: {e}")
+                    yield f"data: {json.dumps({'type': 'tts_error', 'error': str(e)})}\n\n"
             
-            while next_audio_index[0] in pending_audio:
-                audio_data, sample_rate = pending_audio.pop(next_audio_index[0])
-                yield f"data: {json.dumps({'type': 'audio', 'audio': audio_data, 'sample_rate': sample_rate, 'index': next_audio_index[0]})}\n\n"
-                next_audio_index[0] += 1
-            
+            # Signal completion
             yield f"data: {json.dumps({'type': 'done', 'thinking': thinking, 'session_id': session_id})}\n\n"
             
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-        finally:
-            executor.shutdown(wait=False)
     
     return Response(generate(), mimetype='text/event-stream')
 
@@ -2151,6 +2045,131 @@ def stt_health_check():
         }), 503
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 503
+
+
+@app.route('/api/stt/float32', methods=['POST'])
+def speech_to_text_float32():
+    """Convert raw Float32 audio to text using Parakeet TDT.
+    
+    Accepts raw Float32 binary data directly from Web Audio API.
+    No Opus/WebM encoding - cleanest audio path for STT.
+    
+    Headers:
+        X-Sample-Rate: Sample rate of the audio (default: 48000)
+    
+    Body:
+        Raw Float32 binary samples (ArrayBuffer from client)
+    """
+    try:
+        # Get sample rate from header
+        sample_rate = int(request.headers.get('X-Sample-Rate', 48000))
+        
+        # Read raw Float32 binary data
+        float32_bytes = request.get_data()
+        
+        if len(float32_bytes) < 100:
+            return jsonify({
+                "success": False,
+                "error": f"Audio data too small ({len(float32_bytes)} bytes). Please speak longer."
+            }), 400
+        
+        # Convert bytes to numpy Float32 array
+        import numpy as np
+        float32_array = np.frombuffer(float32_bytes, dtype=np.float32)
+        
+        num_samples = len(float32_array)
+        duration = num_samples / sample_rate
+        
+        print(f"[STT-Float32] Received {num_samples} samples at {sample_rate}Hz ({duration:.2f}s)")
+        
+        # Convert Float32 to Int16 PCM for STT (Parakeet expects 16kHz PCM)
+        # First, resample to 16kHz if needed
+        target_sr = 16000
+        if sample_rate != target_sr:
+            try:
+                import scipy.signal
+                num_samples_16k = int(num_samples * target_sr / sample_rate)
+                audio_16k = scipy.signal.resample(float32_array, num_samples_16k)
+            except ImportError:
+                # Fallback: simple linear interpolation
+                ratio = target_sr / sample_rate
+                num_samples_16k = int(num_samples * ratio)
+                indices = np.arange(num_samples_16k) / ratio
+                indices = np.clip(indices, 0, num_samples - 1)
+                audio_16k = np.interp(indices, np.arange(num_samples), float32_array)
+        else:
+            audio_16k = float32_array
+        
+        # Convert to Int16 PCM
+        audio_int16 = np.clip(audio_16k * 32767, -32768, 32767).astype(np.int16)
+        
+        # Create WAV in memory
+        import io
+        import wave
+        wav_io = io.BytesIO()
+        with wave.open(wav_io, 'wb') as wav_file:
+            wav_file.setnchannels(1)  # Mono
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(target_sr)
+            wav_file.writeframes(audio_int16.tobytes())
+        
+        wav_io.seek(0)
+        wav_bytes = wav_io.read()
+        
+        # Send to Parakeet STT
+        files = {
+            'file': ('audio.wav', wav_bytes, 'audio/wav')
+        }
+        
+        print(f"[STT-Float32] Sending {len(wav_bytes)} bytes WAV to STT server")
+        response = requests.post(
+            f"{STT_BASE_URL}/transcribe",
+            files=files,
+            timeout=120
+        )
+        
+        print(f"[STT-Float32] STT server response: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if data.get('success'):
+                segments = data.get('segments', [])
+                full_text = ' '.join([seg['text'] for seg in segments])
+                
+                if not full_text.strip():
+                    return jsonify({
+                        "success": False,
+                        "error": "No speech detected. Please try speaking louder."
+                    }), 400
+                
+                return jsonify({
+                    "success": True,
+                    "text": full_text,
+                    "segments": segments,
+                    "duration": data.get('duration')
+                })
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": data.get('message', 'Transcription failed')
+                }), 500
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"STT API error: {response.status_code}"
+            }), response.status_code
+            
+    except requests.exceptions.ConnectionError:
+        return jsonify({
+            "success": False,
+            "error": "Cannot connect to STT server. Make sure Parakeet STT is running on port 8000."
+        }), 503
+    except Exception as e:
+        print(f"[STT-Float32] Exception: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # ==================== SERVICE MANAGEMENT ====================

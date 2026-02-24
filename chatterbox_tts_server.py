@@ -63,6 +63,8 @@ CHUNK_SIZE = 4096  # Smaller chunks for lower latency
 # Feature flags
 ENABLE_ENHANCEMENT = os.environ.get("ENABLE_ENHANCEMENT", "false").lower() == "true"
 ENABLE_48KHZ = os.environ.get("ENABLE_48KHZ", "true").lower() == "true"
+USE_GPU_DSP = os.environ.get("USE_GPU_DSP", "true").lower() == "true"
+STREAM_SAMPLE_RATE = int(os.environ.get("STREAM_SAMPLE_RATE", "48000"))  # Output sample rate for streaming
 
 # Crossfade settings
 CROSSFADE_SAMPLES = 480  # ~10ms at 48kHz for smooth transitions
@@ -437,6 +439,131 @@ def enhance_audio(audio: np.ndarray, sample_rate: int) -> np.ndarray:
 
 
 # ============================================================
+# GPU DSP FUNCTIONS (All processing on GPU for minimal CPU load)
+# ============================================================
+
+# Cached GPU resamplers for efficiency
+_gpu_resamplers = {}
+
+def get_gpu_resampler(orig_sr: int, target_sr: int, device: str = "cuda"):
+    """Get or create a cached GPU resampler"""
+    key = (orig_sr, target_sr, device)
+    if key not in _gpu_resamplers:
+        try:
+            import torchaudio.transforms as T
+            _gpu_resamplers[key] = T.Resample(orig_sr, target_sr).to(device)
+            logger.info(f"[GPU-DSP] Created GPU resampler: {orig_sr}Hz -> {target_sr}Hz")
+        except ImportError:
+            _gpu_resamplers[key] = None
+            logger.warning("[GPU-DSP] torchaudio not available, GPU resampling disabled")
+    return _gpu_resamplers[key]
+
+
+def gpu_resample(audio_tensor: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tensor:
+    """Resample audio on GPU for minimal CPU overhead
+    
+    Args:
+        audio_tensor: Audio tensor on GPU [samples] or [1, samples]
+        orig_sr: Original sample rate
+        target_sr: Target sample rate
+    
+    Returns:
+        Resampled audio tensor on GPU
+    """
+    if orig_sr == target_sr:
+        return audio_tensor
+    
+    if not torch.cuda.is_available():
+        # Fall back to CPU resampling
+        logger.warning("[GPU-DSP] CUDA not available, using CPU resampling")
+        return audio_tensor
+    
+    device = audio_tensor.device
+    
+    # Ensure correct shape [1, samples] for torchaudio
+    if audio_tensor.dim() == 1:
+        audio_tensor = audio_tensor.unsqueeze(0)
+    
+    resampler = get_gpu_resampler(orig_sr, target_sr, device)
+    if resampler is not None:
+        resampled = resampler(audio_tensor)
+        return resampled.squeeze(0) if audio_tensor.size(0) == 1 else resampled
+    else:
+        return audio_tensor.squeeze(0) if audio_tensor.size(0) == 1 else audio_tensor
+
+
+def gpu_remove_dc_offset(audio_tensor: torch.Tensor) -> torch.Tensor:
+    """Remove DC offset on GPU
+    
+    Args:
+        audio_tensor: Audio tensor on GPU
+    
+    Returns:
+        Audio tensor with zero mean
+    """
+    if audio_tensor.numel() == 0:
+        return audio_tensor
+    return audio_tensor - audio_tensor.mean()
+
+
+def gpu_normalize(audio_tensor: torch.Tensor, target_rms: float = 0.1) -> torch.Tensor:
+    """RMS normalization on GPU for consistent loudness
+    
+    Args:
+        audio_tensor: Audio tensor on GPU
+        target_rms: Target RMS level (default 0.1 = -20dB)
+    
+    Returns:
+        Normalized audio tensor
+    """
+    if audio_tensor.numel() == 0:
+        return audio_tensor
+    
+    rms = audio_tensor.pow(2).mean().sqrt()
+    if rms > 0:
+        audio_tensor = audio_tensor * (target_rms / rms)
+    
+    # Soft limiting to prevent clipping
+    max_val = audio_tensor.abs().max()
+    if max_val > 0.95:
+        audio_tensor = torch.tanh(audio_tensor * 0.9) * 0.95
+    
+    return audio_tensor
+
+
+def gpu_process_audio(audio_tensor: torch.Tensor, target_sr: int = 48000) -> torch.Tensor:
+    """Apply all DSP on GPU: resample, DC offset, normalize
+    
+    This keeps everything on GPU until the final CPU copy.
+    
+    Args:
+        audio_tensor: Raw audio tensor from model (24kHz)
+        target_sr: Target sample rate (default 48kHz)
+    
+    Returns:
+        Processed audio tensor on GPU as Float32
+    """
+    # Ensure on GPU
+    if not audio_tensor.is_cuda and torch.cuda.is_available():
+        audio_tensor = audio_tensor.cuda()
+    
+    # Flatten if needed
+    audio_tensor = audio_tensor.flatten()
+    
+    # 1. Resample to 48kHz on GPU
+    if target_sr != SAMPLE_RATE:
+        audio_tensor = gpu_resample(audio_tensor, SAMPLE_RATE, target_sr)
+    
+    # 2. Remove DC offset on GPU
+    audio_tensor = gpu_remove_dc_offset(audio_tensor)
+    
+    # 3. Normalize on GPU
+    audio_tensor = gpu_normalize(audio_tensor)
+    
+    return audio_tensor
+
+
+# ============================================================
 # SMART TEXT CHUNKING (LINGUISTIC BOUNDARIES)
 # ============================================================
 
@@ -463,11 +590,11 @@ class TextChunker:
     # Conjunction boundaries (and, but, or, etc.)
     CONJUNCTION_BOUNDARIES = re.compile(r'\s+(?=and|but|or|so|yet|for|nor)\s+', re.IGNORECASE)
     
-    # Minimum chunk size (in characters) - larger for smoother prosody
-    MIN_CHUNK_SIZE = 60
+    # Minimum chunk size (in characters) - smaller for streaming responsiveness
+    MIN_CHUNK_SIZE = 20
     
-    # Maximum chunk size - allow longer chunks for natural sentence flow
-    MAX_CHUNK_SIZE = 250
+    # Maximum chunk size - smaller for streaming to reduce latency
+    MAX_CHUNK_SIZE = 150
     
     @classmethod
     def chunk_for_streaming(cls, text: str) -> List[str]:
@@ -610,16 +737,15 @@ async def generate_speech_streaming(
     instruct: str = None,
     language: str = "en"
 ) -> AsyncIterator[tuple[bytes, int]]:
-    """Generate speech with TRUE streaming - each sentence is sent immediately after generation
+    """Generate speech with LIGHTWEIGHT streaming - minimal DSP for lowest latency
     
-    This provides the lowest possible latency for TTS streaming.
-    Each sentence is:
-    1. Generated
-    2. Processed (normalized, filtered)
-    3. Resampled to 48kHz (if enabled)
-    4. Sent immediately to client
+    Streaming path: minimal processing to avoid CPU-induced artifacts
+    - Generate audio
+    - Simple normalization only
+    - Send immediately (Int16 PCM at native 24kHz)
     
-    The client receives audio as it's being generated, not after all text is processed.
+    High-quality processing (DC offset, resampling, enhancement) is 
+    reserved for offline WAV generation only.
     """
     
     try:
@@ -638,10 +764,7 @@ async def generate_speech_streaming(
         if not chunks:
             chunks = [text]  # Fallback if no boundaries found
         
-        logger.info(f"[STREAM] Streaming {len(chunks)} chunks...")
-        
-        # Track previous chunk's end for crossfade continuity
-        previous_end_samples = None
+        logger.info(f"[STREAM] Streaming {len(chunks)} chunks (lightweight mode)...")
         
         # Process each chunk and stream immediately
         for i, chunk_text in enumerate(chunks):
@@ -667,42 +790,25 @@ async def generate_speech_streaming(
             
             gen_time = (time.time() - chunk_start) * 1000
             
-            # Apply DC offset removal (high-pass filter)
-            if len(wav) > 100:
-                window_size = 100
-                moving_avg = np.convolve(wav, np.ones(window_size)/window_size, mode='same')
-                wav = wav - moving_avg
-            
-            # RMS normalization for consistent volume
+            # LIGHTWEIGHT: Simple normalization only (no DC offset, no enhancement)
+            # This avoids CPU-heavy operations that can cause timing artifacts
             if len(wav) > 0:
-                rms = np.sqrt(np.mean(wav ** 2))
-                if rms > 0:
-                    target_rms = 0.08  # Slightly lower for streaming to leave headroom
-                    wav = wav * (target_rms / rms)
-                
-                # Soft limiting
+                # Simple peak normalization to prevent clipping
                 max_val = np.max(np.abs(wav))
-                if max_val > 0.9:
-                    wav = np.tanh(wav * 0.85)
+                if max_val > 0.95:
+                    wav = wav * 0.9 / max_val
             
-            # Apply optional speech enhancement
-            if ENABLE_ENHANCEMENT:
-                wav = enhance_audio(wav, SAMPLE_RATE)
-            
-            # Resample to 48kHz if enabled
+            # Keep at native 24kHz for streaming (no resampling)
             output_sr = SAMPLE_RATE
-            if ENABLE_48KHZ:
-                wav = resample_audio(wav, SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
-                output_sr = OUTPUT_SAMPLE_RATE
             
-            # Convert to int16 PCM
+            # Convert to int16 PCM (standard format)
             wav_int16 = np.clip(wav * 32767, -32768, 32767).astype(np.int16)
             
             # Yield this chunk immediately (true streaming!)
             process_time = (time.time() - chunk_start) * 1000
             logger.info(f"[STREAM] Chunk {i+1} ready: gen={gen_time:.0f}ms, total={process_time:.0f}ms, samples={len(wav_int16)}")
             
-            # Send the entire chunk at once (reduced overhead)
+            # Send the entire chunk at once
             yield (wav_int16.tobytes(), output_sr)
             
     except Exception as e:
@@ -952,40 +1058,96 @@ async def create_voice_clone(
 
 @app.post("/tts")
 async def tts_endpoint(request: TTSRequest):
-    """Generate speech (batch mode)"""
+    """Generate speech (batch mode) - generates ENTIRE text as ONE audio file"""
+    import datetime
+    
     try:
-        audio_bytes, sr = await generate_speech_batch(
-            text=request.text,
-            voice_clone_id=request.voice_clone_id,
-            voice_name=request.voice,
-            instruct=request.instruct,
-            language=request.language
-        )
+        model = get_model()
+        start_time = time.time()
+        
+        # Get reference audio for voice cloning if specified
+        audio_prompt_path = None
+        if request.voice_clone_id:
+            voice_info = voice_manager.get_voice(request.voice_clone_id)
+            if voice_info:
+                audio_prompt_path = voice_info['audio_path']
+                logger.info(f"[TTS] Using voice clone: {request.voice_clone_id}")
+        
+        logger.info(f"[TTS] Generating COMPLETE audio for: '{request.text[:60]}...'")
+        
+        # Generate the ENTIRE text as ONE audio file (like pocket-tts)
+        with torch.no_grad():
+            audio_tensor = model.generate(
+                request.text,
+                audio_prompt_path=audio_prompt_path,
+                temperature=request.temperature
+            )
+        
+        gen_time = (time.time() - start_time) * 1000
+        
+        # Convert to numpy
+        if hasattr(audio_tensor, 'cpu'):
+            wav = audio_tensor.cpu().numpy().flatten()
+        else:
+            wav = audio_tensor.flatten()
+        
+        # Simple normalization to prevent clipping
+        if len(wav) > 0:
+            max_val = np.max(np.abs(wav))
+            if max_val > 0:
+                wav = wav / max_val * 0.95
+        
+        # Convert to int16 PCM
+        wav_int16 = np.clip(wav * 32767, -32768, 32767).astype(np.int16)
+        audio_bytes = wav_int16.tobytes()
+        
+        # Save to audio folder for debugging
+        audio_dir = Path(__file__).parent / "audio"
+        audio_dir.mkdir(exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        audio_filename = f"tts_{timestamp}.wav"
+        audio_path = audio_dir / audio_filename
+        
+        # Write WAV file
+        import wave
+        with wave.open(str(audio_path), 'wb') as wav_file:
+            wav_file.setnchannels(1)  # Mono
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(SAMPLE_RATE)
+            wav_file.writeframes(audio_bytes)
+        
+        logger.info(f"[TTS] Saved audio to: {audio_path} ({len(audio_bytes)} bytes)")
         
         # Return as base64
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
         
+        total_time = (time.time() - start_time) * 1000
+        logger.info(f"[TTS] Complete: gen={gen_time:.0f}ms, total={total_time:.0f}ms")
+        
         return {
             "success": True,
             "audio": audio_b64,
-            "sample_rate": sr,
+            "sample_rate": SAMPLE_RATE,
             "format": "audio/raw"
         }
         
     except Exception as e:
         logger.error(f"TTS error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {"success": False, "error": str(e)}
 
 @app.websocket("/ws/tts")
 async def websocket_tts(websocket: WebSocket):
-    """WebSocket endpoint for streaming TTS with binary Float32 output
+    """WebSocket endpoint for streaming TTS with complete WAV files
     
-    Protocol:
+    Simple, proven approach matching pocket-tts-server:
     - Client sends: {"text": "...", "voice_clone_id": "..."} (JSON text)
-    - Server sends: Binary Float32 audio chunks directly (no Base64)
+    - Server sends: {"type": "audio", "data": "<base64-wav>", "chunk": N} (JSON text)
     - Server sends: {"type": "done"} (JSON text) when complete
     
-    Binary format: Raw Float32Array samples at 48kHz, mono
+    Each audio message is a complete WAV file (with headers) as base64.
+    No crossfade, no raw binary - just simple sequential playback.
     """
     await websocket.accept()
     
@@ -1004,23 +1166,31 @@ async def websocket_tts(websocket: WebSocket):
             if not text:
                 continue
             
-            # Stream audio chunks as binary Float32
-            async for audio_chunk, sr in generate_speech_streaming_float32(
+            chunk_idx = 0
+            
+            # Stream complete WAV files
+            async for wav_base64 in generate_speech_streaming_wav(
                 text=text,
                 voice_clone_id=voice_clone_id,
                 voice_name=voice,
                 instruct=instruct,
                 language=language
             ):
-                if isinstance(audio_chunk, bytes) and audio_chunk.startswith(b"error:"):
+                if wav_base64 is None:
                     await websocket.send_text(json.dumps({
                         "type": "error",
-                        "data": audio_chunk.decode()
+                        "data": "Generation failed"
                     }))
                 else:
-                    # Send raw Float32 binary directly (no Base64 encoding)
-                    # Client receives as ArrayBuffer -> Float32Array
-                    await websocket.send_bytes(audio_chunk)
+                    # Send complete WAV as base64 (like pocket-tts-server)
+                    await websocket.send_text(json.dumps({
+                        "type": "audio",
+                        "data": wav_base64,
+                        "chunk": chunk_idx,
+                        "format": "wav",
+                        "sample_rate": SAMPLE_RATE
+                    }))
+                    chunk_idx += 1
             
             # Signal completion
             await websocket.send_text(json.dumps({
@@ -1040,18 +1210,28 @@ async def websocket_tts(websocket: WebSocket):
             pass
 
 
-async def generate_speech_streaming_float32(
+async def generate_speech_streaming_wav(
     text: str,
     voice_clone_id: str = None,
     voice_name: str = None,
     instruct: str = None,
     language: str = "en"
-) -> AsyncIterator[tuple[bytes, int]]:
-    """Generate speech with TRUE streaming - Float32 binary output
+) -> AsyncIterator[str]:
+    """Generate speech as a SINGLE complete WAV file
     
-    Output: Raw Float32Array bytes (no Base64, no Int16 conversion)
-    Sample rate: 48kHz for Web Audio API compatibility
+    CRITICAL: Generate the ENTIRE text as ONE audio file.
+    This is exactly how pocket-tts-server works - no sentence splitting.
+    
+    Sentence-by-sentence generation causes static/noise because:
+    - Each sentence is generated independently with no acoustic context
+    - Discontinuities at sentence boundaries
+    - Model loses prosody context between chunks
+    
+    Yields: A single base64 encoded complete WAV file
     """
+    import io
+    import scipy.io.wavfile
+    import datetime
     
     try:
         model = get_model()
@@ -1063,73 +1243,80 @@ async def generate_speech_streaming_float32(
             if voice_info:
                 audio_prompt_path = voice_info['audio_path']
         
-        # Split text into chunks using smart chunker
-        chunks = TextChunker.chunk_for_streaming(text)
+        start_time = time.time()
+        logger.info(f"[STREAM-WAV] Generating COMPLETE audio for: '{text[:60]}...'")
         
-        if not chunks:
-            chunks = [text]  # Fallback if no boundaries found
+        # Generate the ENTIRE text as ONE audio file (like pocket-tts-server)
+        with torch.no_grad():
+            audio_tensor = model.generate(
+                text,
+                audio_prompt_path=audio_prompt_path,
+                temperature=0.8
+            )
         
-        logger.info(f"[STREAM-F32] Streaming {len(chunks)} chunks as Float32...")
+        gen_time = (time.time() - start_time) * 1000
         
-        # Process each chunk and stream immediately
-        for i, chunk_text in enumerate(chunks):
-            if not chunk_text.strip():
-                continue
-            
-            chunk_start = time.time()
-            logger.info(f"[STREAM-F32] Generating chunk {i+1}/{len(chunks)}: '{chunk_text[:40]}...'")
-            
-            # Generate audio for this chunk
-            with torch.no_grad():
-                audio_tensor = model.generate(
-                    chunk_text,
-                    audio_prompt_path=audio_prompt_path,
-                    temperature=0.8
-                )
-            
-            # Convert tensor to numpy Float32
-            if hasattr(audio_tensor, 'cpu'):
-                wav = audio_tensor.cpu().numpy().flatten().astype(np.float32)
-            else:
-                wav = audio_tensor.flatten().astype(np.float32)
-            
-            gen_time = (time.time() - chunk_start) * 1000
-            
-            # Remove DC offset (prevents clicks)
-            wav = remove_dc_offset(wav)
-            
-            # RMS normalization for consistent volume
-            if len(wav) > 0:
-                rms = np.sqrt(np.mean(wav ** 2))
-                if rms > 0:
-                    target_rms = 0.08
-                    wav = wav * (target_rms / rms)
-                
-                # Soft limiting
-                max_val = np.max(np.abs(wav))
-                if max_val > 0.9:
-                    wav = np.tanh(wav * 0.85)
-            
-            # Resample to 48kHz if enabled (Float32 throughout)
-            output_sr = SAMPLE_RATE
-            if ENABLE_48KHZ:
-                wav = resample_audio(wav, SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
-                output_sr = OUTPUT_SAMPLE_RATE
-            
-            # Convert to raw Float32 bytes (no Int16 conversion!)
-            float32_bytes = wav.tobytes()
-            
-            # Yield binary Float32 chunk
-            process_time = (time.time() - chunk_start) * 1000
-            logger.info(f"[STREAM-F32] Chunk {i+1} ready: gen={gen_time:.0f}ms, total={process_time:.0f}ms, samples={len(wav)}, bytes={len(float32_bytes)}")
-            
-            yield (float32_bytes, output_sr)
-            
+        # Convert to numpy
+        if hasattr(audio_tensor, 'cpu'):
+            wav = audio_tensor.cpu().numpy().flatten()
+        else:
+            wav = audio_tensor.flatten()
+        
+        # Simple normalization to prevent clipping
+        if len(wav) > 0:
+            max_val = np.max(np.abs(wav))
+            if max_val > 0:
+                wav = wav / max_val * 0.95
+        
+        # Create complete WAV file in memory - MUST use int16 for browser compatibility
+        wav_int16 = np.clip(wav * 32767, -32768, 32767).astype(np.int16)
+        
+        wav_buffer = io.BytesIO()
+        scipy.io.wavfile.write(wav_buffer, SAMPLE_RATE, wav_int16)
+        wav_buffer.seek(0)
+        wav_bytes = wav_buffer.read()
+        
+        # Save to audio folder for debugging/playback
+        audio_dir = Path(__file__).parent / "audio"
+        audio_dir.mkdir(exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        audio_filename = f"tts_{timestamp}.wav"
+        audio_path = audio_dir / audio_filename
+        
+        with open(audio_path, 'wb') as f:
+            f.write(wav_bytes)
+        logger.info(f"[STREAM-WAV] Saved audio to: {audio_path}")
+        
+        # Encode to base64
+        wav_base64 = base64.b64encode(wav_bytes).decode('utf-8')
+        
+        process_time = (time.time() - start_time) * 1000
+        logger.info(f"[STREAM-WAV] Complete audio ready: gen={gen_time:.0f}ms, total={process_time:.0f}ms, samples={len(wav)}, bytes={len(wav_bytes)}")
+        
+        yield wav_base64
+        
     except Exception as e:
-        logger.error(f"Error in Float32 streaming generation: {e}")
+        logger.error(f"Error in WAV streaming generation: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        yield (f"error:{str(e)}".encode(), 0)
+        yield None
+
+
+# Keep for backwards compatibility but mark as deprecated
+async def generate_speech_streaming_float32(
+    text: str,
+    voice_clone_id: str = None,
+    voice_name: str = None,
+    instruct: str = None,
+    language: str = "en"
+) -> AsyncIterator[tuple[bytes, int, dict]]:
+    """DEPRECATED: Use generate_speech_streaming_wav instead"""
+    logger.warning("[DEPRECATED] generate_speech_streaming_float32 is deprecated, use generate_speech_streaming_wav")
+    async for wav_base64 in generate_speech_streaming_wav(text, voice_clone_id, voice_name, instruct, language):
+        if wav_base64:
+            yield (wav_base64.encode(), SAMPLE_RATE, {})
+        else:
+            yield (b"", 0, {})
 
 @app.post("/test_wav")
 async def test_tts_to_wav(text: str = "This is a test of the text to speech system. We are recording a thirty second sample to check for any audio artifacts or quality issues in the output. The quick brown fox jumps over the lazy dog multiple times while the sun sets in the distance. Testing one two three four five six seven eight nine ten. This sentence is longer to provide more audio data for analysis purposes. Thank you for testing the audio quality of this TTS system."):

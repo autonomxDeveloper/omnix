@@ -41,9 +41,12 @@ if exist "%~dp0parakeet_stt_server.py" (
 timeout /t 5 /nobreak >nul
 
 :: Start Chatterbox TTS TURBO Server in background
-:: NOTE: ENABLE_ENHANCEMENT temporarily disabled for testing - re-enable if needed
+:: GPU DSP Configuration:
+::   USE_GPU_DSP=true        - All DSP (resample, DC offset, normalize) on GPU
+::   STREAM_SAMPLE_RATE=48000 - Output sample rate for streaming (48kHz)
+::   ENABLE_ENHANCEMENT=false - DeepFilterNet enhancement (only for offline WAV)
 echo [2/4] Starting Chatterbox TTS TURBO on port 8020...
-start "Chatterbox-TTS" cmd /k "set ENABLE_ENHANCEMENT=false && python chatterbox_tts_server.py"
+start "Chatterbox-TTS" cmd /k "set USE_GPU_DSP=true && set STREAM_SAMPLE_RATE=48000 && set ENABLE_ENHANCEMENT=false && python chatterbox_tts_server.py"
 
 
 :: Wait a bit for TTS to start

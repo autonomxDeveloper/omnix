@@ -348,7 +348,14 @@ function detectVoiceActivity() {
     }
 }
 
-// Start VAD recording
+// Raw Float32 microphone capture using Web Audio API
+// No Opus/WebM encoding - direct Float32 for cleanest audio path
+let rawFloat32AudioContext = null;
+let rawFloat32Source = null;
+let rawFloat32Processor = null;
+let rawFloat32Chunks = [];
+
+// Start VAD recording with raw Float32 capture
 async function startVADRecording() {
     if (isRecording) return;
     
@@ -359,7 +366,6 @@ async function startVADRecording() {
     }
     
     try {
-        // High-quality audio capture: 128kbps Opus for clear STT
         const stream = await navigator.mediaDevices.getUserMedia({ 
             audio: {
                 echoCancellation: true,
@@ -369,39 +375,39 @@ async function startVADRecording() {
             } 
         });
         
-        audioChunks = [];
-        
-        // Use batch mode only - WebSocket streaming doesn't work with webm chunks
-        // MediaRecorder produces chunks with individual headers that can't be concatenated
-        
-        // High bitrate Opus (128kbps) for better STT accuracy
-        mediaRecorder = new MediaRecorder(stream, { 
-            mimeType: 'audio/webm;codecs=opus',
-            audioBitsPerSecond: 128000
+        // Initialize Web Audio API for raw Float32 capture
+        rawFloat32AudioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: 48000,
+            latencyHint: 'interactive'
         });
         
-        mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                audioChunks.push(event.data);
-            }
-        };
+        rawFloat32Source = rawFloat32AudioContext.createMediaStreamSource(stream);
         
-        mediaRecorder.onstop = async () => {
-            stream.getTracks().forEach(track => track.stop());
+        // Create ScriptProcessor for raw audio access
+        // Buffer size 4096 is good compromise for latency vs CPU
+        rawFloat32Processor = rawFloat32AudioContext.createScriptProcessor(4096, 1, 1);
+        
+        rawFloat32Chunks = [];
+        
+        rawFloat32Processor.onaudioprocess = (event) => {
+            // Get raw Float32 samples directly from microphone
+            const inputBuffer = event.inputBuffer.getChannelData(0); // Float32Array
             
-            if (audioChunks.length > 0) {
-                await transcribeVADAudio();
-            }
+            // Store chunk for batch STT when recording stops
+            rawFloat32Chunks.push(new Float32Array(inputBuffer));
         };
         
-        // Start without timeslice - this produces a single valid webm file
-        // Using timeslice creates chunks that can't be concatenated into valid webm
-        mediaRecorder.start();
+        rawFloat32Source.connect(rawFloat32Processor);
+        rawFloat32Processor.connect(rawFloat32AudioContext.destination); // Required for processing
+        
         isRecording = true;
         
         conversationMicBtn.classList.add('recording');
         micBtn.classList.add('recording');
         updateConversationStatus('🎤 Listening...', 'listening');
+        
+        console.log('[VOICE] Raw Float32 capture started at 48kHz');
+        
     } catch (e) {
         console.error('Failed to start VAD recording:', e);
     }
@@ -420,11 +426,82 @@ function stopVADRecording() {
         silenceTimer = null;
     }
     
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-        mediaRecorder.stop();
+    // Stop raw Float32 capture
+    if (rawFloat32Processor) {
+        rawFloat32Processor.disconnect();
+        rawFloat32Processor = null;
+    }
+    
+    if (rawFloat32Source) {
+        rawFloat32Source.disconnect();
+        rawFloat32Source = null;
+    }
+    
+    if (rawFloat32AudioContext) {
+        rawFloat32AudioContext.close();
+        rawFloat32AudioContext = null;
+    }
+    
+    // Process captured raw Float32 audio
+    if (rawFloat32Chunks.length > 0) {
+        transcribeRawFloat32Audio();
     }
     
     updateConversationStatus('🔄 Processing...', 'speaking');
+}
+
+// Transcribe raw Float32 audio
+async function transcribeRawFloat32Audio() {
+    if (rawFloat32Chunks.length === 0) return;
+    
+    isProcessing = true;
+    const sttStartTime = performance.now();
+    
+    try {
+        // Concatenate all Float32 chunks into one buffer
+        const totalLength = rawFloat32Chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const concatenated = new Float32Array(totalLength);
+        let offset = 0;
+        for (const chunk of rawFloat32Chunks) {
+            concatenated.set(chunk, offset);
+            offset += chunk.length;
+        }
+        
+        console.log(`[VOICE] Sending ${totalLength} Float32 samples (${(totalLength / 48000).toFixed(2)}s) to STT`);
+        
+        // Send raw Float32 to server via WebSocket for lowest latency
+        if (USE_WEBSOCKET && voiceWs && voiceWs.readyState === WebSocket.OPEN) {
+            voiceWs.send(concatenated.buffer);  // Send raw binary Float32
+            return;
+        }
+        
+        // Fallback: Send via HTTP POST as binary
+        const response = await fetch('/api/stt/float32', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/octet-stream',
+                'X-Sample-Rate': '48000'
+            },
+            body: concatenated.buffer
+        });
+        
+        const data = await response.json();
+        const sttDuration = (performance.now() - sttStartTime).toFixed(0);
+        console.log(`⏱️ [TIMING] STT (Float32 Audio → Text): ${sttDuration}ms`);
+        
+        if (data.success && data.text && data.text.trim()) {
+            conversationInput.value = data.text;
+            await processVADTranscript(data.text, sttDuration);
+        } else {
+            updateConversationStatus('🎤 Auto-listening - Speak now!', 'listening');
+        }
+    } catch (error) {
+        console.error('Raw Float32 STT Error:', error);
+        updateConversationStatus('🎤 Auto-listening - Speak now!', 'listening');
+    } finally {
+        rawFloat32Chunks = [];
+        isProcessing = false;
+    }
 }
 
 // Transcribe VAD audio
@@ -1057,70 +1134,16 @@ async function sendConversationMessageRESTFromMic(message, totalStartTime, sttDu
     await sendConversationMessageREST(message, totalStartTime, sttDuration);
 }
 
-// TTS audio queue for sequential playback of sentence chunks
-let ttsAudioQueue = [];
-let ttsPlaying = false;
-let ttsFetchQueue = []; // Pre-fetch audio while previous is playing
+// TTS audio queue - uses shared queue from chat.js
+// Variables ttsAudioQueue, ttsIsPlayingQueue defined in chat.js
 
 // Global audio playback control
 let globalAudioPlayQueue = [];
 let globalAudioPlaying = false;
 let stopAudioRequested = false;
 
-function enqueueTTS(text, speaker) {
-    if (!text.trim()) return Promise.resolve();
-    
-    return new Promise((resolve) => {
-        ttsAudioQueue.push({ text, speaker, resolve, audioPromise: null });
-        
-        // Start pre-fetching audio immediately (don't wait for playback)
-        const item = ttsAudioQueue[ttsAudioQueue.length - 1];
-        item.audioPromise = fetch('/api/tts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: item.text, speaker: item.speaker })
-        }).then(r => r.json()).catch(e => {
-            console.error('TTS fetch error:', e);
-            return { success: false };
-        });
-        
-        processTTSQueue();
-    });
-}
-
-async function processTTSQueue() {
-    if (ttsPlaying || ttsAudioQueue.length === 0) return;
-    
-    ttsPlaying = true;
-    const item = ttsAudioQueue.shift();
-    
-    try {
-        // Use pre-fetched audio data
-        const data = await item.audioPromise;
-        
-        if (data && data.success && data.audio) {
-            await playTTS(data.audio);
-        }
-    } catch (error) {
-        console.error('TTS queue error:', error);
-    } finally {
-        ttsPlaying = false;
-        item.resolve();
-        // Process next in queue
-        if (ttsAudioQueue.length > 0) {
-            processTTSQueue();
-        }
-    }
-}
-
-function clearTTSQueue() {
-    ttsAudioQueue = [];
-    ttsPlaying = false;
-    if (currentAudio) {
-        currentAudio.pause();
-        currentAudio = null;
-    }
-}
+// Use shared TTS queue functions from chat.js
+// enqueueTTS, processTTSQueue, clearTTSQueue are defined in chat.js
 
 // Streaming conversation message via SSE with server-side threaded TTS
 async function sendConversationMessageREST(message, totalStartTime = null, sttDuration = null) {
