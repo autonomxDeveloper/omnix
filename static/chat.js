@@ -873,6 +873,7 @@ function playWithWebAudio(audioData, sampleRate) {
 /**
  * Apply equal-power crossfade for smooth chunk transitions
  * Uses cos/sin curves for constant power during fade
+ * CRITICAL FIX: Save ORIGINAL end samples BEFORE crossfade to avoid cumulative distortion
  * @param {Float32Array} audioData - Audio samples
  * @param {number} sampleRate - Sample rate
  * @returns {Float32Array} Processed audio with crossfade applied
@@ -885,9 +886,16 @@ function applyEqualPowerCrossfade(audioData, sampleRate) {
     const output = new Float32Array(numSamples);
     output.set(audioData);
     
+    // IMPORTANT: Save ORIGINAL end samples BEFORE any modification
+    // This prevents cumulative distortion from crossfading already-crossfaded data
+    const originalEndSamples = new Float32Array(crossfadeLen);
+    for (let i = 0; i < crossfadeLen; i++) {
+        originalEndSamples[i] = audioData[numSamples - crossfadeLen + i];
+    }
+    
     // Apply fade-in to first chunk to avoid startup click
     if (isFirstAudioChunk) {
-        const fadeInLen = Math.min(64, Math.floor(numSamples / 8));
+        const fadeInLen = Math.min(144, Math.floor(numSamples / 8));
         for (let i = 0; i < fadeInLen; i++) {
             const t = i / fadeInLen;
             // Equal-power fade in
@@ -908,11 +916,8 @@ function applyEqualPowerCrossfade(audioData, sampleRate) {
         }
     }
     
-    // Save end samples for cross-fade with next chunk
-    previousChunkEndSamples = new Float32Array(crossfadeLen);
-    for (let i = 0; i < crossfadeLen; i++) {
-        previousChunkEndSamples[i] = audioData[numSamples - crossfadeLen + i];
-    }
+    // Store ORIGINAL end samples for next chunk (not the modified ones!)
+    previousChunkEndSamples = originalEndSamples;
     
     return output;
 }
@@ -943,38 +948,84 @@ function resetWebAudioState() {
 const USE_WEB_AUDIO_API = true;  // Set to true for lower latency
 
 // ============================================================
-// BINARY FLOAT32 WEBSOCKET STREAMING (No Base64)
+// SIMPLE AUDIO QUEUE (Like pocket-tts-server)
 // ============================================================
 
-// WebSocket for binary Float32 TTS streaming
-let ttsWebSocket = null;
-let ttsChunkQueue = [];
-let ttsIsPlaying = false;
-let ttsAudioContext = null;
-let ttsNextStartTime = 0;
-const TTS_SAMPLE_RATE = 48000;
-const MIN_CHUNKS_BEFORE_PLAY = 2;  // Pre-buffer for smooth playback
+// Audio queue for sequential playback - simple, proven approach
+let ttsAudioQueue = [];
+let ttsIsPlayingQueue = false;
+let ttsCurrentAudio = null;
 
 /**
- * Initialize AudioContext for Float32 playback
+ * Queue audio data and play sequentially
+ * @param {string} audioBase64 - Base64 encoded complete WAV file
  */
-function getTTSAudioContext() {
-    if (!ttsAudioContext) {
-        ttsAudioContext = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: TTS_SAMPLE_RATE,
-            latencyHint: 'interactive'
-        });
-        console.log('[TTS-WS] AudioContext initialized:', ttsAudioContext.sampleRate + 'Hz');
+function queueTTSChunk(audioBase64) {
+    if (!audioBase64 || audioBase64.length < 100) {
+        console.warn('[TTS-QUEUE] Invalid audio data');
+        return;
     }
-    if (ttsAudioContext.state === 'suspended') {
-        ttsAudioContext.resume();
-    }
-    return ttsAudioContext;
+    
+    ttsAudioQueue.push(audioBase64);
+    console.log('[TTS-QUEUE] Audio queued, queue length:', ttsAudioQueue.length);
+    
+    // Start playing if not already
+    playTTSQueue();
 }
 
 /**
- * Connect to TTS WebSocket for binary Float32 streaming
+ * Play audio queue sequentially - simple approach from pocket-tts-server
  */
+async function playTTSQueue() {
+    if (ttsIsPlayingQueue || ttsAudioQueue.length === 0) return;
+    
+    ttsIsPlayingQueue = true;
+    
+    while (ttsAudioQueue.length > 0) {
+        // Check if stop requested
+        if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
+            console.log('[TTS-QUEUE] Stop requested, clearing queue');
+            ttsAudioQueue = [];
+            if (ttsCurrentAudio) {
+                ttsCurrentAudio.pause();
+                ttsCurrentAudio = null;
+            }
+            break;
+        }
+        
+        const audioData = ttsAudioQueue.shift();
+        
+        try {
+            // Simple Audio element playback - works reliably
+            const audio = new Audio('data:audio/wav;base64,' + audioData);
+            ttsCurrentAudio = audio;
+            
+            await new Promise((resolve, reject) => {
+                audio.onended = () => {
+                    ttsCurrentAudio = null;
+                    resolve();
+                };
+                audio.onerror = (e) => {
+                    console.error('[TTS-QUEUE] Audio error:', e);
+                    ttsCurrentAudio = null;
+                    resolve(); // Continue anyway
+                };
+                audio.play().catch(reject);
+            });
+        } catch (e) {
+            console.error('[TTS-QUEUE] Playback error:', e);
+        }
+    }
+    
+    ttsIsPlayingQueue = false;
+    console.log('[TTS-QUEUE] Playback complete');
+}
+
+/**
+ * Connect to TTS WebSocket - simple JSON-based protocol
+ */
+let ttsWebSocket = null;
+
 function connectTTSWebSocket() {
     return new Promise((resolve, reject) => {
         if (ttsWebSocket && ttsWebSocket.readyState === WebSocket.OPEN) {
@@ -984,145 +1035,75 @@ function connectTTSWebSocket() {
         
         const wsUrl = `ws://localhost:8020/ws/tts`;
         ttsWebSocket = new WebSocket(wsUrl);
-        ttsWebSocket.binaryType = 'arraybuffer';  // Critical: receive as ArrayBuffer
         
         ttsWebSocket.onopen = () => {
-            console.log('[TTS-WS] Connected to TTS WebSocket');
+            console.log('[TTS-WS] Connected');
             resolve(ttsWebSocket);
         };
         
         ttsWebSocket.onerror = (error) => {
-            console.error('[TTS-WS] WebSocket error:', error);
+            console.error('[TTS-WS] Error:', error);
             reject(error);
         };
         
         ttsWebSocket.onclose = () => {
-            console.log('[TTS-WS] WebSocket closed');
+            console.log('[TTS-WS] Closed');
             ttsWebSocket = null;
         };
         
+        // Simple JSON message handling - like pocket-tts-server
         ttsWebSocket.onmessage = (event) => {
-            // Handle binary Float32 chunks
-            if (event.data instanceof ArrayBuffer) {
-                const float32Chunk = new Float32Array(event.data);
-                handleTTSChunk(float32Chunk);
-            } else {
-                // Handle JSON messages (done, error)
-                try {
-                    const msg = JSON.parse(event.data);
-                    if (msg.type === 'done') {
-                        console.log('[TTS-WS] Stream complete');
-                    } else if (msg.type === 'error') {
-                        console.error('[TTS-WS] Server error:', msg.data);
-                    }
-                } catch (e) {
-                    console.warn('[TTS-WS] Unknown message:', event.data);
+            try {
+                const msg = JSON.parse(event.data);
+                console.log('[TTS-WS] Message:', msg.type, msg.chunk);
+                
+                if (msg.type === 'audio') {
+                    // Queue the complete WAV file
+                    queueTTSChunk(msg.data);
+                } else if (msg.type === 'done') {
+                    console.log('[TTS-WS] Stream complete');
+                } else if (msg.type === 'error') {
+                    console.error('[TTS-WS] Server error:', msg.data);
                 }
+            } catch (e) {
+                console.error('[TTS-WS] Parse error:', e);
             }
         };
     });
 }
 
 /**
- * Handle incoming Float32 chunk - queue and schedule playback
+ * Clear the TTS queue and stop playback
  */
-function handleTTSChunk(float32Chunk) {
-    ttsChunkQueue.push(float32Chunk);
-    console.log(`[TTS-WS] Chunk received, queue size: ${ttsChunkQueue.length}`);
-    
-    // Start playing when we have enough chunks buffered
-    if (!ttsIsPlaying && ttsChunkQueue.length >= MIN_CHUNKS_BEFORE_PLAY) {
-        playBufferedTTSChunks();
+function clearTTSQueue() {
+    ttsAudioQueue = [];
+    ttsIsPlayingQueue = false;
+    if (ttsCurrentAudio) {
+        ttsCurrentAudio.pause();
+        ttsCurrentAudio = null;
     }
 }
 
 /**
- * Play buffered Float32 chunks with precise AudioContext scheduling
- */
-async function playBufferedTTSChunks() {
-    if (ttsIsPlaying) return;
-    ttsIsPlaying = true;
-    
-    const ctx = getTTSAudioContext();
-    ttsNextStartTime = ctx.currentTime;  // Start from now
-    
-    console.log('[TTS-WS] Starting playback, initial queue:', ttsChunkQueue.length);
-    
-    while (ttsChunkQueue.length > 0) {
-        // Check if stop requested
-        if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
-            console.log('[TTS-WS] Stop requested, clearing queue');
-            ttsChunkQueue = [];
-            break;
-        }
-        
-        const chunk = ttsChunkQueue.shift();
-        await playTTSChunk(ctx, chunk);
-    }
-    
-    ttsIsPlaying = false;
-    console.log('[TTS-WS] Playback complete');
-}
-
-/**
- * Play a single Float32 chunk with Web Audio API
- */
-function playTTSChunk(ctx, float32Data) {
-    return new Promise((resolve) => {
-        try {
-            const numSamples = float32Data.length;
-            
-            // Create AudioBuffer
-            const audioBuffer = ctx.createBuffer(1, numSamples, TTS_SAMPLE_RATE);
-            const channelData = audioBuffer.getChannelData(0);
-            channelData.set(float32Data);
-            
-            // Create source
-            const source = ctx.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(ctx.destination);
-            
-            // Precise scheduling
-            const currentTime = ctx.currentTime;
-            const startTime = Math.max(currentTime, ttsNextStartTime);
-            source.start(startTime);
-            
-            // Update next start time
-            const duration = numSamples / TTS_SAMPLE_RATE;
-            ttsNextStartTime = startTime + duration;
-            
-            console.log(`[TTS-WS] Scheduled ${numSamples} samples at ${startTime.toFixed(3)}s, duration=${duration.toFixed(3)}s`);
-            
-            // Resolve when playback ends
-            source.onended = resolve;
-            
-        } catch (error) {
-            console.error('[TTS-WS] Chunk playback error:', error);
-            resolve();
-        }
-    });
-}
-
-/**
- * Stream TTS via WebSocket with binary Float32 output
- * No Base64 encoding - raw Float32Array for cleanest audio
+ * Stream TTS via WebSocket - simple approach matching pocket-tts-server
  */
 async function speakTextViaWebSocket(text, voiceCloneId = null) {
     console.log('[TTS-WS] speakTextViaWebSocket:', text.substring(0, 50));
     
     // Reset state
-    ttsChunkQueue = [];
-    ttsIsPlaying = false;
-    ttsNextStartTime = 0;
+    ttsAudioQueue = [];
+    ttsIsPlayingQueue = false;
+    if (ttsCurrentAudio) {
+        ttsCurrentAudio.pause();
+        ttsCurrentAudio = null;
+    }
     if (typeof stopAudioRequested !== 'undefined') {
         stopAudioRequested = false;
     }
     
     try {
-        // Connect if needed
         await connectTTSWebSocket();
         
-        // Send request
         const request = {
             text: text,
             voice_clone_id: voiceCloneId
@@ -1130,11 +1111,10 @@ async function speakTextViaWebSocket(text, voiceCloneId = null) {
         ttsWebSocket.send(JSON.stringify(request));
         console.log('[TTS-WS] Request sent');
         
-        // Wait for all playback to complete
-        // This returns when the queue is empty and playback is done
+        // Wait for all playback
         return new Promise((resolve) => {
             const checkDone = () => {
-                if (!ttsIsPlaying && ttsChunkQueue.length === 0) {
+                if (!ttsIsPlayingQueue && ttsAudioQueue.length === 0) {
                     resolve();
                 } else {
                     setTimeout(checkDone, 100);
@@ -1145,12 +1125,11 @@ async function speakTextViaWebSocket(text, voiceCloneId = null) {
         
     } catch (error) {
         console.error('[TTS-WS] Error:', error);
-        // Fall back to regular TTS
         await speakText(text, voiceCloneId);
     }
 }
 
-// Play TTS audio - handles both WAV and raw PCM with crossfade
+// Play TTS audio - handles complete WAV files
 // Returns a promise that resolves when playback is complete
 function playTTS(audioBase64, sampleRate = null) {
     return new Promise((resolve, reject) => {
@@ -1167,38 +1146,28 @@ function playTTS(audioBase64, sampleRate = null) {
                 currentAudio = null;
             }
             
-            let blob;
-            let pcmDataForCrossfade = null;
+            // Decode base64 to binary
+            const binaryString = atob(audioBase64);
+            const len = binaryString.length;
+            const arrayBuffer = new ArrayBuffer(len);
+            const uint8Array = new Uint8Array(arrayBuffer);
+            for (let i = 0; i < len; i++) {
+                uint8Array[i] = binaryString.charCodeAt(i) & 0xFF;
+            }
             
-            if (sampleRate) {
-                // Raw PCM - create WAV container on client for low latency
-                // Fix: properly convert base64 to binary (charCodeAt returns wrong values for >127)
-                const binaryString = atob(audioBase64);
-                const len = binaryString.length;
-                const pcmBuffer = new ArrayBuffer(len);
-                const pcmView = new Uint8Array(pcmBuffer);
-                for (let i = 0; i < len; i++) {
-                    pcmView[i] = binaryString.charCodeAt(i) & 0xFF; // Mask to 8 bits
-                }
-                
-                // Store for crossfade
-                pcmDataForCrossfade = pcmBuffer;
-                
-                // Apply crossfade to PCM data for smooth transitions
-                const processedPcm = applyCrossfade(pcmBuffer, sampleRate);
-                
-                // Create WAV header + PCM data
-                const wavBuffer = createWavBuffer(processedPcm, sampleRate);
+            // Check if it's already a WAV file (starts with "RIFF")
+            let blob;
+            if (uint8Array[0] === 0x52 && uint8Array[1] === 0x49 && uint8Array[2] === 0x46 && uint8Array[3] === 0x46) {
+                // Already a complete WAV file - play directly
+                blob = new Blob([uint8Array], { type: 'audio/wav' });
+                console.log('[TTS] Playing complete WAV file, size:', len);
+            } else if (sampleRate) {
+                // Raw PCM - create WAV container
+                const wavBuffer = createWavBuffer(arrayBuffer, sampleRate);
                 blob = new Blob([wavBuffer], { type: 'audio/wav' });
+                console.log('[TTS] Created WAV container for raw PCM, sample rate:', sampleRate);
             } else {
                 // Assume WAV (backward compatibility)
-                const binaryString = atob(audioBase64);
-                const len = binaryString.length;
-                const arrayBuffer = new ArrayBuffer(len);
-                const uint8Array = new Uint8Array(arrayBuffer);
-                for (let i = 0; i < len; i++) {
-                    uint8Array[i] = binaryString.charCodeAt(i) & 0xFF; // Mask to 8 bits
-                }
                 blob = new Blob([uint8Array], { type: 'audio/wav' });
             }
             
@@ -1206,19 +1175,18 @@ function playTTS(audioBase64, sampleRate = null) {
             
             currentAudio = new Audio(audioUrl);
             
-            // IMPORTANT: Resolve promise when audio finishes playing
-            // This ensures sequential audio chunks play one after another
+            // Resolve promise when audio finishes playing
             currentAudio.onended = () => {
                 URL.revokeObjectURL(audioUrl);
                 if (conversationMode) {
                     micBtn.disabled = false;
                 }
-                resolve(); // Signal that playback is complete
+                resolve();
             };
             
             currentAudio.onerror = (e) => {
                 URL.revokeObjectURL(audioUrl);
-                console.error('TTS playback error:', e);
+                console.error('[TTS] Playback error:', e);
                 if (conversationMode) {
                     micBtn.disabled = false;
                 }
@@ -1226,14 +1194,14 @@ function playTTS(audioBase64, sampleRate = null) {
             };
             
             currentAudio.play().then(() => {
-                // Audio started successfully - the promise will resolve in onended
+                // Audio started successfully
             }).catch((e) => {
-                console.error('TTS play error:', e);
+                console.error('[TTS] Play error:', e);
                 URL.revokeObjectURL(audioUrl);
                 resolve(); // Resolve anyway to continue
             });
         } catch (error) {
-            console.error('TTS Error:', error);
+            console.error('[TTS] Error:', error);
             if (conversationMode) {
                 micBtn.disabled = false;
             }
@@ -1243,6 +1211,7 @@ function playTTS(audioBase64, sampleRate = null) {
 }
 
 // Apply crossfade to PCM audio for smooth chunk transitions
+// CRITICAL FIX: Save ORIGINAL end samples BEFORE crossfade to avoid cumulative distortion
 function applyCrossfade(pcmBuffer, sampleRate) {
     const pcm16 = new Int16Array(pcmBuffer);
     const numSamples = pcm16.length;
@@ -1253,14 +1222,23 @@ function applyCrossfade(pcmBuffer, sampleRate) {
         float32[i] = pcm16[i] / 32768.0;
     }
     
-    const crossFadeLength = Math.min(32, Math.floor(numSamples / 32)); // ~1.3ms
-    const fadeLength = Math.min(64, Math.floor(numSamples / 4)); // ~2.7ms fade-in
+    // Use longer crossfade for smoother transitions (reduced metallic artifact)
+    const crossFadeLength = Math.min(480, Math.floor(numSamples / 8)); // ~10ms at 48kHz
+    const fadeLength = Math.min(144, Math.floor(numSamples / 4)); // ~3ms fade-in
+    
+    // IMPORTANT: Save ORIGINAL end samples BEFORE any modification
+    // This prevents cumulative distortion from crossfading already-crossfaded data
+    const originalEndSamples = new Float32Array(crossFadeLength);
+    for (let i = 0; i < crossFadeLength; i++) {
+        originalEndSamples[i] = float32[numSamples - crossFadeLength + i];
+    }
     
     // Apply fade-in to first chunk to avoid startup click
     if (isFirstAudioChunk) {
         for (let i = 0; i < fadeLength; i++) {
             const t = i / fadeLength;
-            float32[i] *= t; // Linear fade-in
+            // Equal-power fade-in for smoother startup
+            float32[i] *= Math.sin(t * Math.PI / 2);
         }
         isFirstAudioChunk = false;
     }
@@ -1276,11 +1254,8 @@ function applyCrossfade(pcmBuffer, sampleRate) {
         }
     }
     
-    // Save end samples for cross-fade with next chunk
-    previousChunkEndSamples = new Float32Array(crossFadeLength);
-    for (let i = 0; i < crossFadeLength; i++) {
-        previousChunkEndSamples[i] = float32[numSamples - crossFadeLength + i];
-    }
+    // Store ORIGINAL end samples for next chunk (not the modified ones!)
+    previousChunkEndSamples = originalEndSamples;
     
     // Convert back to int16 PCM
     const result = new Int16Array(numSamples);
