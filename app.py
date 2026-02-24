@@ -924,12 +924,16 @@ def chat_stream():
 def chat_voice_stream():
     """Stream chat response with TTS audio generation.
     
-    QUALITY-FIRST APPROACH: Wait for complete LLM response, then generate
-    ONE complete TTS audio file. This eliminates static caused by 
-    concatenating multiple sentence-by-sentence audio chunks.
+    STREAMING SENTENCE MODE:
+    Generate and stream WAV audio per sentence during LLM streaming.
+    Each sentence is synthesized independently and queued client-side.
+    This enables much lower latency - user hears speech much sooner.
     
-    Streams LLM tokens as 'content' events first, then sends ONE 'audio' 
-    event with the complete audio at the end.
+    Flow:
+    1. Stream LLM tokens
+    2. Buffer tokens into sentences
+    3. When sentence completes → immediately generate WAV → send to client
+    4. Client queues and plays WAV files sequentially
     """
     from flask import Response
     
@@ -978,6 +982,73 @@ def chat_voice_stream():
     
     def generate():
         import time as time_module
+        
+        # Sentence detection helper
+        SENTENCE_ENDINGS = re.compile(r'[.!?]\s+|\n')
+        MIN_SENTENCE_LENGTH = 15  # Minimum chars to trigger TTS
+        
+        def extract_complete_sentences(buffer):
+            """Extract complete sentences from buffer.
+            Returns: (list of sentences, remaining buffer)
+            """
+            sentences = []
+            remaining = buffer
+            
+            # Find all sentence boundaries
+            matches = list(SENTENCE_ENDINGS.finditer(buffer))
+            
+            last_end = 0
+            for match in matches:
+                sentence_end = match.end()
+                sentence = buffer[last_end:sentence_end].strip()
+                
+                # Check if sentence is long enough and not an abbreviation
+                if len(sentence) >= MIN_SENTENCE_LENGTH:
+                    # Basic abbreviation check
+                    if not re.search(r'\b(Mr|Mrs|Ms|Dr|Sr|Jr|vs|etc|inc|corp|apt|ave|blvd|st)\.\s*$', sentence, re.IGNORECASE):
+                        sentences.append(sentence)
+                        last_end = sentence_end
+                    else:
+                        # It's an abbreviation, continue building
+                        continue
+                else:
+                    # Too short, continue building
+                    continue
+            
+            remaining = buffer[last_end:]
+            return sentences, remaining
+        
+        def generate_tts_for_sentence(sentence, index, voice_clone_id):
+            """Generate TTS for a single sentence and return WAV audio."""
+            try:
+                clean_text = remove_emojis(sentence)
+                if not clean_text.strip():
+                    return None
+                
+                request_data = {
+                    "text": clean_text,
+                    "language": "en"
+                }
+                if voice_clone_id:
+                    request_data["voice_clone_id"] = voice_clone_id
+                
+                resp = requests.post(
+                    f"{TTS_BASE_URL}/tts",
+                    json=request_data,
+                    timeout=60
+                )
+                
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get('success'):
+                        return {
+                            'audio': result.get('audio', ''),
+                            'sample_rate': result.get('sample_rate', TTS_SAMPLE_RATE)
+                        }
+                return None
+            except Exception as e:
+                print(f"[voice-stream] TTS error for sentence: {e}")
+                return None
         
         try:
             config = get_provider_config()
@@ -1032,8 +1103,11 @@ def chat_voice_stream():
             
             ai_message = ""
             thinking = ""
+            sentence_buffer = ""
+            sentence_index = 0
+            sentences_generated = 0
             
-            # Step 1: Stream all LLM tokens first
+            # Stream LLM tokens and generate TTS per complete sentence
             for line in response.iter_lines():
                 if line:
                     line = line.decode('utf-8')
@@ -1052,15 +1126,55 @@ def chat_voice_stream():
                             content = delta.get('content', '')
                             if content:
                                 ai_message += content
+                                sentence_buffer += content
+                                
                                 # Send text chunk to client immediately
                                 yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+                                
+                                # Check for complete sentences
+                                sentences, sentence_buffer = extract_complete_sentences(sentence_buffer)
+                                
+                                for sentence in sentences:
+                                    # Generate TTS for this sentence immediately
+                                    tts_result = generate_tts_for_sentence(sentence, sentence_index, voice_clone_id)
+                                    
+                                    if tts_result:
+                                        sentences_generated += 1
+                                        event_data = json.dumps({
+                                            'type': 'tts_sentence',
+                                            'index': sentence_index,
+                                            'audio': tts_result['audio'],
+                                            'sample_rate': tts_result['sample_rate'],
+                                            'text': sentence
+                                        })
+                                        yield f"data: {event_data}\n\n"
+                                        print(f"[voice-stream] Sent sentence {sentence_index}: '{sentence[:50]}...'")
+                                    
+                                    sentence_index += 1
                         
                         except json.JSONDecodeError:
                             continue
             
+            # Handle remaining buffer at LLM completion
+            if sentence_buffer.strip():
+                sentence = sentence_buffer.strip()
+                if len(sentence) >= MIN_SENTENCE_LENGTH:
+                    tts_result = generate_tts_for_sentence(sentence, sentence_index, voice_clone_id)
+                    if tts_result:
+                        sentences_generated += 1
+                        event_data = json.dumps({
+                            'type': 'tts_sentence',
+                            'index': sentence_index,
+                            'audio': tts_result['audio'],
+                            'sample_rate': tts_result['sample_rate'],
+                            'text': sentence
+                        })
+                        yield f"data: {event_data}\n\n"
+                        print(f"[voice-stream] Sent final sentence {sentence_index}: '{sentence[:50]}...'")
+            
             llm_end_time = time_module.time()
             llm_duration = llm_end_time - llm_start_time
-            print(f"[voice-stream] LLM complete in {llm_duration:.2f}s, total chars: {len(ai_message)}")
+            print(f"[voice-stream] LLM complete in {llm_duration:.2f}s, generated {sentences_generated} audio sentences")
             
             # Extract thinking if not already captured
             if not thinking:
@@ -1080,59 +1194,11 @@ def chat_voice_stream():
             sessions_data[session_id]['updated_at'] = datetime.now().isoformat()
             save_sessions(sessions_data)
             
-            # Step 2: Generate TTS for the COMPLETE response as ONE audio file
-            # This eliminates static from sentence-by-sentence concatenation
-            if ai_message.strip():
-                tts_start_time = time_module.time()
-                
-                clean_text = remove_emojis(ai_message)
-                
-                # Send status to client
-                yield f"data: {json.dumps({'type': 'tts_start', 'text_length': len(clean_text)})}\n\n"
-                
-                # Generate complete audio
-                request_data = {
-                    "text": clean_text,
-                    "language": "en"
-                }
-                if voice_clone_id:
-                    request_data["voice_clone_id"] = voice_clone_id
-                
-                try:
-                    resp = requests.post(
-                        f"{TTS_BASE_URL}/tts",
-                        json=request_data,
-                        timeout=120
-                    )
-                    
-                    tts_end_time = time_module.time()
-                    tts_duration = (tts_end_time - tts_start_time) * 1000
-                    
-                    if resp.status_code == 200:
-                        result = resp.json()
-                        if result.get('success'):
-                            audio_data = result.get('audio', '')
-                            sample_rate = result.get('sample_rate', TTS_SAMPLE_RATE)
-                            
-                            print(f"[voice-stream] TTS complete in {tts_duration:.0f}ms for {len(clean_text)} chars")
-                            
-                            # Send the complete audio as one event
-                            yield f"data: {json.dumps({'type': 'audio', 'audio': audio_data, 'sample_rate': sample_rate, 'index': 0, 'complete': True})}\n\n"
-                        else:
-                            print(f"[voice-stream] TTS failed: {result.get('error')}")
-                            yield f"data: {json.dumps({'type': 'tts_error', 'error': result.get('error', 'TTS failed')})}\n\n"
-                    else:
-                        print(f"[voice-stream] TTS HTTP error: {resp.status_code}")
-                        yield f"data: {json.dumps({'type': 'tts_error', 'error': f'TTS HTTP error: {resp.status_code}'})}\n\n"
-                        
-                except Exception as e:
-                    print(f"[voice-stream] TTS exception: {e}")
-                    yield f"data: {json.dumps({'type': 'tts_error', 'error': str(e)})}\n\n"
-            
             # Signal completion
-            yield f"data: {json.dumps({'type': 'done', 'thinking': thinking, 'session_id': session_id})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'thinking': thinking, 'session_id': session_id, 'sentences_generated': sentences_generated})}\n\n"
             
         except Exception as e:
+            print(f"[voice-stream] Error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')
