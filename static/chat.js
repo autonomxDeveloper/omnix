@@ -1137,6 +1137,9 @@ async function speakTextViaWebSocket(text, voiceCloneId = null) {
 function playTTS(audioBase64, sampleRate = null) {
     return new Promise((resolve, reject) => {
         try {
+            // Track first playback start time for latency logging
+            const playbackStartTime = performance.now();
+            
             // PHASE 3: GUARD - Only use <audio> playback in WAV mode
             if (window.TTS_PLAYBACK_MODE !== "wav") {
                 console.log("[TTS] Skipping WAV playback (WebSocket mode active)");

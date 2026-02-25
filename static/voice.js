@@ -1,7 +1,5 @@
-/**
- * LM Studio Chatbot - Voice Module
- * Voice recording, VAD, and conversation mode
- */
+// LM Studio Chatbot - Voice Module
+// Voice recording, VAD, and conversation mode
 
 // Voice Mode State
 let conversationMode = false;
@@ -63,16 +61,21 @@ function initConversationMode() {
 
 // Toggle conversation mode
 function toggleConversationMode() {
+    console.log('[MODE] toggleConversationMode called, current conversationMode:', conversationMode);
     conversationMode = !conversationMode;
+    console.log('[MODE] New conversationMode:', conversationMode);
+    
     conversationToggle.classList.toggle('active', conversationMode);
     conversationControls.style.display = conversationMode ? 'block' : 'none';
     
     if (conversationMode) {
+        console.log('[MODE] Entering conversation mode');
         conversationStatus.textContent = '🎙️ Voice Mode Active';
         micBtn.style.display = 'flex';
         messageInput.placeholder = 'Type or hold mic to speak...';
         switchToConversationView();
     } else {
+        console.log('[MODE] Exiting conversation mode');
         conversationStatus.textContent = 'Voice Mode';
         micBtn.style.display = 'none';
         messageInput.placeholder = 'Type your message...';
@@ -126,8 +129,11 @@ function exitConversationMode() {
     // Clear TTS queue
     clearTTSQueue();
     
-    // Hide the circle indicator
+    // Hide the circle indicator and tap to talk
     hideCircleIndicator();
+    if (tapToTalkBtn) {
+        tapToTalkBtn.classList.remove('visible');
+    }
     
     conversationMode = false;
     alwaysListening = false;
@@ -154,8 +160,8 @@ function toggleAlwaysListening() {
     }
     
     if (alwaysListening) {
-        // Hide tap to talk button when auto is ON
-        if (tapToTalkBtn) {
+        // Hide tap to talk button when auto is ON (but only if messages are hidden)
+        if (tapToTalkBtn && !showMessagesInConversation) {
             tapToTalkBtn.classList.remove('visible');
         }
         updateConversationStatus('🎤 Auto-listening - Speak now!', 'listening');
@@ -181,8 +187,8 @@ function toggleAlwaysListening() {
         // Reset processing state
         isProcessing = false;
         
-        // Show tap to talk button when auto is OFF
-        if (tapToTalkBtn) {
+        // Show tap to talk button when auto is OFF (but only if messages are hidden)
+        if (tapToTalkBtn && !showMessagesInConversation) {
             tapToTalkBtn.classList.add('visible');
         }
         updateConversationStatus('Tap to speak');
@@ -635,7 +641,7 @@ function toggleMessagesVisibility() {
         toggleMessagesBtn.classList.toggle('active', showMessagesInConversation);
         const span = toggleMessagesBtn.querySelector('span');
         if (span) {
-            span.textContent = showMessagesInConversation ? 'Messages' : 'Circle Only';
+            span.textContent = showMessagesInConversation ? 'Messages' : 'Conversation Mode';
         }
     }
     
@@ -643,10 +649,25 @@ function toggleMessagesVisibility() {
         conversationMessages.classList.remove('hidden');
         conversationInputContainer.classList.add('active');
         conversationInputContainer.classList.remove('hidden');
+        
+        // Hide circle indicator and tap to talk when messages are visible
+        hideCircleIndicator();
+        if (tapToTalkBtn) {
+            tapToTalkBtn.classList.remove('visible');
+        }
     } else {
         conversationMessages.classList.add('hidden');
         conversationInputContainer.classList.remove('active');
         conversationInputContainer.classList.add('hidden');
+        
+        // Show circle indicator and tap to talk when messages are hidden
+        showCircleIndicator(alwaysListening ? 'listening' : 'idle');
+        if (tapToTalkBtn && !alwaysListening) {
+            tapToTalkBtn.classList.add('visible');
+        } else if (tapToTalkBtn && alwaysListening) {
+            // When auto is ON, tap-to-talk should be hidden
+            tapToTalkBtn.classList.remove('visible');
+        }
     }
 }
 
@@ -691,8 +712,10 @@ function setupConversationMode() {
 // Play greeting when conversation mode starts
 async function playConversationGreeting() {
     // Show speaking animation on circle FIRST (before any message handling)
-    showCircleIndicator('speaking');
-    updateConversationStatus('🔊 Speaking...', 'speaking');
+    if (conversationMode) {
+        showCircleIndicator('speaking');
+        updateConversationStatus('🔊 Speaking...', 'speaking');
+    }
     
     // Get the selected speaker/voice - check if ttsSpeaker exists and has a valid value
     let selectedSpeaker = 'default';
@@ -776,7 +799,7 @@ async function switchToConversationView() {
         toggleMessagesBtn.classList.remove('active');
         const span = toggleMessagesBtn.querySelector('span');
         if (span) {
-            span.textContent = 'Circle Only';
+            span.textContent = 'Conversation Mode';
         }
     }
     
@@ -799,20 +822,29 @@ async function switchToConversationView() {
 
 // Switch to regular view
 function switchToRegularView() {
+    console.log('[MODE] switchToRegularView called - exiting conversation mode');
     conversationChatView.classList.remove('active');
     messagesContainer.style.display = 'flex';
     welcomeMessage.classList.remove('hidden');
     document.querySelector('.input-area').classList.remove('conversation-active');
+    
+    // Hide circle indicator and tap to talk when exiting conversation mode
+    hideCircleIndicator();
+    if (tapToTalkBtn) {
+        tapToTalkBtn.classList.remove('visible');
+        console.log('[MODE] tapToTalkBtn visibility after switchToRegularView:', tapToTalkBtn.classList.contains('visible'));
+    }
 }
 
-// Show circle indicator - show during speaking regardless of message visibility
+// Show circle indicator - only show when in conversation mode AND messages are hidden
 function showCircleIndicator(state = 'idle') {
-    // Always show circle when:
-    // 1. Messages are hidden (circle-only mode), OR
-    // 2. AI is speaking (animate during TTS playback)
-    const shouldShowCircle = !showMessagesInConversation || state === 'speaking';
+    console.log('[CIRCLE] showCircleIndicator called with state:', state, 'conversationMode:', conversationMode, 'showMessagesInConversation:', showMessagesInConversation);
+    
+    // Only show circle when in conversation mode AND messages are hidden
+    const shouldShowCircle = conversationMode && !showMessagesInConversation;
     
     if (shouldShowCircle) {
+        console.log('[CIRCLE] Showing circle indicator');
         // Show the outer container
         circleIndicator.classList.add('active');
         
@@ -823,7 +855,8 @@ function showCircleIndicator(state = 'idle') {
             innerCircle.classList.add(state);
         }
     } else {
-        // Hide circle when messages are visible and not speaking
+        console.log('[CIRCLE] Hiding circle indicator (not in conversation mode OR messages are visible)');
+        // Hide circle when not in conversation mode OR when messages are visible
         circleIndicator.classList.remove('active');
         
         // Remove animation class from inner circle
@@ -836,6 +869,7 @@ function showCircleIndicator(state = 'idle') {
 
 // Hide circle indicator
 function hideCircleIndicator() {
+    console.log('[CIRCLE] hideCircleIndicator called');
     circleIndicator.classList.remove('active');
     const innerCircle = circleIndicator.querySelector('.circle-indicator');
     if (innerCircle) {
@@ -1147,6 +1181,19 @@ let globalAudioPlayQueue = [];
 let globalAudioPlaying = false;
 let stopAudioRequested = false;
 
+// Latency tracking for first audio optimization
+let latencyTracking = {
+    totalStartTime: null,
+    llmFirstTokenTime: null,
+    firstTTSReceivedTime: null,
+    firstPlaybackStartTime: null,
+    sttDuration: null
+};
+
+// Preload buffer for seamless streaming - keep 1-2 chunks ready
+const PRELOAD_BUFFER_SIZE = 2;
+let preloadedChunks = [];
+
 // Use shared TTS queue functions from chat.js
 // enqueueTTS, processTTSQueue, clearTTSQueue are defined in chat.js
 
@@ -1161,6 +1208,15 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
     if (!totalStartTime) {
         totalStartTime = performance.now();
     }
+    
+    // Initialize latency tracking for this conversation
+    latencyTracking = {
+        totalStartTime: totalStartTime,
+        llmFirstTokenTime: null,
+        firstTTSReceivedTime: null,
+        firstPlaybackStartTime: null,
+        sttDuration: sttDuration
+    };
     
     addConversationMessage('user', message);
     conversationInput.value = '';
@@ -1213,6 +1269,34 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
         globalAudioPlaying = true;
         audioPlayStartTime = performance.now();
         
+        // Track FIRST audio playback start time for latency logging
+        if (!latencyTracking.firstPlaybackStartTime) {
+            latencyTracking.firstPlaybackStartTime = audioPlayStartTime;
+            
+            // Log comprehensive first playback latency
+            if (latencyTracking.totalStartTime) {
+                const totalLatency = audioPlayStartTime - latencyTracking.totalStartTime;
+                console.log(`⏱️ [LATENCY] ========== FIRST AUDIO PLAYBACK ==========`);
+                console.log(`⏱️ [LATENCY] Total (User spoke → Audio plays): ${totalLatency.toFixed(0)}ms`);
+                
+                if (latencyTracking.sttDuration) {
+                    console.log(`⏱️ [LATENCY] STT duration: ${latencyTracking.sttDuration}ms`);
+                }
+                if (latencyTracking.llmFirstTokenTime) {
+                    const llmLatency = latencyTracking.llmFirstTokenTime - latencyTracking.totalStartTime;
+                    console.log(`⏱️ [LATENCY] LLM first token: ${llmLatency.toFixed(0)}ms`);
+                }
+                if (latencyTracking.firstTTSReceivedTime) {
+                    const ttsGenLatency = latencyTracking.firstTTSReceivedTime - (latencyTracking.llmFirstTokenTime || latencyTracking.totalStartTime);
+                    console.log(`⏱️ [LATENCY] TTS generation: ${ttsGenLatency.toFixed(0)}ms`);
+                }
+                const networkLatency = audioPlayStartTime - (latencyTracking.firstTTSReceivedTime || latencyTracking.totalStartTime);
+                console.log(`⏱️ [LATENCY] Network + decode + buffer: ${networkLatency.toFixed(0)}ms`);
+                console.log(`⏱️ [LATENCY] Target: <=800ms for real-time feel`);
+                console.log(`⏱️ [LATENCY] ===============================================`);
+            }
+        }
+        
         const { audioBase64, sampleRate } = globalAudioPlayQueue.shift();
         try {
             await playTTS(audioBase64, sampleRate);
@@ -1243,8 +1327,10 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
         
         globalAudioPlayQueue.push({ audioBase64, sampleRate });
         
-        updateConversationStatus('🔊 Speaking...', 'speaking');
-        showCircleIndicator('speaking');
+        if (conversationMode) {
+            updateConversationStatus('🔊 Speaking...', 'speaking');
+            showCircleIndicator('speaking');
+        }
         
         // Always try to start playback - if already playing, playNextAudio will return early
         // but when current audio finishes, it will check queue and play next
@@ -1308,7 +1394,8 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
                                 // First content chunk marks LLM response start
                                 if (!llmStartTime) {
                                     llmStartTime = performance.now();
-                                    console.log(`🕐 [CLIENT] First LLM token at: ${llmStartTime - totalStartTime}ms (LLM is fast!)`);
+                                    latencyTracking.llmFirstTokenTime = llmStartTime;
+                                    console.log(`🕐 [CLIENT] First LLM token at: ${(llmStartTime - totalStartTime).toFixed(0)}ms (LLM is fast!)`);
                                 }
                                 streamedContent += data.content;
                                 
@@ -1320,8 +1407,11 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
                                 // First audio chunk - this marks when first TTS audio arrived at client
                                 if (!firstAudioReceivedTime) {
                                     firstAudioReceivedTime = performance.now();
-                                    console.log(`🕐 [CLIENT] First audio at: ${firstAudioReceivedTime - totalStartTime}ms`);
-                                    console.log(`🕐 [CLIENT] LLM was fast (~${llmStartTime - totalStartTime}ms), but TTS took ~${firstAudioReceivedTime - llmStartTime}ms to generate!`);
+                                    latencyTracking.firstTTSReceivedTime = firstAudioReceivedTime;
+                                    console.log(`🕐 [CLIENT] First audio at: ${(firstAudioReceivedTime - totalStartTime).toFixed(0)}ms`);
+                                    if (llmStartTime) {
+                                        console.log(`🕐 [CLIENT] TTS generation took: ${(firstAudioReceivedTime - llmStartTime).toFixed(0)}ms`);
+                                    }
                                 }
                                 // Server generated TTS audio for a sentence - play it
                                 enqueueAudio(data.audio, data.sample_rate);
@@ -1330,9 +1420,10 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
                                 // Streaming sentence TTS - audio for a complete sentence
                                 if (!firstAudioReceivedTime) {
                                     firstAudioReceivedTime = performance.now();
-                                    console.log(`🕐 [CLIENT] First sentence TTS at: ${firstAudioReceivedTime - totalStartTime}ms`);
+                                    latencyTracking.firstTTSReceivedTime = firstAudioReceivedTime;
+                                    console.log(`🕐 [CLIENT] First sentence TTS at: ${(firstAudioReceivedTime - totalStartTime).toFixed(0)}ms`);
                                     if (llmStartTime) {
-                                        console.log(`🕐 [CLIENT] Time from LLM start to first TTS: ${firstAudioReceivedTime - llmStartTime}ms`);
+                                        console.log(`🕐 [CLIENT] Time from LLM start to first TTS: ${(firstAudioReceivedTime - llmStartTime).toFixed(0)}ms`);
                                     }
                                 }
                                 // Queue the sentence audio for sequential playback

@@ -983,9 +983,45 @@ def chat_voice_stream():
     def generate():
         import time as time_module
         
-        # Sentence detection helper
+        # Sentence detection helper - OPTIMIZED for fast first audio
         SENTENCE_ENDINGS = re.compile(r'[.!?]\s+|\n')
-        MIN_SENTENCE_LENGTH = 15  # Minimum chars to trigger TTS
+        MIN_TOKENS_FIRST_CHUNK = 15  # Trigger first audio early (chars, ~3-4 words)
+        MAX_CHUNK_TOKENS = 60  # Max chars per early chunk
+        MIN_SENTENCE_LENGTH = 15  # Minimum chars for sentence-based TTS
+        
+        def extract_early_chunks(buffer, is_first_chunk):
+            """Extract audio chunks early for fast first audio.
+            
+            Strategy:
+            1. First chunk: Trigger at MIN_TOKENS_FIRST_CHUNK chars even if sentence incomplete
+            2. Subsequent chunks: Wait for complete sentences
+            
+            Returns: (list of chunks to process, remaining buffer)
+            """
+            chunks = []
+            remaining = buffer
+            
+            # Early trigger for first chunk - don't wait for sentence completion
+            if is_first_chunk and len(buffer) >= MIN_TOKENS_FIRST_CHUNK:
+                # Take enough tokens for first chunk (but not too many)
+                first_chunk_len = min(len(buffer), MAX_CHUNK_TOKENS)
+                
+                # Try to break at a natural point (space) to avoid cutting words
+                if first_chunk_len < len(buffer):
+                    # Find last space before cutoff
+                    last_space = buffer.rfind(' ', 0, first_chunk_len)
+                    if last_space > MIN_TOKENS_FIRST_CHUNK:
+                        first_chunk_len = last_space
+                
+                first_chunk = buffer[:first_chunk_len].strip()
+                if first_chunk:
+                    chunks.append(first_chunk)
+                    remaining = buffer[first_chunk_len:].lstrip()
+                
+                return chunks, remaining
+            
+            # Normal sentence-based extraction for subsequent chunks
+            return extract_complete_sentences(remaining)
         
         def extract_complete_sentences(buffer):
             """Extract complete sentences from buffer.
@@ -1106,8 +1142,14 @@ def chat_voice_stream():
             sentence_buffer = ""
             sentence_index = 0
             sentences_generated = 0
+            is_first_chunk = True
             
-            # Stream LLM tokens and generate TTS per complete sentence
+            # Latency tracking
+            llm_first_token_time = None
+            first_tts_trigger_time = None
+            first_audio_sent_time = None
+            
+            # Stream LLM tokens and generate TTS with early trigger
             for line in response.iter_lines():
                 if line:
                     line = line.decode('utf-8')
@@ -1125,18 +1167,41 @@ def chat_voice_stream():
                             
                             content = delta.get('content', '')
                             if content:
+                                # Track LLM first token time
+                                if llm_first_token_time is None:
+                                    llm_first_token_time = time_module.time()
+                                    print(f"[LATENCY] LLM first token at {(llm_first_token_time - llm_start_time)*1000:.0f}ms")
+                                
                                 ai_message += content
                                 sentence_buffer += content
                                 
                                 # Send text chunk to client immediately
                                 yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
                                 
-                                # Check for complete sentences
-                                sentences, sentence_buffer = extract_complete_sentences(sentence_buffer)
+                                # Check for chunks to process
+                                # Use early trigger for first chunk, then sentence-based for subsequent
+                                chunks_to_process = []
                                 
-                                for sentence in sentences:
-                                    # Generate TTS for this sentence immediately
-                                    tts_result = generate_tts_for_sentence(sentence, sentence_index, voice_clone_id)
+                                if is_first_chunk and len(sentence_buffer) >= MIN_TOKENS_FIRST_CHUNK:
+                                    # EARLY TRIGGER: Generate first audio before sentence completes
+                                    first_tts_trigger_time = time_module.time()
+                                    print(f"[LATENCY] First TTS trigger at {(first_tts_trigger_time - llm_start_time)*1000:.0f}ms (buffer: {len(sentence_buffer)} chars)")
+                                    
+                                    chunks, sentence_buffer = extract_early_chunks(sentence_buffer, is_first_chunk)
+                                    chunks_to_process.extend(chunks)
+                                    is_first_chunk = False
+                                else:
+                                    # Normal sentence-based extraction
+                                    sentences, sentence_buffer = extract_complete_sentences(sentence_buffer)
+                                    chunks_to_process.extend(sentences)
+                                
+                                # Generate TTS for each chunk
+                                for chunk_text in chunks_to_process:
+                                    # Track first audio sent
+                                    if first_audio_sent_time is None:
+                                        first_audio_sent_time = time_module.time()
+                                    
+                                    tts_result = generate_tts_for_sentence(chunk_text, sentence_index, voice_clone_id)
                                     
                                     if tts_result:
                                         sentences_generated += 1
@@ -1145,10 +1210,18 @@ def chat_voice_stream():
                                             'index': sentence_index,
                                             'audio': tts_result['audio'],
                                             'sample_rate': tts_result['sample_rate'],
-                                            'text': sentence
+                                            'text': chunk_text,
+                                            'is_first': first_audio_sent_time is not None
                                         })
                                         yield f"data: {event_data}\n\n"
-                                        print(f"[voice-stream] Sent sentence {sentence_index}: '{sentence[:50]}...'")
+                                        
+                                        # Log first audio latency
+                                        if first_audio_sent_time:
+                                            latency_ms = (first_audio_sent_time - llm_start_time) * 1000
+                                            print(f"[LATENCY] First audio sent at {latency_ms:.0f}ms - Target: <=800ms")
+                                            first_audio_sent_time = None  # Don't log again
+                                        
+                                        print(f"[voice-stream] Sent chunk {sentence_index}: '{chunk_text[:50]}...'")
                                     
                                     sentence_index += 1
                         
