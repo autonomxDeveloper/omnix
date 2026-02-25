@@ -490,8 +490,10 @@ async function speakTextStreaming(text, speaker = 'en') {
     
     if (conversationMode) {
         micBtn.disabled = true;
-        showCircleIndicator('speaking');
-        updateConversationStatus('🔊 Speaking...', 'speaking');
+        if (conversationMode) {
+            showCircleIndicator('speaking');
+            updateConversationStatus('🔊 Speaking...', 'speaking');
+        }
     }
     
     try {
@@ -745,7 +747,9 @@ async function sendVoiceText(text) {
     
     // Update status
     updateConversationStatus('Thinking...', 'listening');
-    showCircleIndicator('listening');
+    if (conversationMode) {
+        showCircleIndicator('listening');
+    }
     
     // Connect if not connected
     if (!voiceWs || voiceWs.readyState !== WebSocket.OPEN) {
