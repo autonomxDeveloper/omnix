@@ -103,10 +103,9 @@ RUN chmod +x /app/start_llama_server.sh
 # Expose ports
 # 5000: Main Flask app
 # 8000: STT server (Parakeet)
-# 8001: Realtime server
 # 8020: TTS server (Chatterbox)
 # 8080: llama.cpp server
-EXPOSE 5000 8000 8001 8020 8080
+EXPOSE 5000 8000 8020 8080
 
 # Set environment variables
 ENV FLASK_APP=app.py

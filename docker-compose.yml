@@ -9,7 +9,6 @@ services:
     ports:
       - "5000:5000"    # Main Flask app
       - "8000:8000"    # STT server (Parakeet)
-      - "8001:8001"    # Realtime WebSocket server
       - "8020:8020"    # TTS server (Chatterbox)
       - "8080:8080"    # llama.cpp server
     volumes:
@@ -41,9 +40,6 @@ services:
         sleep 15 &&
         echo 'Waiting for TTS model to fully load...' &&
         sleep 10 &&
-        echo 'Starting Realtime Server...' &&
-        python realtime_server.py &
-        sleep 3 &&
         echo 'Starting llama.cpp Server...' &&
         chmod +x /app/start_llama_server.sh &&
         /app/start_llama_server.sh &

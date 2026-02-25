@@ -475,13 +475,7 @@ async function transcribeRawFloat32Audio() {
         
         console.log(`[VOICE] Sending ${totalLength} Float32 samples (${(totalLength / 48000).toFixed(2)}s) to STT`);
         
-        // Send raw Float32 to server via WebSocket for lowest latency (only in websocket mode)
-        if (typeof getUseWebSocket === 'function' && getUseWebSocket() && voiceWs && voiceWs.readyState === WebSocket.OPEN) {
-            voiceWs.send(concatenated.buffer);  // Send raw binary Float32
-            return;
-        }
-        
-        // Fallback: Send via HTTP POST as binary
+        // Send via HTTP POST as binary (WAV streaming only)
         const response = await fetch('/api/stt/float32', {
             method: 'POST',
             headers: {
@@ -549,18 +543,7 @@ async function processVADTranscript(text, sttDuration = null) {
     
     const totalStartTime = performance.now();
     
-    // Use unified voice WebSocket for real-time streaming pipeline (only in websocket mode)
-    if (typeof getUseWebSocket === 'function' && getUseWebSocket()) {
-        try {
-            await sendVoiceText(text);
-            return;
-        } catch (e) {
-            console.error('Voice WebSocket failed, falling back to REST:', e);
-            // Fall through to REST
-        }
-    }
-    
-    // Fallback to streaming REST API
+    // Use WAV streaming REST API only
     conversationInput.value = '';
     await sendConversationMessageREST(text, totalStartTime, sttDuration);
 }
@@ -944,62 +927,8 @@ async function sendConversationMessage() {
     const totalStartTime = performance.now();
     const sttDuration = null; // No STT for typed messages
     
-    // Use unified voice WebSocket for real-time streaming pipeline (only in websocket mode)
-    if (typeof getUseWebSocket === 'function' && getUseWebSocket()) {
-        try {
-            const handled = await sendVoiceTextWithFallback(message);
-            if (handled) return; // WebSocket handled it successfully
-        } catch (e) {
-            console.error('Voice WebSocket failed:', e);
-            // Fall through to REST
-        }
-    }
-    
-    // Fallback to REST API
+    // Use WAV streaming REST API only
     await sendConversationMessageREST(message, totalStartTime, sttDuration);
-}
-
-// Combined function that handles WebSocket with fallback
-async function sendVoiceTextWithFallback(message) {
-    console.log('[WS] sendVoiceTextWithFallback called');
-    console.log('[WS] getUseWebSocket():', typeof getUseWebSocket === 'function' ? getUseWebSocket() : 'N/A');
-    console.log('[WS] voiceWs:', voiceWs);
-    console.log('[WS] voiceWs.readyState:', voiceWs ? voiceWs.readyState : 'N/A');
-    
-    // Add user message to display
-    addConversationMessage('user', message);
-    conversationInput.value = '';
-    conversationSendBtn.disabled = true;
-    
-    isLoading = true;
-    
-    // Connect if not connected
-    if (!voiceWs || voiceWs.readyState !== WebSocket.OPEN) {
-        console.log('[WS] WebSocket not connected, trying to connect...');
-        try {
-            await connectVoiceWebSocket();
-            console.log('[WS] WebSocket connected successfully');
-        } catch (e) {
-            console.error('[WS] Failed to connect to voice pipeline:', e);
-            isLoading = false;
-            // Return false to trigger REST fallback
-            return false;
-        }
-    }
-    
-    // Send text
-    if (voiceWs && voiceWs.readyState === WebSocket.OPEN) {
-        console.log('[WS] Sending message via WebSocket');
-        voiceWs.send(JSON.stringify({
-            type: "text",
-            data: message
-        }));
-        return true; // WebSocket is handling it
-    }
-    
-    console.log('[WS] WebSocket not ready, falling back to REST');
-    isLoading = false;
-    return false; // Fall back to REST
 }
 
 // Start conversation recording
