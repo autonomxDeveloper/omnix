@@ -19,6 +19,15 @@ echo ""
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
+# Check if virtual environment exists and activate it
+if [ -d "venv" ]; then
+    echo "[Setup] Activating virtual environment..."
+    source venv/bin/activate
+else
+    echo "WARNING: Virtual environment not found. You may need to run setup.sh first."
+    echo "Continuing without virtual environment..."
+fi
+
 # Install dependencies
 echo "[Setup] Installing Python dependencies..."
 pip install -q fastapi uvicorn websockets aiohttp pydub numpy soundfile 2>/dev/null

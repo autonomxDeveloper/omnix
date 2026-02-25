@@ -16,6 +16,15 @@ echo.
 
 cd /d "%~dp0"
 
+:: Check if virtual environment exists and activate it
+if exist "venv" (
+    echo [Setup] Activating virtual environment...
+    call venv\Scripts\activate.bat
+) else (
+    echo WARNING: Virtual environment not found. You may need to run setup.bat first.
+    echo Continuing without virtual environment...
+)
+
 :: Install dependencies
 echo [Setup] Installing Python dependencies...
 pip install -q fastapi uvicorn websockets aiohttp pydub numpy soundfile 2>nul
