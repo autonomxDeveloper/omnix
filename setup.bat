@@ -1,10 +1,10 @@
 @echo off
 REM ============================================
-REM Omnix - Setup Script (Windows)
+REM Omnix - Setup Script (Windows) with Virtual Environment
 REM ============================================
 
 echo =============================================
-echo Omnix - Setup
+echo Omnix - Setup with Virtual Environment
 echo =============================================
 echo.
 echo This will install all dependencies for:
@@ -12,6 +12,7 @@ echo   - Chatbot Web Server
 echo   - Parakeet STT (Speech-to-Text)
 echo   - Chatterbox TTS TURBO (Text-to-Speech)
 echo.
+echo Using Python virtual environment for isolation
 pause
 
 REM Check if Python is installed
@@ -28,7 +29,29 @@ for /f "tokens=2" %%i in ('python --version 2^>^&1') do set PYVER=%%i
 echo Python version: %PYVER%
 
 echo.
-echo [1/5] Installing PyTorch with CUDA 12.4 support...
+echo [1/7] Creating Python virtual environment...
+if exist "venv" (
+    echo Virtual environment already exists, removing...
+    rmdir /s /q venv
+)
+
+python -m venv venv
+if errorlevel 1 (
+    echo ERROR: Failed to create virtual environment
+    pause
+    exit /b 1
+)
+
+REM Activate virtual environment
+call venv\Scripts\activate.bat
+echo Virtual environment activated
+
+echo.
+echo [2/7] Upgrading pip...
+pip install --upgrade pip
+
+echo.
+echo [3/7] Installing PyTorch with CUDA 12.4 support...
 echo This is CRITICAL - mismatched versions cause errors
 echo.
 pip install torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
@@ -39,7 +62,11 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/5] Installing core dependencies...
+echo [4/7] Installing torchmetrics (required for Chatterbox TTS)...
+pip install torchmetrics==1.4.2
+
+echo.
+echo [5/7] Installing core dependencies...
 pip install -r requirements.txt
 if errorlevel 1 (
     echo ERROR: Failed to install core dependencies
@@ -48,7 +75,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/5] Installing Chatterbox TTS TURBO...
+echo [6/7] Installing Chatterbox TTS TURBO...
 pip install chatterbox-tts==0.1.6
 if errorlevel 1 (
     echo WARNING: Failed to install Chatterbox TTS
@@ -56,7 +83,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/5] Installing NeMo ASR for Parakeet STT...
+echo [7/7] Installing NeMo ASR for Parakeet STT...
 pip install "nemo_toolkit[asr]"
 if errorlevel 1 (
     echo WARNING: Failed to install NeMo ASR
@@ -65,7 +92,13 @@ if errorlevel 1 (
 )
 
 echo.
-echo [5/6] Pre-downloading Parakeet TDT 0.6B model...
+echo [8/8] Installing compatible transformers version...
+echo Note: nemo_toolkit installs transformers 4.53+ which may break compatibility
+echo Installing transformers==4.46.3 for better compatibility...
+pip install transformers==4.46.3 tokenizers==0.20.3 --force-reinstall
+
+echo.
+echo [9/9] Pre-downloading Parakeet TDT 0.6B model...
 echo This may take a few minutes...
 echo Note: Model downloads to HuggingFace cache: %USERPROFILE%\.cache\huggingface\
 python -c "from nemo.collections.asr.models import ASRModel; ASRModel.from_pretrained('nvidia/parakeet-tdt-0.6b-v2'); print('Parakeet model downloaded successfully!')" 2>nul
@@ -75,7 +108,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [6/7] Downloading default LLM (Qwen3-4B Q8_0)...
+echo [10/10] Downloading default LLM (Qwen3-4B Q8_0)...
 echo This provides an immediate working LLM for new installations
 echo Model: qwen/Qwen3-4B-Instruct-2507-GGUF
 echo Quantization: Q8_0 (~4GB)
@@ -94,7 +127,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [7/7] Verifying installations...
+echo [11/11] Verifying installations...
 echo.
 
 REM Check PyTorch
@@ -119,6 +152,9 @@ echo Setup Complete!
 echo =============================================
 echo.
 echo IMPORTANT NOTES:
+echo   - Virtual environment created in 'venv' directory
+echo   - To activate: venv\Scripts\activate.bat
+echo   - To deactivate: deactivate
 echo   - PyTorch must match torchvision version
 echo   - Use parakeet_stt_server.py from root (not models folder)
 echo   - transformers will be updated to 4.53.x by nemo_toolkit
@@ -127,5 +163,8 @@ echo To start services:
 echo   start_all.bat             - Start all services
 echo   start_parakeet_stt.bat    - Start STT only
 echo   python chatterbox_tts_server.py - Start TTS only
+echo.
+echo To run with virtual environment:
+echo   venv\Scripts\activate.bat && start_all.bat
 echo.
 pause
