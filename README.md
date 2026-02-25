@@ -354,6 +354,365 @@ Edit `data/settings.json` or use the Settings modal:
 - System prompt customization
 - API key management for cloud providers
 
+## 📚 API Documentation
+
+Omnix provides a comprehensive REST API for programmatic access to all features.
+
+### Base URLs
+
+- **Main API**: `http://localhost:5000/api/`
+- **OpenAI Compatible API**: `http://localhost:8001/v1/`
+- **STT Server**: `http://localhost:8000/`
+- **TTS Server**: `http://localhost:8020/`
+
+### OpenAI Compatible API
+
+Omnix provides a drop-in replacement for OpenAI APIs, compatible with OpenWebUI, SillyTavern, and other OpenAI-compatible clients.
+
+#### Models Endpoint
+
+List available models:
+```http
+GET /v1/models
+```
+
+Response:
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "mistral-7b-instruct-v0.2",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "omnix"
+    }
+  ]
+}
+```
+
+#### Chat Completions
+
+Create chat completions:
+```http
+POST /v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "mistral-7b-instruct-v0.2",
+  "messages": [
+    {"role": "user", "content": "Hello!"}
+  ],
+  "stream": false
+}
+```
+
+Streaming response:
+```http
+POST /v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "mistral-7b-instruct-v0.2",
+  "messages": [
+    {"role": "user", "content": "Tell me a story."}
+  ],
+  "stream": true
+}
+```
+
+#### Text-to-Speech
+
+Generate speech from text:
+```http
+POST /v1/audio/speech
+Content-Type: application/json
+
+{
+  "model": "tts-1",
+  "voice": "alloy",
+  "input": "Hello, this is a test message.",
+  "response_format": "mp3",
+  "stream": false
+}
+```
+
+#### Voices
+
+List available voices:
+```http
+GET /v1/audio/voices
+```
+
+Response:
+```json
+{
+  "voices": [
+    {
+      "voice_id": "alloy",
+      "name": "Alloy",
+      "category": "alloy",
+      "preview_url": "/v1/audio/voices/alloy/preview"
+    }
+  ]
+}
+```
+
+#### Health Check
+
+Check service status:
+```http
+GET /health
+```
+
+Response:
+```json
+{
+  "status": "healthy",
+  "tts_available": true,
+  "stt_available": false,
+  "timestamp": "2024-01-01T00:00:00.000000"
+}
+```
+
+### Main API Endpoints
+
+#### Sessions
+
+Create a new session:
+```http
+POST /api/sessions
+Content-Type: application/json
+
+{
+  "name": "My Session"
+}
+```
+
+Get all sessions:
+```http
+GET /api/sessions
+```
+
+Get session details:
+```http
+GET /api/sessions/{session_id}
+```
+
+Delete a session:
+```http
+DELETE /api/sessions/{session_id}
+```
+
+#### Messages
+
+Send a message:
+```http
+POST /api/sessions/{session_id}/messages
+Content-Type: application/json
+
+{
+  "message": "Hello, how are you?"
+}
+```
+
+Get messages from a session:
+```http
+GET /api/sessions/{session_id}/messages
+```
+
+Clear messages:
+```http
+DELETE /api/sessions/{session_id}/messages
+```
+
+#### Voice Cloning
+
+Upload voice sample:
+```http
+POST /api/voice-clone/upload
+Content-Type: multipart/form-data
+
+file: [audio file]
+voice_name: "My Voice"
+```
+
+List saved voices:
+```http
+GET /api/voice-clone/voices
+```
+
+Delete a voice:
+```http
+DELETE /api/voice-clone/voices/{voice_id}
+```
+
+#### TTS Control
+
+Check TTS status:
+```http
+GET /api/tts/status
+```
+
+Start TTS:
+```http
+POST /api/tts/start
+```
+
+Stop TTS:
+```http
+POST /api/tts/stop
+```
+
+Get TTS logs:
+```http
+GET /api/tts/logs
+```
+
+#### STT Control
+
+Check STT status:
+```http
+GET /api/stt/status
+```
+
+Start STT:
+```http
+POST /api/stt/start
+```
+
+Stop STT:
+```http
+POST /api/stt/stop
+```
+
+Get STT logs:
+```http
+GET /api/stt/logs
+```
+
+### WebSocket APIs
+
+#### Real-time Chat
+
+Connect to real-time chat:
+```javascript
+const ws = new WebSocket('ws://localhost:5000/ws/chat');
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Message:', data);
+};
+
+// Send message
+ws.send(JSON.stringify({
+  type: 'message',
+  content: 'Hello!'
+}));
+```
+
+#### Voice Transcription
+
+Real-time voice transcription:
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws/transcribe');
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    type: 'audio',
+    data: base64AudioData
+  }));
+};
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  if (data.type === 'text') {
+    console.log('Transcribed:', data.text);
+  }
+};
+```
+
+### Error Handling
+
+All API endpoints return standard HTTP status codes:
+
+- `200` - Success
+- `400` - Bad request (invalid parameters)
+- `404` - Not found (session/voice not found)
+- `500` - Internal server error
+
+Error responses include:
+```json
+{
+  "detail": "Error description"
+}
+```
+
+### Authentication
+
+The API is currently unauthenticated for local use. For production deployments, consider adding authentication middleware.
+
+### Rate Limiting
+
+- Chat completions: 60 requests/minute
+- TTS generation: 30 requests/minute
+- STT transcription: 30 requests/minute
+
+### Client Examples
+
+#### Python Client
+
+```python
+import requests
+import json
+
+# Chat completion
+response = requests.post('http://localhost:8001/v1/chat/completions', json={
+    "model": "mistral-7b-instruct-v0.2",
+    "messages": [{"role": "user", "content": "Hello!"}]
+})
+
+result = response.json()
+print(result['choices'][0]['message']['content'])
+```
+
+#### JavaScript Client
+
+```javascript
+// TTS generation
+async function generateSpeech(text, voice) {
+    const response = await fetch('http://localhost:8001/v1/audio/speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            model: 'tts-1',
+            voice: voice,
+            input: text
+        })
+    });
+    
+    return response.blob();
+}
+```
+
+#### cURL Examples
+
+```bash
+# List models
+curl http://localhost:8001/v1/models
+
+# Chat completion
+curl -X POST http://localhost:8001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "mistral-7b-instruct-v0.2", "messages": [{"role": "user", "content": "Hello!"}]}'
+
+# Generate speech
+curl -X POST http://localhost:8001/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model": "tts-1", "voice": "alloy", "input": "Hello, this is a test."}' \
+  -o output.mp3
+```
+
 ## Troubleshooting
 
 ### Chatbot won't start
