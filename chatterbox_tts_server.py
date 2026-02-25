@@ -1101,22 +1101,6 @@ async def tts_endpoint(request: TTSRequest):
         wav_int16 = np.clip(wav * 32767, -32768, 32767).astype(np.int16)
         audio_bytes = wav_int16.tobytes()
         
-        # Save to audio folder for debugging
-        audio_dir = Path(__file__).parent / "audio"
-        audio_dir.mkdir(exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        audio_filename = f"tts_{timestamp}.wav"
-        audio_path = audio_dir / audio_filename
-        
-        # Write WAV file
-        import wave
-        with wave.open(str(audio_path), 'wb') as wav_file:
-            wav_file.setnchannels(1)  # Mono
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(SAMPLE_RATE)
-            wav_file.writeframes(audio_bytes)
-        
-        logger.info(f"[TTS] Saved audio to: {audio_path} ({len(audio_bytes)} bytes)")
         
         # Return as base64
         audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
@@ -1276,16 +1260,6 @@ async def generate_speech_streaming_wav(
         wav_buffer.seek(0)
         wav_bytes = wav_buffer.read()
         
-        # Save to audio folder for debugging/playback
-        audio_dir = Path(__file__).parent / "audio"
-        audio_dir.mkdir(exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        audio_filename = f"tts_{timestamp}.wav"
-        audio_path = audio_dir / audio_filename
-        
-        with open(audio_path, 'wb') as f:
-            f.write(wav_bytes)
-        logger.info(f"[STREAM-WAV] Saved audio to: {audio_path}")
         
         # Encode to base64
         wav_base64 = base64.b64encode(wav_bytes).decode('utf-8')
