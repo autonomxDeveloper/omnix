@@ -77,7 +77,7 @@ docker-compose up -d --no-build
 
 This will:
 - Start the Omnix container using the pre-built image
-- Expose ports 5000 (main app), 8000 (STT), 8001 (realtime), 8020 (TTS)
+- Expose ports 5000 (main app), 8000 (STT), 8020 (TTS)
 - Mount volumes for data persistence, voice clones, and models
 - Auto-restart on failure
 

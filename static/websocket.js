@@ -15,7 +15,7 @@ let voiceWs = null;
 let voiceWsConnected = false;
 let voiceAudioBuffer = [];
 
-const VOICE_WS_URL = "ws://localhost:8001/ws/voice";
+// const VOICE_WS_URL = "ws://localhost:8001/ws/voice"; // Removed - no longer using realtime server
 
 // Streaming TTS WebSocket
 let ttsWs = null;
@@ -545,7 +545,8 @@ function connectVoiceWebSocket() {
         }
         
         try {
-            voiceWs = new WebSocket(VOICE_WS_URL);
+            // voiceWs = new WebSocket(VOICE_WS_URL); // Removed - no longer using realtime server
+            throw new Error('Voice WebSocket no longer supported - use REST API instead');
             
             voiceWs.onopen = () => {
                 console.log('Voice WebSocket connected');

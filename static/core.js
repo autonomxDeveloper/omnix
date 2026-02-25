@@ -101,8 +101,7 @@ let sessionId = null;
 let isLoading = false;
 let sessions = [];
 
-// WebSocket Configuration
-const WS_REALTIME_URL = "ws://localhost:8001/ws/voice";
+// WebSocket Configuration - removed realtime server references
 // USE_WEBSOCKET is now controlled by TTS_PLAYBACK_MODE
 // In "wav" mode: USE_WEBSOCKET = false (use REST API + <audio> elements)
 // In "websocket" mode: USE_WEBSOCKET = true (use WebSocket + AudioContext streaming)
