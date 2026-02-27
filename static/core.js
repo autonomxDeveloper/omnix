@@ -690,7 +690,7 @@ async function loadSettings() {
                     } else if (storedApiKey) {
                         cerebrasApiKeyInput.placeholder = 'API key saved';
                     } else {
-                        cerebrasApiKeyInput.placeholder = 'Get from cloud.cerebras.ai';
+                        cerebrasApiKeyInput.placeholder = 'Get from cloud.cerebras.com';
                     }
                 }
                 if (cerebrasModelInput) {
@@ -871,8 +871,8 @@ async function saveSettingsHandler() {
                 modelSelect.innerHTML = '';
                 cerebrasModels.forEach(m => {
                     const option = document.createElement('option');
-                    option.value = m;
-                    option.textContent = m;
+                    option.value = m.id;
+                    option.textContent = m.name || m.id;
                     modelSelect.appendChild(option);
                 });
                 
@@ -967,17 +967,29 @@ async function loadCerebrasModels() {
             body: JSON.stringify(settings)
         });
         
-        const response = await fetch('/api/cerebras/models');
+        const response = await fetch('/api/models');
         const data = await response.json();
         
         if (data.success && data.models) {
             cerebrasModelInput.innerHTML = '';
+            
+            // Handle different model formats
             data.models.forEach(m => {
                 const option = document.createElement('option');
-                option.value = m.id;
-                option.textContent = m.name || m.id;
+                
+                // Check if model is an object with id/name properties
+                if (typeof m === 'object' && m !== null) {
+                    option.value = m.id || m.name || m;
+                    option.textContent = m.name || m.id || m;
+                } else {
+                    // Model is a string
+                    option.value = m;
+                    option.textContent = m;
+                }
+                
                 cerebrasModelInput.appendChild(option);
             });
+            
             loadCerebrasModelsBtn.textContent = 'Models Loaded!';
         } else {
             alert('Error loading models: ' + (data.error || 'Unknown error'));
@@ -1069,16 +1081,87 @@ async function loadModels() {
         if (data.success && data.models && data.models.length > 0) {
             data.models.forEach(model => {
                 const option = document.createElement('option');
-                option.value = model;
-                option.textContent = model;
+                // Handle both string and object models
+                if (typeof model === 'object' && model !== null) {
+                    option.value = model.id || model.name || model;
+                    option.textContent = model.name || model.id || model;
+                } else {
+                    option.value = model;
+                    option.textContent = model;
+                }
                 modelSelect.appendChild(option);
             });
             
-            const currentModel = modelSelect.value;
-            if (currentModel && data.models.includes(currentModel)) {
-                modelSelect.value = currentModel;
+            // Get the selected model from settings.json for the current provider
+            let selectedModelFromSettings = '';
+            try {
+                const settingsResponse = await fetch('/api/settings');
+                const settingsData = await settingsResponse.json();
+                if (settingsData.success && settingsData.settings) {
+                    const provider = settingsData.settings.provider;
+                    if (provider === 'cerebras' && settingsData.settings.cerebras?.model) {
+                        selectedModelFromSettings = settingsData.settings.cerebras.model;
+                    } else if (provider === 'openrouter' && settingsData.settings.openrouter?.model) {
+                        selectedModelFromSettings = settingsData.settings.openrouter.model;
+                    } else if (provider === 'llamacpp' && settingsData.settings.llamacpp?.model) {
+                        selectedModelFromSettings = settingsData.settings.llamacpp.model;
+                    }
+                }
+            } catch (error) {
+                console.error('Error fetching settings for model selection:', error);
+            }
+            
+            // Select the model from settings if it exists in the list, otherwise select the first model
+            if (selectedModelFromSettings) {
+                // Handle both string and object models for selection
+                let modelExists = false;
+                if (typeof selectedModelFromSettings === 'object' && selectedModelFromSettings !== null) {
+                    // If settings contains an object, try to match by id or name
+                    for (let i = 0; i < data.models.length; i++) {
+                        const model = data.models[i];
+                        if (typeof model === 'object' && model !== null) {
+                            if (model.id === selectedModelFromSettings.id || model.name === selectedModelFromSettings.name) {
+                                modelSelect.value = model.id || model.name || model;
+                                modelExists = true;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // If settings contains a string, try to match by value
+                    for (let i = 0; i < data.models.length; i++) {
+                        const model = data.models[i];
+                        if (typeof model === 'object' && model !== null) {
+                            if (model.id === selectedModelFromSettings || model.name === selectedModelFromSettings) {
+                                modelSelect.value = model.id || model.name || model;
+                                modelExists = true;
+                                break;
+                            }
+                        } else if (model === selectedModelFromSettings) {
+                            modelSelect.value = model;
+                            modelExists = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!modelExists && data.models.length > 0) {
+                    // If the saved model doesn't exist, select the first one
+                    const firstModel = data.models[0];
+                    if (typeof firstModel === 'object' && firstModel !== null) {
+                        modelSelect.value = firstModel.id || firstModel.name || firstModel;
+                    } else {
+                        modelSelect.value = firstModel;
+                    }
+                }
             } else if (data.models.length > 0) {
-                modelSelect.value = data.models[0];
+                // No saved model, select the first one
+                const firstModel = data.models[0];
+                if (typeof firstModel === 'object' && firstModel !== null) {
+                    modelSelect.value = firstModel.id || firstModel.name || firstModel;
+                } else {
+                    modelSelect.value = firstModel;
+                }
             }
         } else {
             const option = document.createElement('option');
