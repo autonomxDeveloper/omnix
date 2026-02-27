@@ -217,7 +217,7 @@ Cerebras offers the fastest LLM inference available, with responses up to 10x fa
 
 **Setup:**
 1. Create an account at [Cerebras](https://cerebras.ai/)
-2. Go to [Cerebras Cloud](https://cloud.cerebras.ai/) and generate an API key
+2. Go to [Cerebras Cloud](https://cloud.cerebras.com/) and generate an API key
 3. In Omnix Settings, select "Cerebras" as provider
 4. Enter your API key
 

@@ -322,7 +322,7 @@ class TestLLMIntegration:
         }
         
         response = requests.post(
-            "https://api.cerebras.ai/v1/chat/completions",
+            "https://api.cerebras.com/v1/chat/completions",
             json=payload,
             headers={
                 "Authorization": f"Bearer {CEREBRAS_API_KEY}",

@@ -1,6 +1,7 @@
 import os
 import json
 import re
+from typing import Optional, Dict, Any, List
 
 # Base paths
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -26,6 +27,9 @@ custom_voices = {}
 downloads = {}
 llamacpp_server_downloads = {}
 
+# Provider system
+from app.providers import get_registry, BaseProvider, ProviderConfig
+
 DEFAULT_SETTINGS = {
     "provider": "lmstudio",
     "global_system_prompt": """You are an intelligent conversational AI designed for natural, engaging dialogue. Respond in a clear, friendly, and human-like manner while remaining concise and coherent. Prioritize understanding the user's intent and replying directly, without unnecessary elaboration or filler. Keep responses focused and easy to follow, using natural phrasing rather than formal or technical language unless required. Maintain conversational flow across turns and adapt smoothly to the user's tone. Default to brevity and do not exceed five sentences unless the user explicitly asks for more detail.""",
@@ -37,17 +41,56 @@ DEFAULT_SETTINGS = {
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant."
 
+def migrate_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Migrate old settings format to new provider-based format.
+    
+    Args:
+        settings: Old settings dictionary
+        
+    Returns:
+        Migrated settings dictionary
+    """
+    # Check if already migrated (has provider-specific configs at top level)
+    if 'provider' in settings and any(key in settings for key in ['lmstudio', 'openrouter', 'cerebras', 'llamacpp']):
+        # Already in new format or mixed - ensure all provider configs exist
+        for key in ['cerebras', 'openrouter', 'lmstudio', 'llamacpp']:
+            if key not in settings:
+                settings[key] = DEFAULT_SETTINGS[key].copy()
+        return settings
+    
+    # Old format - migrate
+    migrated = settings.copy()
+    
+    # Ensure provider key exists
+    if 'provider' not in migrated:
+        migrated['provider'] = 'lmstudio'
+    
+    # Initialize provider configs if not present
+    for key in ['cerebras', 'openrouter', 'lmstudio', 'llamacpp']:
+        if key not in migrated:
+            migrated[key] = DEFAULT_SETTINGS[key].copy()
+    
+    # Migrate old base_url to lmstudio config
+    if 'base_url' in migrated:
+        migrated['lmstudio']['base_url'] = migrated.pop('base_url')
+    
+    return migrated
+
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f:
                 settings = json.load(f)
+                # Migrate old settings format
+                settings = migrate_settings(settings)
+                # Ensure all provider configs exist
                 for key in ['cerebras', 'openrouter', 'lmstudio', 'llamacpp']:
                     if key not in settings:
                         settings[key] = DEFAULT_SETTINGS[key].copy()
                 return settings
-        except:
-            pass
+        except Exception as e:
+            print(f"Error loading settings: {e}, using defaults")
     return DEFAULT_SETTINGS.copy()
 
 def save_settings(settings):
@@ -67,29 +110,113 @@ def save_sessions(sessions):
         json.dump(sessions, f, indent=2)
 
 def extract_thinking(content):
-    if not content: return "", content
+    """Extract thinking/analysis from content."""
+    if not content:
+        return "", content
+    
     lines = content.split('\n')
     thinking_lines, answer_lines = [], []
     found_thinking = False
+    
     for i, line in enumerate(lines):
         stripped = line.strip()
+        # Check for numbered list indicators (1., 2., etc.)
         if stripped and all(stripped.startswith(f"{n}.") for n in range(1, 10) if stripped.startswith(f"{n}.")):
             if not found_thinking and i > 0 and any(m in '\n'.join(lines[:i]).lower() for m in ['analyze', 'identify', 'determine']):
                 thinking_lines, answer_lines = lines[:i], lines[i:]
                 found_thinking = True
                 continue
+        # Check for thinking-indicator phrases
         if not found_thinking and any(m in stripped.lower() for m in ['analyze', 'identify the intent', 'determine the answer', 'formulate', 'final output']):
             thinking_lines, answer_lines = lines[:i], lines[i:]
             found_thinking = True
+    
     if thinking_lines and answer_lines:
-        t_text, a_text = '\n'.join(thinking_lines).strip(), '\n'.join(answer_lines).strip()
-        if len(t_text) > 20: return t_text, a_text
-    if '</think>' in content.lower():
-        parts = content.split('</think>')
-        if len(parts) > 1: return parts[0].strip(), parts[1].strip()
+        t_text = '\n'.join(thinking_lines).strip()
+        a_text = '\n'.join(answer_lines).strip()
+        if len(t_text) > 20:
+            return t_text, a_text
+    
+    # Fallback: check for  tags (simple approach)
+    if '思考过程' in content or 'thinking' in content.lower():
+        # This is a placeholder - could be enhanced
+        pass
+    
     return "", content
 
+def get_provider(provider_name: Optional[str] = None) -> Optional[BaseProvider]:
+    """
+    Get a provider instance based on settings.
+    
+    Args:
+        provider_name: Optional provider name override, otherwise uses settings
+        
+    Returns:
+        BaseProvider instance or None if not available
+    """
+    settings = load_settings()
+    provider = provider_name or settings.get('provider', 'lmstudio')
+    
+    # Build provider config from settings
+    provider_config = None
+    try:
+        if provider == 'openrouter':
+            or_settings = settings.get('openrouter', {})
+            provider_config = ProviderConfig(
+                provider_type='openrouter',
+                api_key=or_settings.get('api_key', ''),
+                base_url='https://openrouter.ai/api/v1',
+                model=or_settings.get('model', 'openai/gpt-4o-mini'),
+                extra_params={
+                    'thinking_budget': or_settings.get('thinking_budget', 0),
+                    'context_size': or_settings.get('context_size', 128000)
+                }
+            )
+        elif provider == 'cerebras':
+            cb_settings = settings.get('cerebras', {})
+            provider_config = ProviderConfig(
+                provider_type='cerebras',
+                api_key=cb_settings.get('api_key', ''),
+                base_url='https://api.cerebras.ai',
+                model=cb_settings.get('model', 'llama-3.3-70b-versatile')
+            )
+        elif provider == 'llamacpp':
+            lp_settings = settings.get('llamacpp', {})
+            dl_loc = lp_settings.get('download_location', 'server')
+            model_dir = os.path.join(BASE_DIR, 'models', dl_loc)
+            provider_config = ProviderConfig(
+                provider_type='llamacpp',
+                base_url=lp_settings.get('base_url', 'http://localhost:8080'),
+                model=lp_settings.get('model', ''),
+                extra_params={
+                    'download_location': dl_loc,
+                    'model_dir': model_dir,
+                    'auto_start': lp_settings.get('auto_start', False)
+                }
+            )
+        else:  # lmstudio (default)
+            ls_settings = settings.get('lmstudio', {})
+            provider_config = ProviderConfig(
+                provider_type='lmstudio',
+                base_url=ls_settings.get('base_url', 'http://localhost:1234'),
+                model=ls_settings.get('model', '')
+            )
+        
+        # Create provider instance using registry
+        registry = get_registry()
+        provider_instance = registry.create_provider(provider, provider_config=provider_config)
+        return provider_instance
+        
+    except Exception as e:
+        print(f"Error creating provider '{provider}': {e}")
+        return None
+
 def get_provider_config():
+    """
+    Legacy function for backward compatibility.
+    Returns provider config dict in old format.
+    New code should use get_provider() instead.
+    """
     settings = load_settings()
     provider = settings.get('provider', 'lmstudio')
     
