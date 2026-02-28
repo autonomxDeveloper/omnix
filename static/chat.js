@@ -590,7 +590,10 @@ try {
                                 
                                 // For conversation mode, speak the response
                                 if (conversationMode && streamedContent) {
-                                    await speakText(streamedContent, ttsSpeaker.value);
+                                    // Get the selected speaker from the dropdown
+                                    const speakerSelect = document.getElementById('ttsSpeaker');
+                                    const selectedSpeaker = speakerSelect ? speakerSelect.value : 'en';
+                                    await speakText(streamedContent, selectedSpeaker);
                                 }
                             } else if (data.type === 'error') {
                                 messageDiv.querySelector('.message-content').innerHTML = `<span class="error">${data.error || 'An error occurred'}</span>`;
