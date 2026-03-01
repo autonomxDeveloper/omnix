@@ -1396,13 +1396,6 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
                                 // Render final markdown
                                 contentDiv.innerHTML = renderMarkdown(streamedContent);
                                 
-                                // For conversation mode, speak the response
-                                if (conversationMode && streamedContent) {
-                                    // Get the selected speaker from the dropdown
-                                    const speakerSelect = document.getElementById('ttsSpeaker');
-                                    const selectedSpeaker = speakerSelect ? speakerSelect.value : 'en';
-                                    await speakText(streamedContent, selectedSpeaker);
-                                }
                                 
                             } else if (data.type === 'error') {
                                 contentDiv.textContent = data.error || 'An error occurred';
