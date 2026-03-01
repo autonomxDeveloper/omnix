@@ -1,4 +1,3 @@
-
 """
 Audio Provider Plugin Implementations
 
@@ -211,7 +210,51 @@ class ParakeetSTT(BaseSTTProvider):
             return response.status_code == 200
         except:
             return False
-    
+            
+    def _parse_response(self, response) -> Dict[str, Any]:
+        """Helper to robustly parse the server response"""
+        print(f"[PARAKEET-PLUGIN] Server Response Status: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"[PARAKEET-PLUGIN] Server Response JSON: {data}")
+            
+            # Be highly permissive of response structure (OpenAI format or Custom)
+            text = data.get("text", "")
+            segments = data.get("segments", [])
+            
+            if not text and segments:
+                text = ' '.join([s.get('text', '') for s in segments])
+                
+            # If we got text, it's a success regardless of a 'success' boolean
+            if text.strip() or data.get("success"):
+                return {
+                    "success": True,
+                    "text": text.strip(),
+                    "segments": segments,
+                    "duration": data.get("duration")
+                }
+            else:
+                print(f"[PARAKEET-PLUGIN] Silence detected or empty text returned.")
+                return {
+                    "success": False,
+                    "text": "",
+                    "segments": [],
+                    "duration": 0,
+                    "error": "No speech detected in audio"
+                }
+                
+        # Handle failures
+        try:
+            error_body = response.json()
+            print(f"[PARAKEET-PLUGIN] Server Error JSON: {error_body}")
+            error_msg = error_body.get('error', error_body.get('message', response.text))
+        except:
+            error_msg = f"Status {response.status_code}: {response.text}"
+            
+        print(f"[PARAKEET-PLUGIN] Transcription failed: {error_msg}")
+        return {"success": False, "error": error_msg}
+
     def transcribe(self, audio_file_path: str, language: Optional[str] = None, 
                   **kwargs) -> Dict[str, Any]:
         try:
@@ -226,41 +269,12 @@ class ParakeetSTT(BaseSTTProvider):
                 
                 response = requests.post(f"{base_url}/transcribe", files=files, data=data, timeout=120)
             
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success"):
-                    segments = data.get("segments", [])
-                    text = ' '.join([s['text'] for s in segments])
-                    
-                    return {
-                        "success": True,
-                        "text": text,
-                        "segments": segments,
-                        "duration": data.get("duration")
-                    }
-            
-            # Handle graceful failure for silence
-            try:
-                error_body = response.json()
-                message = error_body.get('message', '')
-                if "no output" in message.lower() or "no speech" in message.lower():
-                    print(f"[PARAKEET-PLUGIN] Silence detected (handled gracefully)")
-                    return {
-                        "success": True,
-                        "text": "",
-                        "segments": [],
-                        "duration": 0
-                    }
-                
-                error_msg = error_body.get('error', message) or response.text
-            except:
-                error_msg = f"Status {response.status_code}: {response.text}"
-                
-            print(f"[PARAKEET-PLUGIN] Transcription failed: {error_msg}")
-            return {"success": False, "error": error_msg}
+            return self._parse_response(response)
             
         except Exception as e:
             print(f"[PARAKEET-PLUGIN] Exception: {e}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
     
     def transcribe_raw(self, audio_data: bytes, sample_rate: int = 16000, 
@@ -268,55 +282,32 @@ class ParakeetSTT(BaseSTTProvider):
         try:
             base_url = self.config.get("base_url", "http://localhost:8000")
             
-            import io
-            audio_file = io.BytesIO(audio_data)
-            
-            files = {'file': ('audio.wav', audio_file, 'audio/wav')}
-            data = {}
-            if language:
-                data['language'] = language
-            data.update(kwargs)
-            
-            print(f"[PARAKEET-PLUGIN] Sending raw audio to {base_url}/transcribe. Size: {len(audio_data)} bytes")
-            
-            response = requests.post(f"{base_url}/transcribe", files=files, data=data, timeout=120)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success"):
-                    segments = data.get("segments", [])
-                    text = ' '.join([s['text'] for s in segments])
-                    
-                    return {
-                        "success": True,
-                        "text": text,
-                        "segments": segments,
-                        "duration": data.get("duration")
-                    }
-            
-            # Handle graceful failure for silence
+            import tempfile
+            # Some local servers fail on memory buffers. Writing to a temporary file guarantees compatibility.
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                temp_audio.write(audio_data)
+                temp_audio_path = temp_audio.name
+                
             try:
-                error_body = response.json()
-                message = error_body.get('message', '')
-                # Check for "Transcription produced no output" error
-                if "no output" in message.lower() or "no speech" in message.lower():
-                    print(f"[PARAKEET-PLUGIN] Silence detected (handled gracefully)")
-                    return {
-                        "success": True,
-                        "text": "",
-                        "segments": [],
-                        "duration": 0
-                    }
-                
-                error_msg = error_body.get('error', message) or response.text
-            except:
-                error_msg = f"Status {response.status_code}: {response.text}"
-                
-            print(f"[PARAKEET-PLUGIN] Raw transcription failed: {error_msg}")
-            return {"success": False, "error": error_msg}
+                with open(temp_audio_path, 'rb') as f:
+                    files = {'file': ('audio.wav', f, 'audio/wav')}
+                    data = {}
+                    if language:
+                        data['language'] = language
+                    data.update(kwargs)
+                    
+                    print(f"[PARAKEET-PLUGIN] Sending audio to {base_url}/transcribe. Size: {len(audio_data)} bytes")
+                    response = requests.post(f"{base_url}/transcribe", files=files, data=data, timeout=120)
+                    
+                return self._parse_response(response)
+            finally:
+                if os.path.exists(temp_audio_path):
+                    os.unlink(temp_audio_path)
             
         except Exception as e:
             print(f"[PARAKEET-PLUGIN] Raw exception: {e}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
     
     def get_capabilities(self) -> List[AudioProviderCapability]:
