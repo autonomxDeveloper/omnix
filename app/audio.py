@@ -1,4 +1,3 @@
-
 import os
 import json
 import base64
@@ -7,6 +6,9 @@ import io
 import wave
 import numpy as np
 import traceback
+import subprocess
+import tempfile
+import shutil
 from flask import Blueprint, request, jsonify, Response
 import app.shared as shared
 
@@ -180,17 +182,44 @@ def stt():
     try:
         stt_provider = shared.get_stt_provider()
         if stt_provider and hasattr(stt_provider, 'transcribe'):
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                temp_file.write(a_data)
-                temp_file_path = temp_file.name
+            with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_in:
+                temp_in.write(a_data)
+                temp_in_path = temp_in.name
+                
+            temp_wav_path = temp_in_path + "_16k.wav"
+            target_file_path = temp_in_path
             
             try:
+                # Force strictly 16kHz Mono WAV using ffmpeg for Parakeet
+                subprocess.run([
+                    'ffmpeg', '-y', '-i', temp_in_path,
+                    '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
+                    temp_wav_path
+                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                target_file_path = temp_wav_path
+            except Exception as e:
+                print(f"[STT] ffmpeg conversion failed or not installed, falling back to raw bytes: {e}")
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_out:
+                    temp_out.write(a_data)
+                    target_file_path = temp_out.name
+            
+            try:
+                # ================= DEBUG AUDIO SAVING =================
+                debug_path = os.path.join(shared.BASE_DIR, 'debug_stt_standard.wav')
+                shutil.copy2(target_file_path, debug_path)
+                print(f"[DEBUG STT] Saved audio what Parakeet sees to: {debug_path}")
+                # ======================================================
+
                 result = stt_provider.transcribe(
-                    audio_file_path=temp_file_path,
+                    audio_file_path=target_file_path,
                     language=request.form.get('language', 'en')
                 )
-                os.unlink(temp_file_path)
+                
+                # Cleanup temp files
+                for p in [temp_in_path, temp_wav_path, target_file_path]:
+                    try:
+                        if os.path.exists(p): os.unlink(p)
+                    except: pass
                 
                 if result.get('success'):
                     return jsonify({
@@ -202,8 +231,9 @@ def stt():
                 else:
                     return jsonify({"success": False, "error": result.get('error', 'STT failed')}), 500
             except Exception as e:
-                if 'temp_file_path' in locals():
-                    try: os.unlink(temp_file_path)
+                for p in [temp_in_path, temp_wav_path, target_file_path]:
+                    try:
+                        if os.path.exists(p): os.unlink(p)
                     except: pass
                 raise e
         else:
@@ -215,42 +245,51 @@ def stt():
 @audio_bp.route('/api/stt/float32', methods=['POST'])
 def stt_float32():
     try:
-        # Debug logging
         print("[STT-FLOAT32] Received request")
-        
         sr_header = request.headers.get('X-Sample-Rate', '48000')
-        print(f"[STT-FLOAT32] Sample rate header: {sr_header}")
         sr = int(float(sr_header))
+        print(f"[STT-FLOAT32] Received sample rate: {sr}")
         
         f32_data = request.get_data()
         data_len = len(f32_data)
-        print(f"[STT-FLOAT32] Data length: {data_len} bytes")
         
         if data_len < 100: 
-            print("[STT-FLOAT32] Error: Data too small")
             return jsonify({"success": False, "error": "Too small"}), 400
         
-        # Ensure data length is multiple of 4 (float32 is 4 bytes)
+        # Ensure data length is multiple of 4
         remainder = data_len % 4
         if remainder != 0:
-            print(f"[STT-FLOAT32] Warning: Data length {data_len} is not multiple of 4. Trimming {remainder} bytes.")
             f32_data = f32_data[:-remainder]
         
-        # Convert bytes to numpy array
         arr = np.frombuffer(f32_data, dtype=np.float32)
-        print(f"[STT-FLOAT32] Converted to numpy array, shape: {arr.shape}, min: {arr.min()}, max: {arr.max()}")
         
-        # Resample if needed (Parakeet/Whisper usually want 16000)
+        # Proper Resampling logic
         target_sr = 16000
         if sr != target_sr:
             print(f"[STT-FLOAT32] Resampling from {sr} to {target_sr}")
-            # Simple linear interpolation for resampling
-            duration = len(arr) / sr
-            target_length = int(duration * target_sr)
-            x_old = np.linspace(0, duration, len(arr))
-            x_new = np.linspace(0, duration, target_length)
-            arr = np.interp(x_new, x_old, arr)
-            print(f"[STT-FLOAT32] Resampled shape: {arr.shape}")
+            try:
+                # 1st Choice: High-quality Scipy Resampler
+                import scipy.signal
+                num_samples = int(len(arr) * target_sr / sr)
+                arr = scipy.signal.resample(arr, num_samples)
+            except ImportError:
+                try:
+                    # 2nd Choice: Librosa
+                    import librosa
+                    arr = librosa.resample(arr, orig_sr=sr, target_sr=target_sr)
+                except ImportError:
+                    # 3rd Choice: Anti-aliased moving average fallback
+                    print(f"[STT-FLOAT32] Warning: Using low-quality fallback resampler")
+                    ratio = int(sr / target_sr)
+                    if ratio > 1 and sr % target_sr == 0:
+                        window = np.ones(ratio) / ratio
+                        arr = np.convolve(arr, window, mode='same')[::ratio]
+                    else:
+                        duration = len(arr) / sr
+                        target_length = int(duration * target_sr)
+                        x_old = np.linspace(0, duration, len(arr))
+                        x_new = np.linspace(0, duration, target_length)
+                        arr = np.interp(x_new, x_old, arr)
             
         # Convert float32 [-1, 1] to int16
         int16_arr = np.clip(arr * 32767, -32768, 32767).astype(np.int16)
@@ -261,36 +300,31 @@ def stt_float32():
             wf.setsampwidth(2) 
             wf.setframerate(target_sr) 
             wf.writeframes(int16_arr.tobytes())
-        
-        print(f"[STT-FLOAT32] WAV created in memory, size: {wav_io.getbuffer().nbytes} bytes")
+            
+        # ================= DEBUG AUDIO SAVING =================
+        debug_path = os.path.join(shared.BASE_DIR, 'debug_stt_float32.wav')
+        with open(debug_path, 'wb') as f:
+            f.write(wav_io.getvalue())
+        print(f"[DEBUG STT] Saved float32 audio what Parakeet sees to: {debug_path}")
+        # ======================================================
         
         stt_provider = shared.get_stt_provider()
-        if stt_provider:
-            print(f"[STT-FLOAT32] Using provider: {getattr(stt_provider, 'provider_name', 'unknown')}")
+        if stt_provider and hasattr(stt_provider, 'transcribe_raw'):
+            result = stt_provider.transcribe_raw(
+                audio_data=wav_io.getvalue(),
+                sample_rate=target_sr,
+                language=request.headers.get('X-Language', 'en')
+            )
             
-            if hasattr(stt_provider, 'transcribe_raw'):
-                result = stt_provider.transcribe_raw(
-                    audio_data=wav_io.getvalue(),
-                    sample_rate=target_sr,
-                    language=request.headers.get('X-Language', 'en')
-                )
-                print(f"[STT-FLOAT32] Provider success status: {result.get('success')}")
-                
-                if result.get('success'):
-                    return jsonify({
-                        "success": True, 
-                        "text": result.get('text', ''), 
-                        "segments": result.get('segments', [])
-                    })
-                else:
-                    error_msg = result.get('error', 'STT transcription failed')
-                    print(f"[STT-FLOAT32] Provider error message: {error_msg}")
-                    return jsonify({"success": False, "error": error_msg}), 500
+            if result.get('success'):
+                return jsonify({
+                    "success": True, 
+                    "text": result.get('text', ''), 
+                    "segments": result.get('segments', [])
+                })
             else:
-                print("[STT-FLOAT32] Provider has no transcribe_raw method")
-                return jsonify({"success": False, "error": "Provider does not support raw transcription"}), 500
+                return jsonify({"success": False, "error": result.get('error', 'STT failed')}), 500
         else:
-            print("[STT-FLOAT32] No STT provider available")
             return jsonify({"success": False, "error": "No STT provider available"}), 500
             
     except Exception as e: 

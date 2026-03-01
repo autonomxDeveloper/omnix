@@ -77,9 +77,9 @@ class AudioProviderRegistry:
                         
                         if provider_name and provider_name != "base":
                             if provider_name in self._tts_providers:
-                                print(f"Warning: TTS Provider '{provider_name}' already registered, overwriting")
+                                print(f"[WARNING] TTS Provider '{provider_name}' already registered, overwriting")
                             self._tts_providers[provider_name] = obj
-                            print(f"Registered TTS provider: {provider_name}")
+                            print(f"[INFO] Registered TTS provider: {provider_name}")
                 
                 # Find all STT provider classes
                 for name, obj in inspect.getmembers(module, inspect.isclass):
@@ -101,15 +101,15 @@ class AudioProviderRegistry:
                         
                         if provider_name and provider_name != "base":
                             if provider_name in self._stt_providers:
-                                print(f"Warning: STT Provider '{provider_name}' already registered, overwriting")
+                                print(f"[WARNING] STT Provider '{provider_name}' already registered, overwriting")
                             self._stt_providers[provider_name] = obj
-                            print(f"Registered STT provider: {provider_name}")
+                            print(f"[INFO] Registered STT provider: {provider_name}")
                         
             except Exception as e:
                 print(f"Error discovering providers in {module_name}: {e}")
                 
         self._discovered = True
-        print(f"Audio provider discovery complete. {len(self._tts_providers)} TTS and {len(self._stt_providers)} STT providers available")
+        print(f"[INFO] Audio provider discovery complete. {len(self._tts_providers)} TTS and {len(self._stt_providers)} STT providers available")
     
     def register_tts_provider(self, provider_class: Type[BaseTTSProvider]) -> None:
         """
@@ -132,7 +132,7 @@ class AudioProviderRegistry:
             raise ProviderRegistrationError(f"TTS Provider '{provider_name}' is already registered")
             
         self._tts_providers[provider_name] = provider_class
-        print(f"Manually registered TTS provider: {provider_name}")
+        print(f"[INFO] Manually registered TTS provider: {provider_name}")
     
     def register_stt_provider(self, provider_class: Type[BaseSTTProvider]) -> None:
         """
@@ -155,7 +155,7 @@ class AudioProviderRegistry:
             raise ProviderRegistrationError(f"STT Provider '{provider_name}' is already registered")
             
         self._stt_providers[provider_name] = provider_class
-        print(f"Manually registered STT provider: {provider_name}")
+        print(f"[INFO] Manually registered STT provider: {provider_name}")
     
     def unregister_tts_provider(self, provider_name: str) -> bool:
         """
@@ -169,7 +169,7 @@ class AudioProviderRegistry:
         """
         if provider_name in self._tts_providers:
             del self._tts_providers[provider_name]
-            print(f"Unregistered TTS provider: {provider_name}")
+            print(f"[INFO] Unregistered TTS provider: {provider_name}")
             return True
         return False
     
@@ -185,7 +185,7 @@ class AudioProviderRegistry:
         """
         if provider_name in self._stt_providers:
             del self._stt_providers[provider_name]
-            print(f"Unregistered STT provider: {provider_name}")
+            print(f"[INFO] Unregistered STT provider: {provider_name}")
             return True
         return False
     
