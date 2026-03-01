@@ -441,9 +441,15 @@ try {
         };
         
         // Add speaker for voice-stream endpoint
-        if (useStreamingTTS && ttsSpeakerSelect && ttsSpeakerSelect.value) {
+        // Always add speaker to request, regardless of streaming mode
+        if (ttsSpeakerSelect && ttsSpeakerSelect.value) {
             requestBody.speaker = ttsSpeakerSelect.value;
+            console.log('[CHAT] Speaker added to request:', requestBody.speaker);
+        } else {
+            console.log('[CHAT] No speaker selected or ttsSpeakerSelect not found');
         }
+        
+        console.log('[CHAT] Final requestBody:', JSON.stringify(requestBody, null, 2));
         
         const response = await fetch(endpoint, {
             method: 'POST',
