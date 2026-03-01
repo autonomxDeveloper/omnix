@@ -29,14 +29,19 @@ llamacpp_server_downloads = {}
 
 # Provider system
 from app.providers import get_registry, BaseProvider, ProviderConfig
+from app.providers.audio_registry import get_audio_registry, get_tts_provider, get_stt_provider
 
 DEFAULT_SETTINGS = {
     "provider": "lmstudio",
+    "audio_provider_tts": "chatterbox",
+    "audio_provider_stt": "parakeet",
     "global_system_prompt": """You are an intelligent conversational AI designed for natural, engaging dialogue. Respond in a clear, friendly, and human-like manner while remaining concise and coherent. Prioritize understanding the user's intent and replying directly, without unnecessary elaboration or filler. Keep responses focused and easy to follow, using natural phrasing rather than formal or technical language unless required. Maintain conversational flow across turns and adapt smoothly to the user's tone. Default to brevity and do not exceed five sentences unless the user explicitly asks for more detail.""",
     "lmstudio": {"base_url": "http://localhost:1234"},
     "openrouter": {"api_key": "", "model": "openai/gpt-4o-mini", "context_size": 128000, "thinking_budget": 0},
     "cerebras": {"api_key": "", "model": "llama-3.3-70b-versatile"},
-    "llamacpp": {"base_url": "http://localhost:8080", "model": "", "download_location": "server", "auto_start": False}
+    "llamacpp": {"base_url": "http://localhost:8080", "model": "", "download_location": "server", "auto_start": False},
+    "chatterbox": {"base_url": "http://localhost:8020"},
+    "parakeet": {"base_url": "http://localhost:8000"}
 }
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant."
@@ -57,6 +62,15 @@ def migrate_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
         for key in ['cerebras', 'openrouter', 'lmstudio', 'llamacpp']:
             if key not in settings:
                 settings[key] = DEFAULT_SETTINGS[key].copy()
+        # Ensure audio provider settings exist
+        if 'audio_provider_tts' not in settings:
+            settings['audio_provider_tts'] = DEFAULT_SETTINGS['audio_provider_tts']
+        if 'audio_provider_stt' not in settings:
+            settings['audio_provider_stt'] = DEFAULT_SETTINGS['audio_provider_stt']
+        if 'chatterbox' not in settings:
+            settings['chatterbox'] = DEFAULT_SETTINGS['chatterbox']
+        if 'parakeet' not in settings:
+            settings['parakeet'] = DEFAULT_SETTINGS['parakeet']
         return settings
     
     # Old format - migrate
@@ -70,6 +84,16 @@ def migrate_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     for key in ['cerebras', 'openrouter', 'lmstudio', 'llamacpp']:
         if key not in migrated:
             migrated[key] = DEFAULT_SETTINGS[key].copy()
+    
+    # Initialize audio provider configs if not present
+    if 'audio_provider_tts' not in migrated:
+        migrated['audio_provider_tts'] = DEFAULT_SETTINGS['audio_provider_tts']
+    if 'audio_provider_stt' not in migrated:
+        migrated['audio_provider_stt'] = DEFAULT_SETTINGS['audio_provider_stt']
+    if 'chatterbox' not in migrated:
+        migrated['chatterbox'] = DEFAULT_SETTINGS['chatterbox']
+    if 'parakeet' not in migrated:
+        migrated['parakeet'] = DEFAULT_SETTINGS['parakeet']
     
     # Migrate old base_url to lmstudio config
     if 'base_url' in migrated:
@@ -233,6 +257,82 @@ def get_provider_config():
 
 def get_global_system_prompt():
     return load_settings().get('global_system_prompt', DEFAULT_SYSTEM_PROMPT)
+
+def get_tts_provider(provider_name: Optional[str] = None) -> Optional[Any]:
+    """
+    Get a TTS provider instance based on settings.
+    
+    Args:
+        provider_name: Optional provider name override, otherwise uses settings
+        
+    Returns:
+        TTS provider instance or None if not available
+    """
+    settings = load_settings()
+    provider = provider_name or settings.get('audio_provider_tts', 'chatterbox')
+    
+    # Build provider config from settings
+    provider_config = None
+    try:
+        provider_settings = settings.get(provider, {})
+        base_url = provider_settings.get("base_url")
+        if not base_url:
+            # Fallback to default base URL if not configured
+            if provider == 'chatterbox':
+                base_url = "http://localhost:8020"
+            elif provider == 'parakeet':
+                base_url = "http://localhost:8000"
+            else:
+                base_url = None
+        
+        provider_config = {
+            "base_url": base_url,
+            "timeout": provider_settings.get("timeout", 300),
+            "max_retries": provider_settings.get("max_retries", 3),
+            "extra_params": provider_settings.get("extra_params", {})
+        }
+        
+        # Create provider instance using audio registry
+        registry = get_audio_registry()
+        provider_instance = registry.create_tts_provider(provider, config=provider_config)
+        return provider_instance
+        
+    except Exception as e:
+        print(f"Error creating TTS provider '{provider}': {e}")
+        return None
+
+def get_stt_provider(provider_name: Optional[str] = None) -> Optional[Any]:
+    """
+    Get an STT provider instance based on settings.
+    
+    Args:
+        provider_name: Optional provider name override, otherwise uses settings
+        
+    Returns:
+        STT provider instance or None if not available
+    """
+    settings = load_settings()
+    provider = provider_name or settings.get('audio_provider_stt', 'parakeet')
+    
+    # Build provider config from settings
+    provider_config = None
+    try:
+        provider_settings = settings.get(provider, {})
+        provider_config = {
+            "base_url": provider_settings.get("base_url"),
+            "timeout": provider_settings.get("timeout", 300),
+            "max_retries": provider_settings.get("max_retries", 3),
+            "extra_params": provider_settings.get("extra_params", {})
+        }
+        
+        # Create provider instance using audio registry
+        registry = get_audio_registry()
+        provider_instance = registry.create_stt_provider(provider, config=provider_config)
+        return provider_instance
+        
+    except Exception as e:
+        print(f"Error creating STT provider '{provider}': {e}")
+        return None
 
 def remove_emojis(text):
     if not text: return text
