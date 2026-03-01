@@ -25,9 +25,6 @@ from .audio_base import (
 class ChatterboxTTS(BaseTTSProvider):
     """
     Chatterbox TTS Provider - wraps CosyVoice TTS service.
-    
-    Manages the CosyVoice subprocess and communicates via HTTP to localhost:8020.
-    Handles voice cloning logic and provides standardized TTS interface.
     """
     
     provider_name = "chatterbox"
@@ -101,15 +98,12 @@ class ChatterboxTTS(BaseTTSProvider):
                 payload["language"] = language
             
             if speaker:
-                # FIX: Send as BOTH speaker and voice_clone_id to ensure server picks it up
-                # The server likely uses 'voice_clone_id' for custom/specific voice selection
                 payload["speaker"] = speaker
                 payload["voice_clone_id"] = speaker
-                print(f"[CHATTERBOX-PLUGIN] Requesting speaker: '{speaker}' (sent as voice_clone_id)")
+                print(f"[CHATTERBOX-PLUGIN] Requesting speaker: '{speaker}'")
             else:
                 print(f"[CHATTERBOX-PLUGIN] No speaker provided, using default.")
             
-            # Add any additional parameters
             payload.update(kwargs)
             
             response = requests.post(f"{base_url}/tts", json=payload, timeout=60)
@@ -127,7 +121,12 @@ class ChatterboxTTS(BaseTTSProvider):
                         "format": "audio/wav"
                     }
             
-            return {"success": False, "error": "TTS generation failed"}
+            try:
+                error_msg = response.json().get('error', f'TTS failed with status {response.status_code}')
+            except:
+                error_msg = f'TTS failed with status {response.status_code}'
+                
+            return {"success": False, "error": error_msg}
             
         except Exception as e:
             print(f"[CHATTERBOX-PLUGIN] Error: {e}")
@@ -240,9 +239,28 @@ class ParakeetSTT(BaseSTTProvider):
                         "duration": data.get("duration")
                     }
             
-            return {"success": False, "error": "Transcription failed"}
+            # Handle graceful failure for silence
+            try:
+                error_body = response.json()
+                message = error_body.get('message', '')
+                if "no output" in message.lower() or "no speech" in message.lower():
+                    print(f"[PARAKEET-PLUGIN] Silence detected (handled gracefully)")
+                    return {
+                        "success": True,
+                        "text": "",
+                        "segments": [],
+                        "duration": 0
+                    }
+                
+                error_msg = error_body.get('error', message) or response.text
+            except:
+                error_msg = f"Status {response.status_code}: {response.text}"
+                
+            print(f"[PARAKEET-PLUGIN] Transcription failed: {error_msg}")
+            return {"success": False, "error": error_msg}
             
         except Exception as e:
+            print(f"[PARAKEET-PLUGIN] Exception: {e}")
             return {"success": False, "error": str(e)}
     
     def transcribe_raw(self, audio_data: bytes, sample_rate: int = 16000, 
@@ -259,6 +277,8 @@ class ParakeetSTT(BaseSTTProvider):
                 data['language'] = language
             data.update(kwargs)
             
+            print(f"[PARAKEET-PLUGIN] Sending raw audio to {base_url}/transcribe. Size: {len(audio_data)} bytes")
+            
             response = requests.post(f"{base_url}/transcribe", files=files, data=data, timeout=120)
             
             if response.status_code == 200:
@@ -274,9 +294,29 @@ class ParakeetSTT(BaseSTTProvider):
                         "duration": data.get("duration")
                     }
             
-            return {"success": False, "error": "Transcription failed"}
+            # Handle graceful failure for silence
+            try:
+                error_body = response.json()
+                message = error_body.get('message', '')
+                # Check for "Transcription produced no output" error
+                if "no output" in message.lower() or "no speech" in message.lower():
+                    print(f"[PARAKEET-PLUGIN] Silence detected (handled gracefully)")
+                    return {
+                        "success": True,
+                        "text": "",
+                        "segments": [],
+                        "duration": 0
+                    }
+                
+                error_msg = error_body.get('error', message) or response.text
+            except:
+                error_msg = f"Status {response.status_code}: {response.text}"
+                
+            print(f"[PARAKEET-PLUGIN] Raw transcription failed: {error_msg}")
+            return {"success": False, "error": error_msg}
             
         except Exception as e:
+            print(f"[PARAKEET-PLUGIN] Raw exception: {e}")
             return {"success": False, "error": str(e)}
     
     def get_capabilities(self) -> List[AudioProviderCapability]:

@@ -70,21 +70,11 @@ STREAM_SAMPLE_RATE = int(os.environ.get("STREAM_SAMPLE_RATE", "48000"))  # Outpu
 CROSSFADE_SAMPLES = 480  # ~10ms at 48kHz for smooth transitions
 
 # Speculative TTS phrases (pre-generated for instant response)
-SPECULATIVE_FILLERS = [
-    "Hmm, let me think about that.",
-    "Sure, I can help with that.",
-    "Great question!",
-    "Let me see...",
-    "Okay, give me a moment.",
-    "I understand.",
-    "Right, let me check that for you.",
-    "Interesting! Let me think.",
-]
+SPECULATIVE_FILLERS = []
 
 CONVERSATION_GREETINGS = [
     "Hello! I'm ready to chat. How can I help you today?",
     "Hi there! I'm listening. What's on your mind?",
-    "Hey! Ready when you are. What would you like to talk about?",
 ]
 
 # Cache for pre-generated speculative audio

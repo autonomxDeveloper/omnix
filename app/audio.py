@@ -6,6 +6,7 @@ import requests
 import io
 import wave
 import numpy as np
+import traceback
 from flask import Blueprint, request, jsonify, Response
 import app.shared as shared
 
@@ -20,11 +21,9 @@ def delete_voice_clone(voice_id):
     if voice_id not in shared.custom_voices: return jsonify({"success": False, "error": "Not found"}), 404
     if shared.custom_voices[voice_id].get("has_audio"):
         try:
-            # Use provider system for voice clone deletion
             tts_provider = shared.get_tts_provider()
             if tts_provider and hasattr(tts_provider, 'voice_clone'):
-                # Try to delete via provider if it supports it
-                pass  # Most providers don't have delete functionality, so we'll skip this
+                pass 
         except: pass
     del shared.custom_voices[voice_id]
     with open(shared.VOICE_CLONES_FILE, 'w') as f: json.dump(shared.custom_voices, f, indent=2)
@@ -39,7 +38,6 @@ def create_voice_clone():
     has_audio = False
     if a_file:
         try:
-            # Use provider system for voice cloning
             tts_provider = shared.get_tts_provider()
             if tts_provider and hasattr(tts_provider, 'voice_clone'):
                 audio_data = a_file.read()
@@ -62,22 +60,12 @@ def create_voice_clone():
     return jsonify({"success": True, "voice_id": v_name})
 
 def resolve_speaker(data):
-    """Helper to resolve the correct speaker ID string."""
     raw_speaker = data.get('speaker', 'default')
-    # clean_speaker handles "Maya (Custom)" -> "Maya"
     clean_speaker = raw_speaker.replace(" (Custom)", "").strip()
-    
-    # 1. Check for custom cloned voice ID mapped in voice_clones.json
     custom_vid = shared.custom_voices.get(clean_speaker, {}).get("voice_clone_id")
-    
-    # 2. Check for explicit ID passed in request (e.g. from chatbot voice profile)
     provided_vid = data.get('voice_clone_id')
     
-    # 3. Determine final speaker ID to pass to provider
-    # Priority: Custom ID > Explicit ID > Speaker Name (if not default)
-    # If speaker is "Maya", and no custom map exists, we pass "Maya".
     final_speaker = custom_vid or provided_vid
-    
     if not final_speaker and clean_speaker and clean_speaker.lower() != 'default':
         final_speaker = clean_speaker
         
@@ -86,52 +74,6 @@ def resolve_speaker(data):
 
 @audio_bp.route('/api/tts', methods=['POST'])
 def tts():
-    # print('[TTS-BACKEND] === TTS ENDPOINT CALLED ===')
-    data = request.get_json()
-    # print(f'[TTS-BACKEND] Request data: {data}')
-    
-    text = shared.remove_emojis(data.get('text', ''))
-    
-    if not text: 
-        return jsonify({"success": False, "error": "Text required"}), 400
-    
-    final_speaker, language = resolve_speaker(data)
-    
-    try:
-        # Use provider system for TTS
-        tts_provider = shared.get_tts_provider()
-        
-        if tts_provider and hasattr(tts_provider, 'generate_audio'):
-            result = tts_provider.generate_audio(
-                text=text,
-                speaker=final_speaker,
-                language=language
-            )
-            
-            if result.get('success'):
-                audio_b64 = result.get('audio', '')
-                sample_rate = result.get('sample_rate', 24000)
-                
-                return jsonify({
-                    "success": True, 
-                    "audio": audio_b64, 
-                    "sample_rate": sample_rate, 
-                    "format": result.get('format', 'audio/wav')
-                })
-            else:
-                error_msg = result.get('error', 'TTS generation failed')
-                # print(f'[TTS-BACKEND] Provider failed: {error_msg}')
-                return jsonify({"success": False, "error": error_msg}), 500
-        else:
-            return jsonify({"success": False, "error": "No TTS provider available"}), 500
-            
-    except Exception as e: 
-        print(f'[TTS-BACKEND] Exception: {e}')
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@audio_bp.route('/api/tts/stream', methods=['POST'])
-def tts_stream():
-    """Streaming TTS endpoint - returns audio stream directly."""
     data = request.get_json()
     text = shared.remove_emojis(data.get('text', ''))
     if not text: return jsonify({"success": False, "error": "Text required"}), 400
@@ -139,10 +81,40 @@ def tts_stream():
     final_speaker, language = resolve_speaker(data)
     
     try:
-        # Use provider system for TTS
         tts_provider = shared.get_tts_provider()
         if tts_provider and hasattr(tts_provider, 'generate_audio'):
-            # Use provider system
+            result = tts_provider.generate_audio(
+                text=text,
+                speaker=final_speaker,
+                language=language
+            )
+            if result.get('success'):
+                return jsonify({
+                    "success": True, 
+                    "audio": result.get('audio', ''), 
+                    "sample_rate": result.get('sample_rate', 24000), 
+                    "format": result.get('format', 'audio/wav')
+                })
+            else:
+                return jsonify({"success": False, "error": result.get('error', 'TTS generation failed')}), 500
+        else:
+            return jsonify({"success": False, "error": "No TTS provider available"}), 500
+    except Exception as e: 
+        print(f"[TTS-ERROR] {e}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@audio_bp.route('/api/tts/stream', methods=['POST'])
+def tts_stream():
+    data = request.get_json()
+    text = shared.remove_emojis(data.get('text', ''))
+    if not text: return jsonify({"success": False, "error": "Text required"}), 400
+    
+    final_speaker, language = resolve_speaker(data)
+    
+    try:
+        tts_provider = shared.get_tts_provider()
+        if tts_provider and hasattr(tts_provider, 'generate_audio'):
             result = tts_provider.generate_audio(
                 text=text,
                 speaker=final_speaker,
@@ -151,7 +123,6 @@ def tts_stream():
             if result.get('success'):
                 audio_b64 = result.get('audio', '')
                 if audio_b64:
-                    # Decode base64 audio and return as stream
                     audio_data = base64.b64decode(audio_b64)
                     return Response(
                         audio_data,
@@ -161,20 +132,18 @@ def tts_stream():
                 else:
                     return jsonify({"success": False, "error": "No audio data returned"}), 500
             else:
-                error_msg = result.get('error', 'TTS generation failed')
-                return jsonify({"success": False, "error": error_msg}), 500
+                return jsonify({"success": False, "error": result.get('error', 'TTS failed')}), 500
         else:
             return jsonify({"success": False, "error": "No TTS provider available"}), 500
-            
     except Exception as e: 
-        print(f"TTS streaming error: {e}")
+        print(f"[TTS-STREAM-ERROR] {e}")
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 @audio_bp.route('/api/tts/speakers', methods=['GET'])
 def get_speakers():
     speakers, seen = [], set()
     try:
-        # Use provider system to get speakers
         tts_provider = shared.get_tts_provider()
         if tts_provider and hasattr(tts_provider, 'get_speakers'):
             provider_speakers = tts_provider.get_speakers()
@@ -189,9 +158,7 @@ def get_speakers():
                     })
     except Exception as e:
         print(f"Error getting speakers from provider: {e}")
-        # Fallback to empty list
     
-    # Add custom voices
     for k, v in shared.custom_voices.items():
         if k not in seen:
             seen.add(k)
@@ -201,7 +168,6 @@ def get_speakers():
                 "language": v.get("language", "en"), 
                 "is_custom": v.get("is_preloaded", False)
             })
-    
     return jsonify({"success": True, "speakers": speakers})
 
 @audio_bp.route('/api/stt', methods=['POST'])
@@ -212,10 +178,8 @@ def stt():
     if len(a_data) < 100: return jsonify({"success": False, "error": "Audio too small"}), 400
     
     try:
-        # Use provider system for STT
         stt_provider = shared.get_stt_provider()
         if stt_provider and hasattr(stt_provider, 'transcribe'):
-            # Use provider system
             import tempfile
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
                 temp_file.write(a_data)
@@ -226,7 +190,7 @@ def stt():
                     audio_file_path=temp_file_path,
                     language=request.form.get('language', 'en')
                 )
-                os.unlink(temp_file_path)  # Clean up temp file
+                os.unlink(temp_file_path)
                 
                 if result.get('success'):
                     return jsonify({
@@ -236,8 +200,7 @@ def stt():
                         "duration": result.get('duration')
                     })
                 else:
-                    error_msg = result.get('error', 'STT transcription failed')
-                    return jsonify({"success": False, "error": error_msg}), 500
+                    return jsonify({"success": False, "error": result.get('error', 'STT failed')}), 500
             except Exception as e:
                 if 'temp_file_path' in locals():
                     try: os.unlink(temp_file_path)
@@ -245,7 +208,6 @@ def stt():
                 raise e
         else:
             return jsonify({"success": False, "error": "No STT provider available"}), 500
-            
     except Exception as e: 
         print(f"STT error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -253,87 +215,114 @@ def stt():
 @audio_bp.route('/api/stt/float32', methods=['POST'])
 def stt_float32():
     try:
-        sr = int(request.headers.get('X-Sample-Rate', 48000))
-        f32_data = request.get_data()
-        if len(f32_data) < 100: return jsonify({"success": False, "error": "Too small"}), 400
+        # Debug logging
+        print("[STT-FLOAT32] Received request")
         
+        sr_header = request.headers.get('X-Sample-Rate', '48000')
+        print(f"[STT-FLOAT32] Sample rate header: {sr_header}")
+        sr = int(float(sr_header))
+        
+        f32_data = request.get_data()
+        data_len = len(f32_data)
+        print(f"[STT-FLOAT32] Data length: {data_len} bytes")
+        
+        if data_len < 100: 
+            print("[STT-FLOAT32] Error: Data too small")
+            return jsonify({"success": False, "error": "Too small"}), 400
+        
+        # Ensure data length is multiple of 4 (float32 is 4 bytes)
+        remainder = data_len % 4
+        if remainder != 0:
+            print(f"[STT-FLOAT32] Warning: Data length {data_len} is not multiple of 4. Trimming {remainder} bytes.")
+            f32_data = f32_data[:-remainder]
+        
+        # Convert bytes to numpy array
         arr = np.frombuffer(f32_data, dtype=np.float32)
-        if sr != 16000:
-            ratio = 16000 / sr
-            idx = np.clip(np.arange(int(len(arr) * ratio)) / ratio, 0, len(arr) - 1)
-            arr = np.interp(idx, np.arange(len(arr)), arr)
+        print(f"[STT-FLOAT32] Converted to numpy array, shape: {arr.shape}, min: {arr.min()}, max: {arr.max()}")
+        
+        # Resample if needed (Parakeet/Whisper usually want 16000)
+        target_sr = 16000
+        if sr != target_sr:
+            print(f"[STT-FLOAT32] Resampling from {sr} to {target_sr}")
+            # Simple linear interpolation for resampling
+            duration = len(arr) / sr
+            target_length = int(duration * target_sr)
+            x_old = np.linspace(0, duration, len(arr))
+            x_new = np.linspace(0, duration, target_length)
+            arr = np.interp(x_new, x_old, arr)
+            print(f"[STT-FLOAT32] Resampled shape: {arr.shape}")
             
+        # Convert float32 [-1, 1] to int16
         int16_arr = np.clip(arr * 32767, -32768, 32767).astype(np.int16)
+        
         wav_io = io.BytesIO()
         with wave.open(wav_io, 'wb') as wf:
-            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000); wf.writeframes(int16_arr.tobytes())
+            wf.setnchannels(1) 
+            wf.setsampwidth(2) 
+            wf.setframerate(target_sr) 
+            wf.writeframes(int16_arr.tobytes())
         
-        # Use provider system for STT
+        print(f"[STT-FLOAT32] WAV created in memory, size: {wav_io.getbuffer().nbytes} bytes")
+        
         stt_provider = shared.get_stt_provider()
-        if stt_provider and hasattr(stt_provider, 'transcribe_raw'):
-            # Use provider system
-            result = stt_provider.transcribe_raw(
-                audio_data=wav_io.getvalue(),
-                sample_rate=16000,
-                language=request.headers.get('X-Language', 'en')
-            )
-            if result.get('success'):
-                return jsonify({
-                    "success": True, 
-                    "text": result.get('text', ''), 
-                    "segments": result.get('segments', [])
-                })
+        if stt_provider:
+            print(f"[STT-FLOAT32] Using provider: {getattr(stt_provider, 'provider_name', 'unknown')}")
+            
+            if hasattr(stt_provider, 'transcribe_raw'):
+                result = stt_provider.transcribe_raw(
+                    audio_data=wav_io.getvalue(),
+                    sample_rate=target_sr,
+                    language=request.headers.get('X-Language', 'en')
+                )
+                print(f"[STT-FLOAT32] Provider success status: {result.get('success')}")
+                
+                if result.get('success'):
+                    return jsonify({
+                        "success": True, 
+                        "text": result.get('text', ''), 
+                        "segments": result.get('segments', [])
+                    })
+                else:
+                    error_msg = result.get('error', 'STT transcription failed')
+                    print(f"[STT-FLOAT32] Provider error message: {error_msg}")
+                    return jsonify({"success": False, "error": error_msg}), 500
             else:
-                error_msg = result.get('error', 'STT transcription failed')
-                return jsonify({"success": False, "error": error_msg}), 500
+                print("[STT-FLOAT32] Provider has no transcribe_raw method")
+                return jsonify({"success": False, "error": "Provider does not support raw transcription"}), 500
         else:
+            print("[STT-FLOAT32] No STT provider available")
             return jsonify({"success": False, "error": "No STT provider available"}), 500
             
     except Exception as e: 
-        print(f"STT float32 error: {e}")
+        print(f"[STT-FLOAT32] Exception: {e}")
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
-# NEW: Health check endpoint for TTS provider
 @audio_bp.route('/api/tts/health', methods=['GET'])
 def tts_health_check():
-    """Check if TTS provider is available and healthy."""
     try:
         tts_provider = shared.get_tts_provider()
         if not tts_provider:
-            return jsonify({
-                "success": False, 
-                "error": "No TTS provider configured",
-                "provider": None
-            }), 500
+            return jsonify({"success": False, "error": "No TTS provider configured"}), 500
         
-        # Try to get speakers as a health check
         if hasattr(tts_provider, 'get_speakers'):
             speakers = tts_provider.get_speakers()
             return jsonify({
                 "success": True,
                 "provider": getattr(tts_provider, 'provider_name', 'unknown'),
                 "speakers_count": len(speakers),
-                "speakers": speakers[:5]  # Return first 5 speakers
+                "speakers": speakers[:5]
             })
         else:
             return jsonify({
                 "success": True,
-                "provider": getattr(tts_provider, 'provider_name', 'unknown'),
-                "message": "Provider available but no speaker list method"
+                "provider": getattr(tts_provider, 'provider_name', 'unknown')
             })
-            
     except Exception as e:
-        print(f"TTS health check failed: {e}")
-        return jsonify({
-            "success": False, 
-            "error": str(e),
-            "provider": getattr(tts_provider, 'provider_name', 'unknown') if 'tts_provider' in locals() else None
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-# NEW: Test TTS endpoint for debugging
 @audio_bp.route('/api/tts/test', methods=['POST'])
 def tts_test():
-    """Test TTS generation with a simple text."""
     try:
         data = request.get_json()
         text = data.get('text', 'Hello, this is a test.')
@@ -342,7 +331,6 @@ def tts_test():
         
         final_speaker, _ = resolve_speaker(data)
         
-        # Use provider system for TTS
         tts_provider = shared.get_tts_provider()
         if not tts_provider:
             return jsonify({"success": False, "error": "No TTS provider available"}), 500
@@ -353,36 +341,24 @@ def tts_test():
                 speaker=final_speaker,
                 language=language
             )
-            
             if result.get('success'):
-                audio_b64 = result.get('audio', '')
-                sample_rate = result.get('sample_rate', 24000)
-                
                 return jsonify({
                     "success": True, 
-                    "audio": audio_b64, 
-                    "sample_rate": sample_rate, 
+                    "audio": result.get('audio', ''), 
+                    "sample_rate": result.get('sample_rate', 24000), 
                     "format": result.get('format', 'audio/wav'),
-                    "text": text,
-                    "provider": getattr(tts_provider, 'provider_name', 'unknown')
+                    "text": text
                 })
             else:
-                error_msg = result.get('error', 'TTS generation failed')
-                print(f"[TTS-TEST] Provider error: {error_msg}")
-                return jsonify({"success": False, "error": error_msg}), 500
+                return jsonify({"success": False, "error": result.get('error')}), 500
         else:
             return jsonify({"success": False, "error": "TTS provider does not support generate_audio method"}), 500
-            
     except Exception as e: 
-        print(f"[TTS-TEST] Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-# NEW: Provider status endpoint
 @audio_bp.route('/api/providers/status', methods=['GET'])
 def providers_status():
-    """Get status of all audio providers."""
     try:
-        # Check TTS provider
         tts_status = {"available": False, "provider": None, "error": None}
         try:
             tts_provider = shared.get_tts_provider()
@@ -396,7 +372,6 @@ def providers_status():
         except Exception as e:
             tts_status["error"] = str(e)
         
-        # Check STT provider
         stt_status = {"available": False, "provider": None, "error": None}
         try:
             stt_provider = shared.get_stt_provider()
@@ -414,9 +389,5 @@ def providers_status():
             "stt": stt_status,
             "settings": shared.load_settings().get('audio_provider_tts', 'chatterbox')
         })
-        
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
