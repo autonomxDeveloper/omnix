@@ -1,3 +1,5 @@
+
+
 import re
 import json
 import time
@@ -95,7 +97,9 @@ def generate():
                 v_name = def_v.get('female') if g == 'female' else def_v.get('male') if g == 'male' else def_v.get('narrator')
             
             vid = shared.custom_voices.get(v_name, {}).get('voice_clone_id') if v_name else None
-            req = {"text": shared.remove_emojis(text), "language": "en"}
+            
+            # Pass speaker name so audio.py can resolve it
+            req = {"text": shared.remove_emojis(text), "language": "en", "speaker": v_name}
             if vid: req["voice_clone_id"] = vid
             
             try:

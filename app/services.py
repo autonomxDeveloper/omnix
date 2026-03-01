@@ -1,3 +1,4 @@
+
 import os
 import time
 import json
@@ -95,7 +96,7 @@ def pregen_audio(speaker="default"):
     voice_id = shared.custom_voices.get(speaker.replace(" (Custom)", ""), {}).get("voice_clone_id")
     for phrase in SPECULATIVE_FILLERS + CONVERSATION_GREETINGS:
         try:
-            req = {"text": phrase, "language": "en"}
+            req = {"text": phrase, "language": "en", "speaker": speaker}
             if voice_id: req["voice_clone_id"] = voice_id
             r = requests.post(f"{shared.TTS_BASE_URL}/tts", json=req, timeout=60)
             if r.status_code == 200 and r.json().get('success'):
@@ -122,13 +123,17 @@ def get_greeting():
     phrase = random.choice(CONVERSATION_GREETINGS)
     voice_id = shared.custom_voices.get(speaker.replace(" (Custom)", ""), {}).get("voice_clone_id")
     
-    if voice_id:
-        try:
-            r = requests.post(f"{shared.TTS_BASE_URL}/tts", json={"text": phrase, "language": "en", "voice_clone_id": voice_id}, timeout=60)
-            if r.status_code == 200 and r.json().get('success'):
-                return jsonify({"success": True, "text": phrase, "audio": r.json().get('audio'), "sample_rate": r.json().get('sample_rate')})
-        except: pass
+    # Try generating fresh audio (handles both custom and provider voices)
+    try:
+        req = {"text": phrase, "language": "en", "speaker": speaker}
+        if voice_id: req["voice_clone_id"] = voice_id
         
+        r = requests.post(f"{shared.TTS_BASE_URL}/tts", json=req, timeout=60)
+        if r.status_code == 200 and r.json().get('success'):
+            return jsonify({"success": True, "text": phrase, "audio": r.json().get('audio'), "sample_rate": r.json().get('sample_rate')})
+    except: pass
+    
+    # Fallback to cache if generation failed
     with cache_lock: audio = speculative_cache.get(phrase)
     if audio: return jsonify({"success": True, "text": phrase, "audio": audio[0], "sample_rate": audio[1]})
     return jsonify({"success": False, "error": "TTS not available"})
