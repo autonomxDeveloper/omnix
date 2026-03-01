@@ -85,7 +85,8 @@ function toggleConversationMode() {
 
 // Exit conversation mode
 function exitConversationMode() {
-    console.log('[VOICE] Exit conversation mode requested');
+    console.log('[VOICE-EXIT] === EXIT CONVERSATION MODE ===');
+    console.log('[VOICE-EXIT] stopAudioRequested set to true');
     
     // Signal all audio to stop
     stopAudioRequested = true;
