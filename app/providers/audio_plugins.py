@@ -1,3 +1,4 @@
+
 """
 Audio Provider Plugin Implementations
 
@@ -32,17 +33,11 @@ class ChatterboxTTS(BaseTTSProvider):
     provider_name = "chatterbox"
     
     def start(self) -> Dict[str, Any]:
-        """
-        Start the CosyVoice TTS subprocess.
-        
-        Returns:
-            Dict with 'running' status and optional 'message'
-        """
+        """Start the CosyVoice TTS subprocess."""
         if self.process and self.process.poll() is None:
             return {"running": True, "message": "Service already running"}
         
         try:
-            # Start the CosyVoice TTS server
             script_path = Path(__file__).parent.parent.parent / "chatterbox_tts_server.py"
             if not script_path.exists():
                 return {"running": False, "message": f"Server script not found: {script_path}"}
@@ -55,17 +50,14 @@ class ChatterboxTTS(BaseTTSProvider):
                 bufsize=1
             )
             
-            # Start log capture
             self._start_log_thread()
             
-            # Wait for service to be ready
             max_wait = 30
             for _ in range(max_wait):
                 if self.health_check():
                     return {"running": True, "message": "Chatterbox TTS started successfully"}
                 time.sleep(1)
             
-            # If we get here, service didn't start properly
             self.stop()
             return {"running": False, "message": "Service failed to start within timeout"}
             
@@ -73,12 +65,6 @@ class ChatterboxTTS(BaseTTSProvider):
             return {"running": False, "message": f"Failed to start: {str(e)}"}
     
     def health_check(self) -> bool:
-        """
-        Check if the Chatterbox TTS service is healthy.
-        
-        Returns:
-            True if healthy, False otherwise
-        """
         try:
             base_url = self.config.get("base_url", "http://localhost:8020")
             response = requests.get(f"{base_url}/health", timeout=5)
@@ -87,12 +73,6 @@ class ChatterboxTTS(BaseTTSProvider):
             return False
     
     def get_speakers(self) -> List[Dict[str, Any]]:
-        """
-        Get list of available speakers.
-        
-        Returns:
-            List of speaker dictionaries
-        """
         try:
             base_url = self.config.get("base_url", "http://localhost:8020")
             response = requests.get(f"{base_url}/voices", timeout=10)
@@ -103,7 +83,7 @@ class ChatterboxTTS(BaseTTSProvider):
                     speakers.append({
                         "id": voice,
                         "name": voice,
-                        "language": "en"  # Default language
+                        "language": "en"
                     })
                 return speakers
             return []
@@ -112,27 +92,22 @@ class ChatterboxTTS(BaseTTSProvider):
     
     def generate_audio(self, text: str, speaker: Optional[str] = None, 
                       language: Optional[str] = None, **kwargs) -> Dict[str, Any]:
-        """
-        Generate audio from text using Chatterbox TTS.
-        
-        Args:
-            text: The text to synthesize
-            speaker: Optional speaker/voice to use
-            language: Optional language code
-            **kwargs: Provider-specific parameters
-            
-        Returns:
-            Dict with 'success', 'audio' (base64), 'sample_rate', 'format' keys
-        """
+        """Generate audio from text using Chatterbox TTS."""
         try:
             base_url = self.config.get("base_url", "http://localhost:8020")
             
-            # Build request payload
             payload = {"text": text}
             if language:
                 payload["language"] = language
+            
             if speaker:
+                # FIX: Send as BOTH speaker and voice_clone_id to ensure server picks it up
+                # The server likely uses 'voice_clone_id' for custom/specific voice selection
                 payload["speaker"] = speaker
+                payload["voice_clone_id"] = speaker
+                print(f"[CHATTERBOX-PLUGIN] Requesting speaker: '{speaker}' (sent as voice_clone_id)")
+            else:
+                print(f"[CHATTERBOX-PLUGIN] No speaker provided, using default.")
             
             # Add any additional parameters
             payload.update(kwargs)
@@ -155,25 +130,14 @@ class ChatterboxTTS(BaseTTSProvider):
             return {"success": False, "error": "TTS generation failed"}
             
         except Exception as e:
+            print(f"[CHATTERBOX-PLUGIN] Error: {e}")
             return {"success": False, "error": str(e)}
     
     def voice_clone(self, voice_id: str, audio_data: bytes, 
                    ref_text: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Create a voice clone from audio data.
-        
-        Args:
-            voice_id: Unique identifier for the voice clone
-            audio_data: Reference audio data
-            ref_text: Optional reference text for the voice
-            
-        Returns:
-            Dict with 'success' status and optional 'message'
-        """
         try:
             base_url = self.config.get("base_url", "http://localhost:8020")
             
-            # Create multipart form data
             files = {
                 'file': (f'{voice_id}.wav', audio_data, 'audio/wav')
             }
@@ -198,7 +162,6 @@ class ChatterboxTTS(BaseTTSProvider):
             return {"success": False, "message": str(e)}
     
     def get_capabilities(self) -> List[AudioProviderCapability]:
-        """Get list of capabilities supported by Chatterbox TTS."""
         return [
             AudioProviderCapability.STREAMING,
             AudioProviderCapability.VOICE_CLONING,
@@ -207,27 +170,15 @@ class ChatterboxTTS(BaseTTSProvider):
 
 
 class ParakeetSTT(BaseSTTProvider):
-    """
-    Parakeet STT Provider - wraps FasterWhisper/Parakeet STT service.
-    
-    Manages the Parakeet/FasterWhisper subprocess and communicates via HTTP to localhost:8000.
-    Handles audio file formatting for transcription.
-    """
+    """Parakeet STT Provider - wraps FasterWhisper/Parakeet STT service."""
     
     provider_name = "parakeet"
     
     def start(self) -> Dict[str, Any]:
-        """
-        Start the Parakeet STT subprocess.
-        
-        Returns:
-            Dict with 'running' status and optional 'message'
-        """
         if self.process and self.process.poll() is None:
             return {"running": True, "message": "Service already running"}
         
         try:
-            # Start the Parakeet STT server
             script_path = Path(__file__).parent.parent.parent / "parakeet_stt_server.py"
             if not script_path.exists():
                 return {"running": False, "message": f"Server script not found: {script_path}"}
@@ -240,17 +191,14 @@ class ParakeetSTT(BaseSTTProvider):
                 bufsize=1
             )
             
-            # Start log capture
             self._start_log_thread()
             
-            # Wait for service to be ready
             max_wait = 30
             for _ in range(max_wait):
                 if self.health_check():
                     return {"running": True, "message": "Parakeet STT started successfully"}
                 time.sleep(1)
             
-            # If we get here, service didn't start properly
             self.stop()
             return {"running": False, "message": "Service failed to start within timeout"}
             
@@ -258,12 +206,6 @@ class ParakeetSTT(BaseSTTProvider):
             return {"running": False, "message": f"Failed to start: {str(e)}"}
     
     def health_check(self) -> bool:
-        """
-        Check if the Parakeet STT service is healthy.
-        
-        Returns:
-            True if healthy, False otherwise
-        """
         try:
             base_url = self.config.get("base_url", "http://localhost:8000")
             response = requests.get(f"{base_url}/health", timeout=5)
@@ -273,21 +215,9 @@ class ParakeetSTT(BaseSTTProvider):
     
     def transcribe(self, audio_file_path: str, language: Optional[str] = None, 
                   **kwargs) -> Dict[str, Any]:
-        """
-        Transcribe audio file to text.
-        
-        Args:
-            audio_file_path: Path to the audio file
-            language: Optional language code
-            **kwargs: Provider-specific parameters
-            
-        Returns:
-            Dict with 'success', 'text', 'segments', 'duration' keys
-        """
         try:
             base_url = self.config.get("base_url", "http://localhost:8000")
             
-            # Open and send the audio file
             with open(audio_file_path, 'rb') as audio_file:
                 files = {'file': (os.path.basename(audio_file_path), audio_file, 'audio/wav')}
                 data = {}
@@ -317,22 +247,9 @@ class ParakeetSTT(BaseSTTProvider):
     
     def transcribe_raw(self, audio_data: bytes, sample_rate: int = 16000, 
                       language: Optional[str] = None, **kwargs) -> Dict[str, Any]:
-        """
-        Transcribe raw audio data to text.
-        
-        Args:
-            audio_data: Raw audio bytes
-            sample_rate: Audio sample rate
-            language: Optional language code
-            **kwargs: Provider-specific parameters
-            
-        Returns:
-            Dict with 'success', 'text', 'segments', 'duration' keys
-        """
         try:
             base_url = self.config.get("base_url", "http://localhost:8000")
             
-            # Create a temporary file-like object
             import io
             audio_file = io.BytesIO(audio_data)
             
@@ -363,7 +280,6 @@ class ParakeetSTT(BaseSTTProvider):
             return {"success": False, "error": str(e)}
     
     def get_capabilities(self) -> List[AudioProviderCapability]:
-        """Get list of capabilities supported by Parakeet STT."""
         return [
             AudioProviderCapability.STREAMING,
             AudioProviderCapability.BATCH_PROCESSING,

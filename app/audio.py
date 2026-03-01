@@ -1,3 +1,4 @@
+
 import os
 import json
 import base64
@@ -60,49 +61,56 @@ def create_voice_clone():
     with open(shared.VOICE_CLONES_FILE, 'w') as f: json.dump(shared.custom_voices, f, indent=2)
     return jsonify({"success": True, "voice_id": v_name})
 
+def resolve_speaker(data):
+    """Helper to resolve the correct speaker ID string."""
+    raw_speaker = data.get('speaker', 'default')
+    # clean_speaker handles "Maya (Custom)" -> "Maya"
+    clean_speaker = raw_speaker.replace(" (Custom)", "").strip()
+    
+    # 1. Check for custom cloned voice ID mapped in voice_clones.json
+    custom_vid = shared.custom_voices.get(clean_speaker, {}).get("voice_clone_id")
+    
+    # 2. Check for explicit ID passed in request (e.g. from chatbot voice profile)
+    provided_vid = data.get('voice_clone_id')
+    
+    # 3. Determine final speaker ID to pass to provider
+    # Priority: Custom ID > Explicit ID > Speaker Name (if not default)
+    # If speaker is "Maya", and no custom map exists, we pass "Maya".
+    final_speaker = custom_vid or provided_vid
+    
+    if not final_speaker and clean_speaker and clean_speaker.lower() != 'default':
+        final_speaker = clean_speaker
+        
+    print(f"[AUDIO-DEBUG] Resolving Speaker: Raw='{raw_speaker}' -> Clean='{clean_speaker}' -> Final='{final_speaker}'")
+    return final_speaker, data.get('language', 'en')
+
 @audio_bp.route('/api/tts', methods=['POST'])
 def tts():
-    print('[TTS-BACKEND] === TTS ENDPOINT CALLED ===')
+    # print('[TTS-BACKEND] === TTS ENDPOINT CALLED ===')
     data = request.get_json()
-    print(f'[TTS-BACKEND] Request data: {data}')
+    # print(f'[TTS-BACKEND] Request data: {data}')
     
     text = shared.remove_emojis(data.get('text', ''))
-    print(f'[TTS-BACKEND] Cleaned text: "{text[:50]}..."')
     
     if not text: 
-        print('[TTS-BACKEND] Empty text received')
         return jsonify({"success": False, "error": "Text required"}), 400
     
-    # Log the raw speaker value before processing
-    raw_speaker = data.get('speaker', 'default')
-    print(f'[TTS-BACKEND] Raw speaker from request: "{raw_speaker}"')
-    
-    speaker = raw_speaker.replace(" (Custom)", "")
-    language = data.get('language', 'en')
-    vid = shared.custom_voices.get(speaker, {}).get("voice_clone_id")
-    
-    print(f'[TTS-BACKEND] Processed speaker: "{speaker}", Language: {language}, Voice ID: {vid}')
+    final_speaker, language = resolve_speaker(data)
     
     try:
         # Use provider system for TTS
-        print('[TTS-BACKEND] Getting TTS provider...')
         tts_provider = shared.get_tts_provider()
-        print(f'[TTS-BACKEND] TTS provider: {tts_provider}')
         
         if tts_provider and hasattr(tts_provider, 'generate_audio'):
-            print('[TTS-BACKEND] Calling provider.generate_audio...')
             result = tts_provider.generate_audio(
                 text=text,
-                speaker=vid if vid else None,
+                speaker=final_speaker,
                 language=language
             )
-            print(f'[TTS-BACKEND] Provider result: {result}')
             
             if result.get('success'):
                 audio_b64 = result.get('audio', '')
-                sample_rate = result.get('sample_rate', 24000)  # Use provider's sample rate
-                audio_length = len(audio_b64) if audio_b64 else 0
-                print(f'[TTS-BACKEND] SUCCESS: Generated audio {audio_length} bytes, sample_rate: {sample_rate}')
+                sample_rate = result.get('sample_rate', 24000)
                 
                 return jsonify({
                     "success": True, 
@@ -112,16 +120,13 @@ def tts():
                 })
             else:
                 error_msg = result.get('error', 'TTS generation failed')
-                print(f'[TTS-BACKEND] Provider failed: {error_msg}')
+                # print(f'[TTS-BACKEND] Provider failed: {error_msg}')
                 return jsonify({"success": False, "error": error_msg}), 500
         else:
-            print('[TTS-BACKEND] No TTS provider available or no generate_audio method')
             return jsonify({"success": False, "error": "No TTS provider available"}), 500
             
     except Exception as e: 
         print(f'[TTS-BACKEND] Exception: {e}')
-        import traceback
-        print(f'[TTS-BACKEND] Traceback: {traceback.format_exc()}')
         return jsonify({"success": False, "error": str(e)}), 500
 
 @audio_bp.route('/api/tts/stream', methods=['POST'])
@@ -131,9 +136,7 @@ def tts_stream():
     text = shared.remove_emojis(data.get('text', ''))
     if not text: return jsonify({"success": False, "error": "Text required"}), 400
     
-    speaker = data.get('speaker', 'default').replace(" (Custom)", "")
-    language = data.get('language', 'en')
-    vid = shared.custom_voices.get(speaker, {}).get("voice_clone_id")
+    final_speaker, language = resolve_speaker(data)
     
     try:
         # Use provider system for TTS
@@ -142,7 +145,7 @@ def tts_stream():
             # Use provider system
             result = tts_provider.generate_audio(
                 text=text,
-                speaker=vid if vid else None,
+                speaker=final_speaker,
                 language=language
             )
             if result.get('success'):
@@ -337,29 +340,23 @@ def tts_test():
         speaker = data.get('speaker', 'default')
         language = data.get('language', 'en')
         
-        print(f"[TTS-TEST] Testing with text: '{text[:50]}...', speaker: {speaker}, language: {language}")
+        final_speaker, _ = resolve_speaker(data)
         
         # Use provider system for TTS
         tts_provider = shared.get_tts_provider()
         if not tts_provider:
             return jsonify({"success": False, "error": "No TTS provider available"}), 500
         
-        print(f"[TTS-TEST] Using provider: {getattr(tts_provider, 'provider_name', 'unknown')}")
-        
         if hasattr(tts_provider, 'generate_audio'):
             result = tts_provider.generate_audio(
                 text=text,
-                speaker=speaker if speaker != 'default' else None,
+                speaker=final_speaker,
                 language=language
             )
-            print(f"[TTS-TEST] Provider result: {result.get('success', False)}")
             
             if result.get('success'):
                 audio_b64 = result.get('audio', '')
                 sample_rate = result.get('sample_rate', 24000)
-                audio_length = len(audio_b64) if audio_b64 else 0
-                
-                print(f"[TTS-TEST] Generated audio: {audio_length} bytes, sample_rate: {sample_rate}")
                 
                 return jsonify({
                     "success": True, 
@@ -378,8 +375,6 @@ def tts_test():
             
     except Exception as e: 
         print(f"[TTS-TEST] Error: {e}")
-        import traceback
-        print(f"[TTS-TEST] Traceback: {traceback.format_exc()}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 # NEW: Provider status endpoint

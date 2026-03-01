@@ -1,9 +1,11 @@
+
 import json
 import re
 from datetime import datetime
 from flask import Blueprint, request, jsonify, Response
 import app.shared as shared
 from app.providers import ChatMessage, ChatResponse
+import requests
 
 chat_bp = Blueprint('chat', __name__)
 
@@ -169,8 +171,11 @@ def chat_voice_stream():
     if not provider.supports_streaming():
         return jsonify({"success": False, "error": "Provider does not support streaming"}), 400
     
+    # Get raw speaker string
     speaker = data.get('speaker', 'default')
-    voice_clone_id = shared.custom_voices.get(speaker.replace(" (Custom)", ""), {}).get("voice_clone_id")
+    # Resolve custom voice if any
+    clean_speaker = speaker.replace(" (Custom)", "")
+    voice_clone_id = shared.custom_voices.get(clean_speaker, {}).get("voice_clone_id")
     
     try:
         stream_generator = provider.chat_completion(
@@ -191,9 +196,16 @@ def chat_voice_stream():
             if not clean_text.strip():
                 return None
             try:
-                req_data = {"text": clean_text, "language": "en"}
+                req_data = {
+                    "text": clean_text, 
+                    "language": "en",
+                    "speaker": speaker  # Pass raw speaker string for audio.py resolution
+                }
+                
+                # If we definitely know it's a custom voice, include ID
                 if voice_clone_id:
                     req_data["voice_clone_id"] = voice_clone_id
+                    
                 resp = requests.post(f"{shared.TTS_BASE_URL}/tts", json=req_data, timeout=60)
                 if resp.status_code == 200 and resp.json().get('success'):
                     return {
