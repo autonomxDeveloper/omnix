@@ -262,7 +262,8 @@ function addMessage(role, content, thinking = null, tokens = null, tokensPerSec 
         });
         
         headerDiv.querySelector('.speak-btn').addEventListener('click', (e) => {
-            speakText(content, ttsSpeaker ? ttsSpeaker.value : 'en');
+            const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
+            speakText(content, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en');
         });
         
         messageDiv.appendChild(headerDiv);
@@ -342,19 +343,27 @@ let isPlayingAudio = false;
 
 // Play audio chunks sequentially
 async function playAudioQueue() {
+    console.log('[TTS-QUEUE] playAudioQueue called, isPlayingAudio:', isPlayingAudio, 'queue length:', audioPlaybackQueue.length);
+    
     if (isPlayingAudio) return;
     isPlayingAudio = true;
     
+    console.log('[TTS-QUEUE] Starting playback loop');
+    
     while (audioPlaybackQueue.length > 0) {
         const { audio, sampleRate } = audioPlaybackQueue.shift();
+        console.log('[TTS-QUEUE] Playing chunk, sample rate:', sampleRate, 'remaining queue:', audioPlaybackQueue.length);
+        
         try {
             await playTTS(audio, sampleRate);
+            console.log('[TTS-QUEUE] Chunk playback completed');
         } catch (e) {
-            console.error('[TTS] Playback error:', e);
+            console.error('[TTS-QUEUE] Playback error:', e);
         }
     }
     
     isPlayingAudio = false;
+    console.log('[TTS-QUEUE] Playback loop finished, queue empty');
 }
 
 // Send message with streaming support - includes streaming TTS
@@ -414,8 +423,9 @@ try {
         let systemPrompt = systemPromptInput?.value || 'You are a helpful AI assistant.';
         
         // If a voice/speaker is selected and has a personality profile, use combined prompt
-        if (typeof ttsSpeaker !== 'undefined' && ttsSpeaker && ttsSpeaker.value && window.features) {
-            const voiceId = ttsSpeaker.value;
+        const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
+        if (ttsSpeakerSelect && ttsSpeakerSelect.value && window.features) {
+            const voiceId = ttsSpeakerSelect.value;
             const voiceProfile = window.features.getVoiceProfile(voiceId);
             if (voiceProfile && voiceProfile.personality) {
                 systemPrompt = window.features.getCombinedSystemPrompt(voiceId);
@@ -431,8 +441,8 @@ try {
         };
         
         // Add speaker for voice-stream endpoint
-        if (useStreamingTTS && ttsSpeaker) {
-            requestBody.speaker = ttsSpeaker.value;
+        if (useStreamingTTS && ttsSpeakerSelect && ttsSpeakerSelect.value) {
+            requestBody.speaker = ttsSpeakerSelect.value;
         }
         
         const response = await fetch(endpoint, {
@@ -572,7 +582,8 @@ try {
                                     btn.disabled = true;
                                     btn.textContent = 'Speaking...';
                                     try {
-                                        await speakText(streamedContent, ttsSpeaker ? ttsSpeaker.value : 'en');
+                                        const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
+                                        await speakText(streamedContent, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en');
                                     } catch (err) {
                                         console.error('[TTS] Speak button error:', err);
                                     } finally {
@@ -618,24 +629,30 @@ try {
 
 // Speak text using TTS with streaming for faster audio start
 async function speakText(text, speaker = 'en') {
+    console.log('[TTS-SPEAK] === STARTING SPEAK FUNCTION ===');
+    console.log('[TTS-SPEAK] Text length:', text.length);
+    console.log('[TTS-SPEAK] Speaker:', speaker);
+    console.log('[TTS-SPEAK] Conversation mode:', conversationMode);
+    
     if (!text) {
-        console.warn('[TTS] speakText called with empty text');
+        console.warn('[TTS-SPEAK] speakText called with empty text');
         return;
     }
     
     // Reset stop flag - this function is called from "Speak" button in regular chat
     if (typeof stopAudioRequested !== 'undefined') {
         stopAudioRequested = false;
+        console.log('[TTS-SPEAK] Reset stopAudioRequested flag');
     }
     
     // Reset crossfade state for new TTS session
     resetCrossfadeState();
-    
-    console.log('[TTS] speakText called with text length:', text.length, 'speaker:', speaker);
+    console.log('[TTS-SPEAK] Crossfade state reset');
     
     if (conversationMode) {
         micBtn.disabled = true;
         conversationStatus.textContent = '🔊 Speaking...';
+        console.log('[TTS-SPEAK] Disabled mic button for conversation mode');
     }
     
     // Audio playback queue for streaming
@@ -696,55 +713,38 @@ async function speakText(text, speaker = 'en') {
         }
         
         const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let chunkCount = 0;
+        let totalDataReceived = 0;
         
         while (true) {
             const { done, value } = await reader.read();
             if (done) {
-                console.log('[TTS] Stream ended');
+                console.log('[TTS] Stream ended, total data received:', totalDataReceived, 'bytes');
                 break;
             }
             
-            buffer += decoder.decode(value, { stream: true });
+            totalDataReceived += value.length;
+            console.log(`[TTS] Received chunk: ${value.length} bytes`);
             
-            // Process SSE events
-            const events = buffer.split('\n\n');
-            buffer = events.pop() || '';
-            
-            for (const event of events) {
-                const lines = event.split('\n');
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const dataStr = line.slice(6);
-                        if (!dataStr.trim()) continue;
-                        
-                        try {
-                            const data = JSON.parse(dataStr);
-                            
-                            if (data.type === 'audio') {
-                                chunkCount++;
-                                // Queue audio chunk
-                                audioQueue.push({
-                                    audio: data.audio,
-                                    sampleRate: data.sample_rate
-                                });
-                                console.log(`[TTS] Received audio chunk ${chunkCount}, queue: ${audioQueue.length}`);
-                                
-                                // Start playing immediately
-                                playNextAudio();
-                            } else if (data.type === 'done') {
-                                console.log('[TTS] Streaming complete, chunks:', chunkCount);
-                            } else if (data.type === 'error') {
-                                console.error('[TTS] Server error:', data.error);
-                            }
-                        } catch (e) {
-                            console.error('[TTS] Parse error:', e, 'data:', dataStr.substring(0, 100));
-                        }
-                    }
-                }
+            // The TTS streaming endpoint returns raw audio data directly (not SSE)
+            // Convert the binary data to base64 for playback
+            let binary = '';
+            for (let i = 0; i < value.length; i++) {
+                binary += String.fromCharCode(value[i]);
             }
+            const base64Audio = btoa(binary);
+            
+            // Use the original sample rate of 24000 Hz
+            const detectedSampleRate = 24000;
+            
+            // Queue audio chunk
+            audioQueue.push({
+                audio: base64Audio,
+                sampleRate: detectedSampleRate
+            });
+            console.log(`[TTS] Received audio chunk, queue: ${audioQueue.length}, chunk size: ${base64Audio.length}, sample rate: ${detectedSampleRate} Hz`);
+            
+            // Start playing immediately
+            playNextAudio();
         }
         
         // Wait for all audio to finish playing
@@ -1135,51 +1135,68 @@ async function speakTextViaWebSocket(text, voiceCloneId = null) {
     }
 }
 
-// Play TTS audio - handles complete WAV files
+// Play TTS audio - handles complete WAV files with enhanced debugging
 // Returns a promise that resolves when playback is complete
 function playTTS(audioBase64, sampleRate = null) {
     return new Promise((resolve, reject) => {
         try {
+            console.log('[TTS-PLAY] Starting playback function');
+            
             // Track first playback start time for latency logging
             const playbackStartTime = performance.now();
             
             // PHASE 3: GUARD - Only use <audio> playback in WAV mode
             if (window.TTS_PLAYBACK_MODE !== "wav") {
-                console.log("[TTS] Skipping WAV playback (WebSocket mode active)");
+                console.log("[TTS-PLAY] Skipping WAV playback (WebSocket mode active)");
                 resolve();
                 return;
+            }
+            
+            // Initialize WAV AudioContext if not already done
+            if (typeof initWavAudioContext === 'function') {
+                initWavAudioContext();
             }
             
             // Check if stop was requested (from voice.js)
             if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
-                console.log('[TTS] Skipping playback - stop requested');
+                console.log('[TTS-PLAY] Skipping playback - stop requested');
                 resolve();
                 return;
             }
             
-            // AGGRESSIVE CLEANUP: Stop and remove ALL orphaned audio elements
+            // Validate audio data
+            if (!audioBase64 || audioBase64.length < 100) {
+                console.error('[TTS-PLAY] Invalid audio data:', audioBase64?.length);
+                resolve();
+                return;
+            }
+            
+            // CLEANUP: Stop and clean orphaned audio elements, but preserve DOM elements
             const allAudios = [...document.querySelectorAll("audio")];
-            console.log('[TTS-DIAG] Before play - Active audio elements:', allAudios.length);
+            console.log('[TTS-PLAY] Before play - Active audio elements:', allAudios.length);
+            console.log('[TTS-PLAY] Audio elements details:', allAudios.map((a, i) => `Audio ${i}: paused=${a.paused}, src=${a.src.substring(0, 50)}, currentTime=${a.currentTime}`));
             
             if (allAudios.length > 0) {
-                console.log('[TTS-DIAG] Cleaning up', allAudios.length, 'orphaned audio elements');
+                console.log('[TTS-PLAY] Cleaning up', allAudios.length, 'orphaned audio elements');
                 allAudios.forEach((audio, i) => {
                     try {
                         if (!audio.paused) {
-                            console.log('[TTS-DIAG] Stopping playing audio', i);
+                            console.log('[TTS-PLAY] Stopping playing audio', i);
                             audio.pause();
                         }
                         if (audio.src && audio.src.startsWith('blob:')) {
+                            console.log('[TTS-PLAY] Revoking blob URL for audio', i);
                             URL.revokeObjectURL(audio.src);
                         }
                         audio.removeAttribute('src');
                         audio.load(); // Force release
-                        // Remove from DOM if attached
-                        if (audio.parentNode) {
-                            audio.parentNode.removeChild(audio);
-                        }
+                        // DO NOT remove from DOM - keep audio elements for future use
+                        // if (audio.parentNode) {
+                        //     console.log('[TTS-PLAY] Removing audio', i, 'from DOM');
+                        //     audio.parentNode.removeChild(audio);
+                        // }
                     } catch (e) {
-                        console.warn('[TTS-DIAG] Error cleaning audio', i, e);
+                        console.warn('[TTS-PLAY] Error cleaning audio', i, e);
                     }
                 });
             }
@@ -1187,13 +1204,21 @@ function playTTS(audioBase64, sampleRate = null) {
             // Clear our reference
             chatCurrentAudio = null;
             
-            // Decode base64 to binary
-            const binaryString = atob(audioBase64);
-            const len = binaryString.length;
-            const arrayBuffer = new ArrayBuffer(len);
-            const uint8Array = new Uint8Array(arrayBuffer);
-            for (let i = 0; i < len; i++) {
-                uint8Array[i] = binaryString.charCodeAt(i) & 0xFF;
+            // Decode base64 to binary with error handling
+            let binaryString, arrayBuffer, uint8Array;
+            try {
+                binaryString = atob(audioBase64);
+                const len = binaryString.length;
+                arrayBuffer = new ArrayBuffer(len);
+                uint8Array = new Uint8Array(arrayBuffer);
+                for (let i = 0; i < len; i++) {
+                    uint8Array[i] = binaryString.charCodeAt(i) & 0xFF;
+                }
+                console.log('[TTS-PLAY] Decoded base64:', len, 'bytes');
+            } catch (decodeError) {
+                console.error('[TTS-PLAY] Base64 decode error:', decodeError);
+                resolve();
+                return;
             }
             
             // Check if it's already a WAV file (starts with "RIFF")
@@ -1201,35 +1226,69 @@ function playTTS(audioBase64, sampleRate = null) {
             if (uint8Array[0] === 0x52 && uint8Array[1] === 0x49 && uint8Array[2] === 0x46 && uint8Array[3] === 0x46) {
                 // Already a complete WAV file - play directly
                 blob = new Blob([uint8Array], { type: 'audio/wav' });
-                console.log('[TTS] Playing complete WAV file, size:', len);
+                console.log('[TTS-PLAY] Playing complete WAV file, size:', uint8Array.length);
             } else if (sampleRate) {
                 // Raw PCM - create WAV container
                 const wavBuffer = createWavBuffer(arrayBuffer, sampleRate);
                 blob = new Blob([wavBuffer], { type: 'audio/wav' });
-                console.log('[TTS] Created WAV container for raw PCM, sample rate:', sampleRate);
+                console.log('[TTS-PLAY] Created WAV container for raw PCM, sample rate:', sampleRate);
             } else {
                 // Assume WAV (backward compatibility)
                 blob = new Blob([uint8Array], { type: 'audio/wav' });
+                console.log('[TTS-PLAY] Assuming WAV format (no sample rate specified)');
             }
             
             const audioUrl = URL.createObjectURL(blob);
+            console.log('[TTS-PLAY] Created audio URL:', audioUrl.substring(0, 50) + '...');
             
-            chatCurrentAudio = new Audio(audioUrl);
+            // Create audio element with explicit controls
+            chatCurrentAudio = new Audio();
+            chatCurrentAudio.src = audioUrl;
+            
+            // Set volume to maximum to ensure audio is heard
+            chatCurrentAudio.volume = 1.0;
+            chatCurrentAudio.muted = false;
+            console.log('[TTS-PLAY] Set volume to:', chatCurrentAudio.volume, 'muted:', chatCurrentAudio.muted);
+            
+            // Add comprehensive event listeners for debugging
+            chatCurrentAudio.oncanplay = () => {
+                console.log('[TTS-PLAY] Audio can play, duration:', chatCurrentAudio.duration);
+            };
+            
+            chatCurrentAudio.onloadedmetadata = () => {
+                console.log('[TTS-PLAY] Metadata loaded, duration:', chatCurrentAudio.duration, 'currentTime:', chatCurrentAudio.currentTime);
+            };
+            
+            chatCurrentAudio.onplay = () => {
+                console.log('[TTS-PLAY] Audio started playing, currentTime:', chatCurrentAudio.currentTime);
+            };
+            
+            chatCurrentAudio.onplaying = () => {
+                console.log('[TTS-PLAY] Audio is now playing');
+            };
+            
+            chatCurrentAudio.ontimeupdate = () => {
+                // Log progress every second
+                if (chatCurrentAudio.currentTime % 1 < 0.1) {
+                    console.log('[TTS-PLAY] Playing at:', chatCurrentAudio.currentTime.toFixed(2), 'of', chatCurrentAudio.duration?.toFixed(2));
+                }
+            };
             
             // DIAGNOSTIC: Continuous monitoring during playback
             let diagInterval = setInterval(() => {
                 const audios = [...document.querySelectorAll("audio")];
                 const playing = audios.filter(a => !a.paused);
                 if (playing.length > 1) {
-                    console.error('[TTS-DIAG] OVERLAP DETECTED! Multiple audio elements playing:', playing.length);
+                    console.error('[TTS-PLAY] OVERLAP DETECTED! Multiple audio elements playing:', playing.length);
                     playing.forEach((a, i) => {
-                        console.error(`[TTS-DIAG]   Audio ${i}: currentTime=${a.currentTime.toFixed(3)}, src=${a.src.substring(0, 30)}...`);
+                        console.error(`[TTS-PLAY]   Audio ${i}: currentTime=${a.currentTime.toFixed(3)}, src=${a.src.substring(0, 30)}...`);
                     });
                 }
             }, 100);
             
             // Resolve promise when audio finishes playing
             chatCurrentAudio.onended = () => {
+                console.log('[TTS-PLAY] Audio playback ended');
                 clearInterval(diagInterval);
                 URL.revokeObjectURL(audioUrl);
                 if (conversationMode) {
@@ -1239,27 +1298,122 @@ function playTTS(audioBase64, sampleRate = null) {
             };
             
             chatCurrentAudio.onerror = (e) => {
+                console.error('[TTS-PLAY] Playback error:', e, 'error code:', chatCurrentAudio.error?.code);
+                console.error('[TTS-PLAY] Audio element state on error:', {
+                    paused: chatCurrentAudio.paused,
+                    currentTime: chatCurrentAudio.currentTime,
+                    duration: chatCurrentAudio.duration,
+                    volume: chatCurrentAudio.volume,
+                    muted: chatCurrentAudio.muted,
+                    src: chatCurrentAudio.src.substring(0, 50)
+                });
                 URL.revokeObjectURL(audioUrl);
-                console.error('[TTS] Playback error:', e);
                 if (conversationMode) {
                     micBtn.disabled = false;
                 }
                 resolve(); // Still resolve to continue queue
             };
             
+            // Try to play with enhanced error handling
             chatCurrentAudio.play().then(() => {
-                // Audio started successfully
+                console.log('[TTS-PLAY] Audio.play() succeeded');
+                console.log('[TTS-PLAY] Audio element state after play:', {
+                    paused: chatCurrentAudio.paused,
+                    currentTime: chatCurrentAudio.currentTime,
+                    duration: chatCurrentAudio.duration,
+                    volume: chatCurrentAudio.volume,
+                    muted: chatCurrentAudio.muted,
+                    src: chatCurrentAudio.src.substring(0, 50)
+                });
             }).catch((e) => {
-                console.error('[TTS] Play error:', e);
-                URL.revokeObjectURL(audioUrl);
-                resolve(); // Resolve anyway to continue
+                console.error('[TTS-PLAY] Audio.play() failed:', e);
+                
+                // Try alternative approach: set src and play
+                try {
+                    chatCurrentAudio.src = audioUrl;
+                    chatCurrentAudio.play().then(() => {
+                        console.log('[TTS-PLAY] Alternative play() succeeded');
+                    }).catch((e2) => {
+                        console.error('[TTS-PLAY] Alternative play() also failed:', e2);
+                        URL.revokeObjectURL(audioUrl);
+                        resolve(); // Resolve anyway to continue
+                    });
+                } catch (altError) {
+                    console.error('[TTS-PLAY] Alternative approach failed:', altError);
+                    URL.revokeObjectURL(audioUrl);
+                    resolve(); // Resolve anyway to continue
+                }
             });
+            
         } catch (error) {
-            console.error('[TTS] Error:', error);
+            console.error('[TTS-PLAY] Critical error in playTTS:', error);
             if (conversationMode) {
                 micBtn.disabled = false;
             }
             resolve(); // Resolve to continue queue
+        }
+    });
+}
+
+// Direct audio playback using Web Audio API as fallback
+function playTTSWebAudio(audioBase64, sampleRate = 48000) {
+    return new Promise((resolve, reject) => {
+        try {
+            console.log('[TTS-WEBAUDIO] Starting Web Audio playback');
+            
+            // Decode base64
+            const binaryString = atob(audioBase64);
+            const len = binaryString.length;
+            const arrayBuffer = new ArrayBuffer(len);
+            const uint8Array = new Uint8Array(arrayBuffer);
+            for (let i = 0; i < len; i++) {
+                uint8Array[i] = binaryString.charCodeAt(i) & 0xFF;
+            }
+            
+            // Check if it's a WAV file
+            if (uint8Array[0] === 0x52 && uint8Array[1] === 0x49 && uint8Array[2] === 0x46 && uint8Array[3] === 0x46) {
+                // Parse WAV header to get sample rate
+                const header = new DataView(arrayBuffer, 0, 44);
+                sampleRate = header.getUint32(24, true); // Sample rate from WAV header
+                console.log('[TTS-WEBAUDIO] Detected WAV file, sample rate:', sampleRate);
+            }
+            
+            // Create audio context
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: sampleRate
+            });
+            
+            // Resume if suspended
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+            
+            // Decode audio data
+            audioContext.decodeAudioData(arrayBuffer.slice(0), (audioBuffer) => {
+                console.log('[TTS-WEBAUDIO] Audio decoded, duration:', audioBuffer.duration);
+                
+                // Create source
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                
+                // Play
+                source.start();
+                
+                // Resolve when done
+                source.onended = () => {
+                    console.log('[TTS-WEBAUDIO] Web Audio playback completed');
+                    resolve();
+                };
+                
+            }, (error) => {
+                console.error('[TTS-WEBAUDIO] Decode error:', error);
+                resolve(); // Resolve anyway
+            });
+            
+        } catch (error) {
+            console.error('[TTS-WEBAUDIO] Web Audio playback error:', error);
+            resolve(); // Resolve anyway
         }
     });
 }

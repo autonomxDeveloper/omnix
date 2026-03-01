@@ -11,13 +11,37 @@ window.TTS_PLAYBACK_MODE = "wav";
 // "wav" = Use <audio> elements with WAV files (clean, no streaming)
 // "websocket" = Use AudioContext for streaming PCM chunks
 
+// Initialize audio context for WAV mode to ensure audio works
+let wavAudioContext = null;
+
+function initWavAudioContext() {
+    try {
+        if (!wavAudioContext) {
+            wavAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: 48000,
+                latencyHint: 'interactive'
+            });
+            console.log("[AUDIO] Initialized WAV AudioContext:", wavAudioContext.sampleRate + "Hz");
+        }
+        
+        // Resume if suspended (required by browsers after user interaction)
+        if (wavAudioContext.state === 'suspended') {
+            wavAudioContext.resume();
+        }
+    } catch (error) {
+        console.warn("[AUDIO] Failed to initialize WAV AudioContext:", error);
+    }
+}
+
 // Debug: Log mode periodically
 setInterval(() => {
     const audioElements = document.querySelectorAll("audio");
     const audioContexts = window.streamingAudioContext ? 1 : 0;
+    const wavContextActive = wavAudioContext && wavAudioContext.state === 'running' ? 1 : 0;
     console.log("[AUDIO-DIAG] Mode:", window.TTS_PLAYBACK_MODE,
         "| Audio elements:", audioElements.length,
-        "| AudioContext:", audioContexts ? "active" : "none");
+        "| AudioContext:", audioContexts ? "active" : "none",
+        "| WAV Context:", wavContextActive ? "active" : "none");
 }, 2000);
 
 // ============================================================
@@ -115,6 +139,9 @@ function getUseWebSocket() {
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('Page loaded, starting initialization...');
+    
+    // Initialize audio context for WAV mode
+    initWavAudioContext();
     
     // Load UI elements FIRST (no await - these are fast and make UI appear immediately)
     console.log('Setting up event listeners...');

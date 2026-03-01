@@ -62,27 +62,44 @@ def create_voice_clone():
 
 @audio_bp.route('/api/tts', methods=['POST'])
 def tts():
+    print('[TTS-BACKEND] === TTS ENDPOINT CALLED ===')
     data = request.get_json()
+    print(f'[TTS-BACKEND] Request data: {data}')
+    
     text = shared.remove_emojis(data.get('text', ''))
-    if not text: return jsonify({"success": False, "error": "Text required"}), 400
+    print(f'[TTS-BACKEND] Cleaned text: "{text[:50]}..."')
+    
+    if not text: 
+        print('[TTS-BACKEND] Empty text received')
+        return jsonify({"success": False, "error": "Text required"}), 400
     
     speaker = data.get('speaker', 'default').replace(" (Custom)", "")
     language = data.get('language', 'en')
     vid = shared.custom_voices.get(speaker, {}).get("voice_clone_id")
     
+    print(f'[TTS-BACKEND] Speaker: {speaker}, Language: {language}, Voice ID: {vid}')
+    
     try:
         # Use provider system for TTS
+        print('[TTS-BACKEND] Getting TTS provider...')
         tts_provider = shared.get_tts_provider()
+        print(f'[TTS-BACKEND] TTS provider: {tts_provider}')
+        
         if tts_provider and hasattr(tts_provider, 'generate_audio'):
-            # Use provider system
+            print('[TTS-BACKEND] Calling provider.generate_audio...')
             result = tts_provider.generate_audio(
                 text=text,
                 speaker=vid if vid else None,
                 language=language
             )
+            print(f'[TTS-BACKEND] Provider result: {result}')
+            
             if result.get('success'):
                 audio_b64 = result.get('audio', '')
                 sample_rate = result.get('sample_rate', 24000)  # Use provider's sample rate
+                audio_length = len(audio_b64) if audio_b64 else 0
+                print(f'[TTS-BACKEND] SUCCESS: Generated audio {audio_length} bytes, sample_rate: {sample_rate}')
+                
                 return jsonify({
                     "success": True, 
                     "audio": audio_b64, 
@@ -91,13 +108,16 @@ def tts():
                 })
             else:
                 error_msg = result.get('error', 'TTS generation failed')
-                print(f"TTS generation failed: {error_msg}")
+                print(f'[TTS-BACKEND] Provider failed: {error_msg}')
                 return jsonify({"success": False, "error": error_msg}), 500
         else:
+            print('[TTS-BACKEND] No TTS provider available or no generate_audio method')
             return jsonify({"success": False, "error": "No TTS provider available"}), 500
             
     except Exception as e: 
-        print(f"TTS error: {e}")
+        print(f'[TTS-BACKEND] Exception: {e}')
+        import traceback
+        print(f'[TTS-BACKEND] Traceback: {traceback.format_exc()}')
         return jsonify({"success": False, "error": str(e)}), 500
 
 @audio_bp.route('/api/tts/stream', methods=['POST'])
@@ -265,3 +285,139 @@ def stt_float32():
     except Exception as e: 
         print(f"STT float32 error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+# NEW: Health check endpoint for TTS provider
+@audio_bp.route('/api/tts/health', methods=['GET'])
+def tts_health_check():
+    """Check if TTS provider is available and healthy."""
+    try:
+        tts_provider = shared.get_tts_provider()
+        if not tts_provider:
+            return jsonify({
+                "success": False, 
+                "error": "No TTS provider configured",
+                "provider": None
+            }), 500
+        
+        # Try to get speakers as a health check
+        if hasattr(tts_provider, 'get_speakers'):
+            speakers = tts_provider.get_speakers()
+            return jsonify({
+                "success": True,
+                "provider": getattr(tts_provider, 'provider_name', 'unknown'),
+                "speakers_count": len(speakers),
+                "speakers": speakers[:5]  # Return first 5 speakers
+            })
+        else:
+            return jsonify({
+                "success": True,
+                "provider": getattr(tts_provider, 'provider_name', 'unknown'),
+                "message": "Provider available but no speaker list method"
+            })
+            
+    except Exception as e:
+        print(f"TTS health check failed: {e}")
+        return jsonify({
+            "success": False, 
+            "error": str(e),
+            "provider": getattr(tts_provider, 'provider_name', 'unknown') if 'tts_provider' in locals() else None
+        }), 500
+
+# NEW: Test TTS endpoint for debugging
+@audio_bp.route('/api/tts/test', methods=['POST'])
+def tts_test():
+    """Test TTS generation with a simple text."""
+    try:
+        data = request.get_json()
+        text = data.get('text', 'Hello, this is a test.')
+        speaker = data.get('speaker', 'default')
+        language = data.get('language', 'en')
+        
+        print(f"[TTS-TEST] Testing with text: '{text[:50]}...', speaker: {speaker}, language: {language}")
+        
+        # Use provider system for TTS
+        tts_provider = shared.get_tts_provider()
+        if not tts_provider:
+            return jsonify({"success": False, "error": "No TTS provider available"}), 500
+        
+        print(f"[TTS-TEST] Using provider: {getattr(tts_provider, 'provider_name', 'unknown')}")
+        
+        if hasattr(tts_provider, 'generate_audio'):
+            result = tts_provider.generate_audio(
+                text=text,
+                speaker=speaker if speaker != 'default' else None,
+                language=language
+            )
+            print(f"[TTS-TEST] Provider result: {result.get('success', False)}")
+            
+            if result.get('success'):
+                audio_b64 = result.get('audio', '')
+                sample_rate = result.get('sample_rate', 24000)
+                audio_length = len(audio_b64) if audio_b64 else 0
+                
+                print(f"[TTS-TEST] Generated audio: {audio_length} bytes, sample_rate: {sample_rate}")
+                
+                return jsonify({
+                    "success": True, 
+                    "audio": audio_b64, 
+                    "sample_rate": sample_rate, 
+                    "format": result.get('format', 'audio/wav'),
+                    "text": text,
+                    "provider": getattr(tts_provider, 'provider_name', 'unknown')
+                })
+            else:
+                error_msg = result.get('error', 'TTS generation failed')
+                print(f"[TTS-TEST] Provider error: {error_msg}")
+                return jsonify({"success": False, "error": error_msg}), 500
+        else:
+            return jsonify({"success": False, "error": "TTS provider does not support generate_audio method"}), 500
+            
+    except Exception as e: 
+        print(f"[TTS-TEST] Error: {e}")
+        import traceback
+        print(f"[TTS-TEST] Traceback: {traceback.format_exc()}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# NEW: Provider status endpoint
+@audio_bp.route('/api/providers/status', methods=['GET'])
+def providers_status():
+    """Get status of all audio providers."""
+    try:
+        # Check TTS provider
+        tts_status = {"available": False, "provider": None, "error": None}
+        try:
+            tts_provider = shared.get_tts_provider()
+            if tts_provider:
+                tts_status["available"] = True
+                tts_status["provider"] = getattr(tts_provider, 'provider_name', 'unknown')
+                if hasattr(tts_provider, 'health_check'):
+                    tts_status["healthy"] = tts_provider.health_check()
+                if hasattr(tts_provider, 'get_speakers'):
+                    tts_status["speakers"] = len(tts_provider.get_speakers())
+        except Exception as e:
+            tts_status["error"] = str(e)
+        
+        # Check STT provider
+        stt_status = {"available": False, "provider": None, "error": None}
+        try:
+            stt_provider = shared.get_stt_provider()
+            if stt_provider:
+                stt_status["available"] = True
+                stt_status["provider"] = getattr(stt_provider, 'provider_name', 'unknown')
+                if hasattr(stt_provider, 'health_check'):
+                    stt_status["healthy"] = stt_provider.health_check()
+        except Exception as e:
+            stt_status["error"] = str(e)
+        
+        return jsonify({
+            "success": True,
+            "tts": tts_status,
+            "stt": stt_status,
+            "settings": shared.load_settings().get('audio_provider_tts', 'chatterbox')
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
