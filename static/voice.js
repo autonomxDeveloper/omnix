@@ -361,6 +361,7 @@ let rawFloat32AudioContext = null;
 let rawFloat32Source = null;
 let rawFloat32Processor = null;
 let rawFloat32Chunks = [];
+let rawFloat32SampleRate = 48000; // Default, will be updated from AudioContext
 
 // Start VAD recording with raw Float32 capture
 async function startVADRecording() {
@@ -368,6 +369,7 @@ async function startVADRecording() {
     
     if (currentAudio) {
         currentAudio.pause();
+        currentAudio.currentTime = 0;
         currentAudio = null;
         console.log('TTS interrupted by voice');
     }
@@ -377,16 +379,20 @@ async function startVADRecording() {
             audio: {
                 echoCancellation: true,
                 noiseSuppression: true,
-                autoGainControl: true,
-                sampleRate: 48000
+                autoGainControl: true
+                // Do NOT force sampleRate: 48000 here - let browser pick native rate
             } 
         });
         
         // Initialize Web Audio API for raw Float32 capture
+        // Use default settings to get native sample rate (often 44.1k or 48k)
         rawFloat32AudioContext = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: 48000,
             latencyHint: 'interactive'
         });
+        
+        // IMPORTANT: Read the actual sample rate from the context
+        rawFloat32SampleRate = rawFloat32AudioContext.sampleRate;
+        console.log(`[VOICE] AudioContext sample rate: ${rawFloat32SampleRate}Hz`);
         
         rawFloat32Source = rawFloat32AudioContext.createMediaStreamSource(stream);
         
@@ -413,7 +419,7 @@ async function startVADRecording() {
         micBtn.classList.add('recording');
         updateConversationStatus('🎤 Listening...', 'listening');
         
-        console.log('[VOICE] Raw Float32 capture started at 48kHz');
+        console.log(`[VOICE] Raw Float32 capture started at ${rawFloat32SampleRate}Hz`);
         
     } catch (e) {
         console.error('Failed to start VAD recording:', e);
@@ -444,8 +450,9 @@ function stopVADRecording() {
         rawFloat32Source = null;
     }
     
+    // Close context asynchronously
     if (rawFloat32AudioContext) {
-        rawFloat32AudioContext.close();
+        rawFloat32AudioContext.close().catch(console.error);
         rawFloat32AudioContext = null;
     }
     
@@ -474,30 +481,43 @@ async function transcribeRawFloat32Audio() {
             offset += chunk.length;
         }
         
-        console.log(`[VOICE] Sending ${totalLength} Float32 samples (${(totalLength / 48000).toFixed(2)}s) to STT`);
+        console.log(`[VOICE] Sending ${totalLength} Float32 samples (${(totalLength / rawFloat32SampleRate).toFixed(2)}s) to STT. Rate: ${rawFloat32SampleRate}Hz`);
         
-        // Send via HTTP POST as binary (WAV streaming only)
+        // Send via HTTP POST as binary
+        // Pass the ACTUAL sample rate in the header
         const response = await fetch('/api/stt/float32', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/octet-stream',
-                'X-Sample-Rate': '48000'
+                'X-Sample-Rate': rawFloat32SampleRate.toString()
             },
             body: concatenated.buffer
         });
         
+        console.log(`[VOICE] STT response status: ${response.status}`);
+        
         const data = await response.json();
         const sttDuration = (performance.now() - sttStartTime).toFixed(0);
         console.log(`⏱️ [TIMING] STT (Float32 Audio → Text): ${sttDuration}ms`);
+        console.log(`[VOICE] STT response data:`, data);
         
         if (data.success && data.text && data.text.trim()) {
+            console.log(`[VOICE] Transcription: "${data.text}"`);
             conversationInput.value = data.text;
             await processVADTranscript(data.text, sttDuration);
         } else {
+            console.log('[VOICE] No text transcribed (empty audio or silence)');
+            console.log('[VOICE] STT response details:', {
+                success: data.success,
+                text: data.text,
+                error: data.error,
+                segments: data.segments
+            });
             updateConversationStatus('🎤 Auto-listening - Speak now!', 'listening');
         }
     } catch (error) {
         console.error('Raw Float32 STT Error:', error);
+        console.error('Raw Float32 STT Error details:', error.stack);
         updateConversationStatus('🎤 Auto-listening - Speak now!', 'listening');
     } finally {
         rawFloat32Chunks = [];
@@ -822,13 +842,10 @@ function switchToRegularView() {
 
 // Show circle indicator - only show when in conversation mode AND messages are hidden
 function showCircleIndicator(state = 'idle') {
-    console.log('[CIRCLE] showCircleIndicator called with state:', state, 'conversationMode:', conversationMode, 'showMessagesInConversation:', showMessagesInConversation);
-    
     // Only show circle when in conversation mode AND messages are hidden
     const shouldShowCircle = conversationMode && !showMessagesInConversation;
     
     if (shouldShowCircle) {
-        console.log('[CIRCLE] Showing circle indicator');
         // Show the outer container
         circleIndicator.classList.add('active');
         
@@ -839,7 +856,6 @@ function showCircleIndicator(state = 'idle') {
             innerCircle.classList.add(state);
         }
     } else {
-        console.log('[CIRCLE] Hiding circle indicator (not in conversation mode OR messages are visible)');
         // Hide circle when not in conversation mode OR when messages are visible
         circleIndicator.classList.remove('active');
         
@@ -991,13 +1007,19 @@ async function transcribeConversationAudio() {
         const formData = new FormData();
         formData.append('audio', audioBlob, 'recording.webm');
         
-        const response = await fetch('/api/stt', { method: 'POST', body: formData });
-        const data = await response.json();
+        console.log(`[VOICE] Sending ${audioBlob.size} bytes of audio to STT endpoint`);
         
+        const response = await fetch('/api/stt', { method: 'POST', body: formData });
+        
+        console.log(`[VOICE] STT response status: ${response.status}`);
+        
+        const data = await response.json();
         const sttDuration = (performance.now() - sttStartTime).toFixed(0);
         console.log(`⏱️ [TIMING] STT (Audio → Text): ${sttDuration}ms`);
+        console.log(`[VOICE] STT response data:`, data);
         
         if (data.success && data.text) {
+            console.log(`[VOICE] Transcription successful: "${data.text}"`);
             conversationInput.value = data.text;
             conversationSendBtn.disabled = !data.text.trim();
             
@@ -1007,10 +1029,18 @@ async function transcribeConversationAudio() {
                 await sendConversationMessageRESTFromMic(data.text, totalStartTime, sttDuration);
             }
         } else {
+            console.log('[VOICE] Transcription failed');
+            console.log('[VOICE] STT response details:', {
+                success: data.success,
+                text: data.text,
+                error: data.error,
+                segments: data.segments
+            });
             updateConversationStatus('Could not understand. Try again.');
         }
     } catch (error) {
         console.error('STT Error:', error);
+        console.error('STT Error details:', error.stack);
         updateConversationStatus('Error processing audio');
     }
 }

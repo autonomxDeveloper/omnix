@@ -19,7 +19,7 @@ stt_status = {"running": False, "message": "Not started"}
 speculative_cache = {}
 cache_lock = threading.Lock()
 
-SPECULATIVE_FILLERS = ["Hmm, let me think about that.", "Sure, I can help with that.", "Great question!", "Let me see..."]
+SPECULATIVE_FILLERS = ["Hmm, let me think about that.", "Sure, I can help with that."]
 CONVERSATION_GREETINGS = ["Hello! I'm ready to chat. How can I help you today?", "Hi there! I'm listening."]
 
 def read_logs(process, q, name):
