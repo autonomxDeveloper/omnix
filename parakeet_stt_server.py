@@ -11,6 +11,7 @@ import gc
 import shutil
 from pathlib import Path
 from pydub import AudioSegment
+from pydub.silence import detect_nonsilent
 import numpy as np
 import datetime
 import tempfile
@@ -186,6 +187,19 @@ def process_audio_for_transcription(audio_path: str, session_dir: Path) -> tuple
         elif audio.channels > 2:
             raise ValueError(f"Audio has {audio.channels} channels. Only mono (1) or stereo (2) supported.")
             
+        # Trim leading/trailing silence for Parakeet TDT models
+        # TDT models are sensitive to leading silence and may fail to detect speech
+        try:
+            nonsilent_chunks = detect_nonsilent(audio, min_silence_len=300, silence_thresh=-40)
+            if nonsilent_chunks:
+                start, end = nonsilent_chunks[0][0], nonsilent_chunks[-1][1]
+                audio = audio[start:end]
+                print(f"[STT] Trimmed silence: {start}ms to {end}ms")
+            else:
+                print(f"[STT] No nonsilent chunks detected, using full audio")
+        except Exception as e:
+            print(f"[STT] Silence detection failed, using full audio: {e}")
+        
         # Export processed audio if changes were made
         if resampled or mono:
             audio_name = Path(audio_path).stem
@@ -226,7 +240,6 @@ def get_transcripts_and_raw_times(audio_path: str, session_dir: Path) -> Transcr
         long_audio_settings_applied = False
         try:
             model.to(device)
-            model.to(torch.float32)
             
             # Apply settings for long audio (>8 minutes)
             if duration_sec > 480:
@@ -235,48 +248,46 @@ def get_transcripts_and_raw_times(audio_path: str, session_dir: Path) -> Transcr
                 model.change_subsampling_conv_chunking_factor(1)
                 long_audio_settings_applied = True
             
-            # Perform transcription (simple approach without timestamps first)
-            model.to(torch.bfloat16)
+            # Perform transcription (use paths2audio_files parameter for Parakeet TDT)
+            # Remove manual dtype casting - NeMo manages precision internally
+            model.to(device)
             
-            # Try simple transcription first (like the original app.py)
+            # Run transcription with improved handling
             try:
-                output = model.transcribe([transcribe_path])
-            except Exception as trans_err:
-                print(f"[STT] Simple transcription failed, trying with timestamps: {trans_err}")
-                output = model.transcribe([transcribe_path], timestamps=True)
-            
+                output = model.transcribe(paths2audio_files=[transcribe_path])
+            except TypeError:
+                # fallback for positional-only models
+                try:
+                    output = model.transcribe([transcribe_path])
+                except Exception as trans_err:
+                    print(f"[STT] Positional transcription failed, trying with timestamps: {trans_err}")
+                    output = model.transcribe([transcribe_path], timestamps=True)
+
+            print(f"[STT] RAW MODEL OUTPUT: {output}")
             print(f"[STT] Transcription output type: {type(output)}")
-            print(f"[STT] Output length: {len(output) if output else 0}")
-            
-            if not output or not isinstance(output, list) or not output[0]:
-                print(f"[STT] No transcription output")
-                return TranscriptionResponse(
-                    success=False,
-                    message="Transcription produced no output"
-                )
-            
-            # Check the output structure
-            result = output[0]
-            print(f"[STT] Result type: {type(result)}")
-            
-            # Extract text - handle different output formats
-            transcribed_text = ""
-            
-            if isinstance(result, str):
-                transcribed_text = result
-                print(f"[STT] Result is string: {transcribed_text[:100] if transcribed_text else 'empty'}...")
-            elif hasattr(result, 'text'):
-                transcribed_text = result.text
-                print(f"[STT] Result has .text: {transcribed_text[:100] if transcribed_text else 'empty'}...")
+
+            text = None
+
+            # Case 1: Tuple (RNNT models)
+            if isinstance(output, tuple):
+                print("[STT] Processing tuple output")
+                
+                if len(output) > 0 and isinstance(output[0], list) and len(output[0]) > 0:
+                    text = output[0][0]
+
+            # Case 2: List output
+            elif isinstance(output, list) and len(output) > 0:
+                if isinstance(output[0], str):
+                    text = output[0]
+                elif hasattr(output[0], "text"):
+                    text = output[0].text
+
+            # Final validation
+            if text and text.strip():
+                print(f"[STT] Final transcription: {text}")
+                transcribed_text = text.strip()
             else:
-                # Try to convert to string
-                transcribed_text = str(result)
-                print(f"[STT] Result converted to string: {transcribed_text[:100] if transcribed_text else 'empty'}...")
-            
-            transcribed_text = transcribed_text.strip()
-            
-            if not transcribed_text:
-                print(f"[STT] Empty transcription result")
+                print("[STT] No transcription output")
                 return TranscriptionResponse(
                     success=False,
                     message="No speech detected in audio"
