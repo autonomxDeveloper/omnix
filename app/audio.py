@@ -73,11 +73,15 @@ def tts():
         print('[TTS-BACKEND] Empty text received')
         return jsonify({"success": False, "error": "Text required"}), 400
     
-    speaker = data.get('speaker', 'default').replace(" (Custom)", "")
+    # Log the raw speaker value before processing
+    raw_speaker = data.get('speaker', 'default')
+    print(f'[TTS-BACKEND] Raw speaker from request: "{raw_speaker}"')
+    
+    speaker = raw_speaker.replace(" (Custom)", "")
     language = data.get('language', 'en')
     vid = shared.custom_voices.get(speaker, {}).get("voice_clone_id")
     
-    print(f'[TTS-BACKEND] Speaker: {speaker}, Language: {language}, Voice ID: {vid}')
+    print(f'[TTS-BACKEND] Processed speaker: "{speaker}", Language: {language}, Voice ID: {vid}')
     
     try:
         # Use provider system for TTS

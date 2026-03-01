@@ -668,11 +668,24 @@ function setupEventListeners() {
         loadCerebrasModelsBtn.addEventListener('click', loadCerebrasModels);
     }
     
-    // Save speaker selection when changed
+    // Save speaker selection when changed and trigger immediate voice test
     if (ttsSpeaker) {
-        ttsSpeaker.addEventListener('change', () => {
+        ttsSpeaker.addEventListener('change', async () => {
             localStorage.setItem('selectedSpeaker', ttsSpeaker.value);
             console.log('[CORE] Saved speaker selection:', ttsSpeaker.value);
+            
+            // Trigger immediate voice test to let user hear the new voice
+            const selectedSpeaker = ttsSpeaker.value;
+            if (selectedSpeaker && selectedSpeaker !== 'default') {
+                console.log('[CORE] Testing new voice:', selectedSpeaker);
+                try {
+                    // Use a short test message to demonstrate the voice
+                    const testMessage = "Voice changed successfully!";
+                    await speakText(testMessage, selectedSpeaker);
+                } catch (error) {
+                    console.warn('[CORE] Voice test failed:', error);
+                }
+            }
         });
     }
 }
