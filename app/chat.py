@@ -1,11 +1,9 @@
-
 import json
 import re
 from datetime import datetime
 from flask import Blueprint, request, jsonify, Response
 import app.shared as shared
 from app.providers import ChatMessage, ChatResponse
-import requests
 
 chat_bp = Blueprint('chat', __name__)
 
@@ -174,8 +172,12 @@ def chat_voice_stream():
     # Get raw speaker string
     speaker = data.get('speaker', 'default')
     # Resolve custom voice if any
-    clean_speaker = speaker.replace(" (Custom)", "")
+    clean_speaker = speaker.replace(" (Custom)", "").strip()
     voice_clone_id = shared.custom_voices.get(clean_speaker, {}).get("voice_clone_id")
+    
+    final_speaker = voice_clone_id
+    if not final_speaker and clean_speaker and clean_speaker.lower() != 'default':
+        final_speaker = clean_speaker
     
     try:
         stream_generator = provider.chat_completion(
@@ -196,24 +198,27 @@ def chat_voice_stream():
             if not clean_text.strip():
                 return None
             try:
-                req_data = {
-                    "text": clean_text, 
-                    "language": "en",
-                    "speaker": speaker  # Pass raw speaker string for audio.py resolution
-                }
-                
-                # If we definitely know it's a custom voice, include ID
-                if voice_clone_id:
-                    req_data["voice_clone_id"] = voice_clone_id
+                # Call Provider directly instead of routing HTTP to ourselves (prevents deadlock)
+                tts_provider = shared.get_tts_provider()
+                if not tts_provider:
+                    return None
                     
-                resp = requests.post(f"{shared.TTS_BASE_URL}/tts", json=req_data, timeout=60)
-                if resp.status_code == 200 and resp.json().get('success'):
+                if hasattr(tts_provider, 'generate_tts'):
+                    result = tts_provider.generate_tts(text=clean_text, speaker=final_speaker, language="en")
+                elif hasattr(tts_provider, 'generate_audio'):
+                    result = tts_provider.generate_audio(text=clean_text, speaker=final_speaker, language="en")
+                else:
+                    return None
+                    
+                if result and result.get('success'):
                     return {
-                        'audio': resp.json().get('audio', ''),
-                        'sample_rate': resp.json().get('sample_rate', shared.TTS_SAMPLE_RATE)
+                        'audio': result.get('audio', ''),
+                        'sample_rate': result.get('sample_rate', 24000)
                     }
-            except:
-                pass
+            except Exception as e:
+                import traceback
+                print(f"[VOICE STREAM TTS ERROR] {e}")
+                traceback.print_exc()
             return None
         
         try:
@@ -283,3 +288,45 @@ def chat_voice_stream():
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')
+
+@chat_bp.route('/api/conversation/greeting', methods=['POST'])
+def conversation_greeting():
+    """Generate a greeting when initially opening conversation mode."""
+    data = request.get_json() or {}
+    speaker = data.get('speaker', 'default')
+    
+    greeting_text = "Hello! I'm listening. How can I help you today?"
+    
+    try:
+        tts_provider = shared.get_tts_provider()
+        if not tts_provider:
+            return jsonify({"success": False, "error": "No TTS provider"}), 500
+            
+        clean_speaker = speaker.replace(" (Custom)", "").strip()
+        custom_vid = shared.custom_voices.get(clean_speaker, {}).get("voice_clone_id")
+        final_speaker = custom_vid
+        
+        if not final_speaker and clean_speaker and clean_speaker.lower() != 'default':
+            final_speaker = clean_speaker
+            
+        if hasattr(tts_provider, 'generate_tts'):
+            result = tts_provider.generate_tts(text=greeting_text, speaker=final_speaker, language="en")
+        elif hasattr(tts_provider, 'generate_audio'):
+            result = tts_provider.generate_audio(text=greeting_text, speaker=final_speaker, language="en")
+        else:
+            return jsonify({"success": False, "error": "Provider missing method"}), 500
+            
+        if result and result.get('success'):
+            return jsonify({
+                "success": True,
+                "text": greeting_text,
+                "audio": result.get('audio', ''),
+                "sample_rate": result.get('sample_rate', 24000)
+            })
+        else:
+            return jsonify({"success": False, "error": result.get('error', 'TTS failed')}), 500
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
