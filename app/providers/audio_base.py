@@ -210,6 +210,28 @@ class BaseTTSProvider(BaseService):
             Dict with 'success', 'audio' (base64), 'sample_rate', 'format' keys
         """
         pass
+
+    def generate_audio_stream(self, text: str, speaker: Optional[str] = None, 
+                             language: Optional[str] = None, **kwargs) -> Iterator[bytes]:
+        """
+        Stream audio generation for real-time playback.
+        
+        Args:
+            text: The text to synthesize
+            speaker: Optional speaker/voice to use
+            language: Optional language code
+            **kwargs: Provider-specific parameters
+            
+        Yields:
+            PCM audio chunks as bytes
+        """
+        # Default implementation falls back to batch generation
+        # Providers should override this for true streaming
+        result = self.generate_audio(text, speaker, language, **kwargs)
+        if result.get('success') and result.get('audio'):
+            import base64
+            audio_bytes = base64.b64decode(result['audio'])
+            yield audio_bytes
     
     @abstractmethod
     def voice_clone(self, voice_id: str, audio_data: bytes, 
@@ -289,6 +311,18 @@ class BaseSTTProvider(BaseService):
             
         Returns:
             Dict with 'success', 'text', 'segments', 'duration' keys
+        """
+        pass
+
+    def transcribe_stream(self, audio_chunks: Iterator[bytes]) -> Iterator[Dict[str, Any]]:
+        """
+        Stream STT transcription partials.
+        
+        Args:
+            audio_chunks: Iterator of audio chunks (bytes)
+            
+        Yields:
+            Dict with 'partial' or 'final' keys containing text
         """
         pass
     
