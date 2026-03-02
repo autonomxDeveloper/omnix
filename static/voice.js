@@ -1308,17 +1308,40 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
             console.log('[VOICE] Using combined system prompt for speaker:', speaker);
         }
         
-        const response = await fetch('/api/chat/voice-stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                message: message,
-                session_id: sessionId,
-                model: modelSelect.value,
-                speaker: speaker,
-                system_prompt: systemPrompt
-            })
-        });
+        // Try the new streaming conversation endpoint first
+        let response;
+        try {
+            response = await fetch('/api/chat/streaming-conversation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: message,
+                    session_id: sessionId,
+                    model: modelSelect.value,
+                    speaker: speaker,
+                    system_prompt: systemPrompt
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Streaming endpoint failed: ${response.status}`);
+            }
+            console.log('[VOICE] Using streaming conversation endpoint');
+        } catch (streamingError) {
+            console.log('[VOICE] Streaming endpoint failed, falling back to voice-stream:', streamingError);
+            // Fall back to the original voice-stream endpoint
+            response = await fetch('/api/chat/voice-stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: message,
+                    session_id: sessionId,
+                    model: modelSelect.value,
+                    speaker: speaker,
+                    system_prompt: systemPrompt
+                })
+            });
+        }
         
         if (!response.ok) {
             throw new Error(`HTTP error: ${response.status}`);
@@ -1388,6 +1411,20 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
                                 }
                                 // Queue the sentence audio for sequential playback
                                 console.log(`🔊 [TTS] Received sentence ${data.index}: "${data.text?.substring(0, 30)}..."`);
+                                enqueueAudio(data.audio, data.sample_rate);
+                                
+                            } else if (data.type === 'audio_chunk') {
+                                // New streaming conversation endpoint audio chunk
+                                if (!firstAudioReceivedTime) {
+                                    firstAudioReceivedTime = performance.now();
+                                    latencyTracking.firstTTSReceivedTime = firstAudioReceivedTime;
+                                    console.log(`🕐 [CLIENT] First streaming audio chunk at: ${(firstAudioReceivedTime - totalStartTime).toFixed(0)}ms`);
+                                    if (llmStartTime) {
+                                        console.log(`🕐 [CLIENT] Time from LLM start to first streaming TTS: ${(firstAudioReceivedTime - llmStartTime).toFixed(0)}ms`);
+                                    }
+                                }
+                                // Queue the streaming audio chunk for playback
+                                console.log(`🔊 [STREAMING] Received audio chunk ${data.index}: "${data.text?.substring(0, 30)}..."`);
                                 enqueueAudio(data.audio, data.sample_rate);
                                 
                             } else if (data.type === 'done') {

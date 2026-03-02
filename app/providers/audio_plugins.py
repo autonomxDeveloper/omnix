@@ -330,6 +330,72 @@ class ParakeetSTT(BaseSTTProvider):
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
+
+    def transcribe_stream(self, audio_chunks: Iterator[bytes]) -> Iterator[Dict[str, Any]]:
+        """
+        Stream STT transcription partials using WebSocket or chunked HTTP.
+        
+        Args:
+            audio_chunks: Iterator of audio chunks (bytes)
+            
+        Yields:
+            Dict with 'partial' or 'final' keys containing text
+        """
+        try:
+            base_url = self.config.get("base_url", "http://localhost:8000")
+            
+            # Try WebSocket first for real-time streaming
+            try:
+                import websocket
+                ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
+                ws_url += "/ws/stt"
+                
+                ws = websocket.create_connection(ws_url, timeout=10)
+                
+                # Send audio chunks
+                for chunk in audio_chunks:
+                    ws.send_binary(chunk)
+                    # Receive partial results
+                    try:
+                        result = ws.recv()
+                        if result:
+                            yield json.loads(result)
+                    except websocket.WebSocketTimeoutException:
+                        # No partial result yet, continue
+                        continue
+                
+                # Signal end of stream
+                ws.send("EOF")
+                
+                # Receive final result
+                try:
+                    final_result = ws.recv()
+                    if final_result:
+                        yield json.loads(final_result)
+                except websocket.WebSocketTimeoutException:
+                    pass
+                
+                ws.close()
+                
+            except (ImportError, Exception) as ws_error:
+                print(f"[PARAKEET-PLUGIN] WebSocket failed ({ws_error}), falling back to HTTP streaming")
+                
+                # Fallback to HTTP streaming
+                # This is a simplified implementation - in practice, you'd want to use
+                # a proper streaming HTTP client or implement chunked uploads
+                for chunk in audio_chunks:
+                    # For now, just transcribe each chunk individually
+                    # This provides a basic streaming experience
+                    result = self.transcribe_raw(chunk, sample_rate=16000)
+                    if result.get('success') and result.get('text'):
+                        yield {"partial": result['text']}
+                
+                # Return final result
+                yield {"final": ""}
+                
+        except Exception as e:
+            print(f"[PARAKEET-PLUGIN] Streaming STT error: {e}")
+            yield {"error": str(e)}
     
     def get_capabilities(self) -> List[AudioProviderCapability]:
         return [
@@ -443,7 +509,21 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
                         
                     except Exception as e3:
                         logger.error(f"Failed to load without CUDA graphs: {e3}")
-                        raise e3
+                        # Final fallback: try loading with CPU and float32
+                        try:
+                            logger.warning("Final fallback: loading with CPU and float32")
+                            self.model = FasterQwen3TTS.from_pretrained(
+                                model_name=self.model_name,
+                                device="cpu",
+                                dtype="float32",
+                                max_seq_len=self.max_seq_len
+                            )
+                            self.device = "cpu"
+                            self.dtype = "float32"
+                            logger.info("Successfully loaded model on CPU with float32")
+                        except Exception as e4:
+                            logger.error(f"Final fallback failed: {e4}")
+                            raise e4
                 else:
                     raise e
             
@@ -696,6 +776,304 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
+
+    def generate_audio_stream(self, text: str, speaker: Optional[str] = None, 
+                             language: Optional[str] = "English", **kwargs) -> Iterator[bytes]:
+        """
+        Stream TTS audio generation for real-time playback.
+        
+        Args:
+            text: The text to synthesize
+            speaker: Optional speaker/voice to use
+            language: Optional language code
+            **kwargs: Provider-specific parameters
+            
+        Yields:
+            PCM audio chunks as bytes
+        """
+        try:
+            if self.model is None:
+                raise Exception("Model not loaded")
+            
+            # Set default language if not provided
+            if language is None:
+                language = "English"
+            # Map common language codes to full names expected by FasterQwen3TTS
+            elif language.lower() == 'en':
+                language = "English"
+            elif language.lower() == 'zh':
+                language = "Chinese"
+            elif language.lower() == 'fr':
+                language = "French"
+            elif language.lower() == 'es':
+                language = "Spanish"
+            elif language.lower() == 'de':
+                language = "German"
+            elif language.lower() == 'ja':
+                language = "Japanese"
+            elif language.lower() == 'ko':
+                language = "Korean"
+            
+            # Handle voice cloning - check if speaker is in custom voices or is a valid voice ID
+            if speaker and speaker != "default":
+                # Check if speaker exists in custom voices
+                if speaker in self._get_custom_voice_ids():
+                    # Use voice cloning with custom voice
+                    ref_audio_path = self._get_voice_audio_path(speaker)
+                    if ref_audio_path and os.path.exists(ref_audio_path):
+                        ref_text = kwargs.get("ref_text", "")
+                        
+                        # Generate with voice cloning in streaming mode
+                        try:
+                            # Set non_streaming_mode to False for streaming
+                            streaming_kwargs = kwargs.copy()
+                            streaming_kwargs['non_streaming_mode'] = False
+                            
+                            # Generate audio with streaming support
+                            audio_generator = self.model.generate_voice_clone(
+                                text=text,
+                                language=language,
+                                ref_audio=ref_audio_path,
+                                ref_text=ref_text,
+                                max_new_tokens=kwargs.get("max_new_tokens", 2048),
+                                min_new_tokens=kwargs.get("min_new_tokens", 2),
+                                temperature=kwargs.get("temperature", self.temperature),
+                                top_k=kwargs.get("top_k", self.top_k),
+                                top_p=kwargs.get("top_p", self.top_p),
+                                do_sample=kwargs.get("do_sample", self.do_sample),
+                                repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
+                                xvec_only=kwargs.get("xvec_only", self.xvec_only),
+                                non_streaming_mode=False,  # Enable streaming
+                                append_silence=kwargs.get("append_silence", self.append_silence),
+                            )
+                            
+                            # Process streaming audio chunks
+                            for audio_chunk in audio_generator:
+                                # Check if audio_chunk is valid before processing
+                                if audio_chunk is not None:
+                                    try:
+                                        # Handle different audio chunk formats
+                                        if isinstance(audio_chunk, (list, tuple)):
+                                            # Multiple chunks in a list
+                                            for chunk in audio_chunk:
+                                                if chunk is not None and hasattr(chunk, '__len__') and len(chunk) > 0:
+                                                    yield self._process_audio_chunk(chunk)
+                                        elif hasattr(audio_chunk, '__len__') and len(audio_chunk) > 0:
+                                            # Single chunk with length
+                                            yield self._process_audio_chunk(audio_chunk)
+                                        elif isinstance(audio_chunk, (int, float)):
+                                            # Skip numeric values (likely token counts or other metadata)
+                                            continue
+                                        else:
+                                            # Other types, try to process as single chunk
+                                            yield self._process_audio_chunk(audio_chunk)
+                                    except Exception as chunk_error:
+                                        logger.warning(f"Skipping invalid audio chunk: {chunk_error}")
+                                        continue
+                                    
+                        except Exception as e:
+                            if "meta tensor" in str(e).lower():
+                                logger.warning(f"Meta tensor issue during streaming generation, trying to fix: {e}")
+                                # Try to fix meta tensor issue by moving model to device properly
+                                try:
+                                    import torch
+                                    if hasattr(self.model, 'model'):
+                                        # Try to move the model components to the correct device
+                                        for name, param in self.model.model.named_parameters():
+                                            if param.is_meta:
+                                                param.data = torch.empty_like(param, device=self.device, dtype=getattr(torch, self.dtype))
+                                    
+                                    # Retry with fixed model
+                                    audio_generator = self.model.generate_voice_clone(
+                                        text=text,
+                                        language=language,
+                                        ref_audio=ref_audio_path,
+                                        ref_text=ref_text,
+                                        max_new_tokens=kwargs.get("max_new_tokens", 2048),
+                                        min_new_tokens=kwargs.get("min_new_tokens", 2),
+                                        temperature=kwargs.get("temperature", self.temperature),
+                                        top_k=kwargs.get("top_k", self.top_k),
+                                        top_p=kwargs.get("top_p", self.top_p),
+                                        do_sample=kwargs.get("do_sample", self.do_sample),
+                                        repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
+                                        xvec_only=kwargs.get("xvec_only", self.xvec_only),
+                                        non_streaming_mode=False,  # Enable streaming
+                                        append_silence=kwargs.get("append_silence", self.append_silence),
+                                    )
+                                    
+                                    # Process streaming audio chunks
+                                    for audio_chunk in audio_generator:
+                                        # Check if audio_chunk is valid before processing
+                                        if audio_chunk is not None:
+                                            try:
+                                                # Handle different audio chunk formats
+                                                if isinstance(audio_chunk, (list, tuple)):
+                                                    # Multiple chunks in a list
+                                                    for chunk in audio_chunk:
+                                                        if chunk is not None and hasattr(chunk, '__len__') and len(chunk) > 0:
+                                                            yield self._process_audio_chunk(chunk)
+                                                elif hasattr(audio_chunk, '__len__') and len(audio_chunk) > 0:
+                                                    # Single chunk with length
+                                                    yield self._process_audio_chunk(audio_chunk)
+                                                elif isinstance(audio_chunk, (int, float)):
+                                                    # Skip numeric values (likely token counts or other metadata)
+                                                    continue
+                                                else:
+                                                    # Other types, try to process as single chunk
+                                                    yield self._process_audio_chunk(audio_chunk)
+                                            except Exception as chunk_error:
+                                                logger.warning(f"Skipping invalid audio chunk: {chunk_error}")
+                                                continue
+                                            
+                                except Exception as e2:
+                                    logger.error(f"Failed to fix meta tensor issue: {e2}")
+                                    raise Exception(f"Meta tensor error: {str(e)}")
+                            else:
+                                raise e
+                    else:
+                        raise Exception(f"Reference audio not found for speaker: {speaker}")
+                else:
+                    raise Exception(f"Speaker '{speaker}' not found in custom voices")
+            else:
+                # Use default voice generation with streaming
+                ref_audio_path = self._get_default_ref_audio()
+                if ref_audio_path:
+                    try:
+                        # Generate audio with streaming support
+                        audio_generator = self.model.generate_voice_clone(
+                            text=text,
+                            language=language,
+                            ref_audio=ref_audio_path,
+                            ref_text="",
+                            max_new_tokens=kwargs.get("max_new_tokens", 2048),
+                            min_new_tokens=kwargs.get("min_new_tokens", 2),
+                            temperature=kwargs.get("temperature", self.temperature),
+                            top_k=kwargs.get("top_k", self.top_k),
+                            top_p=kwargs.get("top_p", self.top_p),
+                            do_sample=kwargs.get("do_sample", self.do_sample),
+                            repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
+                            xvec_only=kwargs.get("xvec_only", self.xvec_only),
+                            non_streaming_mode=False,  # Enable streaming
+                            append_silence=kwargs.get("append_silence", self.append_silence),
+                        )
+                        
+                        # Process streaming audio chunks
+                        for audio_chunk in audio_generator:
+                            # Check if audio_chunk is valid before processing
+                            if audio_chunk is not None:
+                                try:
+                                    # Handle different audio chunk formats
+                                    if isinstance(audio_chunk, (list, tuple)):
+                                        # Multiple chunks in a list
+                                        for chunk in audio_chunk:
+                                            if chunk is not None and hasattr(chunk, '__len__') and len(chunk) > 0:
+                                                yield self._process_audio_chunk(chunk)
+                                    elif hasattr(audio_chunk, '__len__') and len(audio_chunk) > 0:
+                                        # Single chunk with length
+                                        yield self._process_audio_chunk(audio_chunk)
+                                    elif isinstance(audio_chunk, (int, float)):
+                                        # Skip numeric values (likely token counts or other metadata)
+                                        continue
+                                    else:
+                                        # Other types, try to process as single chunk
+                                        yield self._process_audio_chunk(audio_chunk)
+                                except Exception as chunk_error:
+                                    logger.warning(f"Skipping invalid audio chunk: {chunk_error}")
+                                    continue
+                                    
+                    except Exception as e:
+                        if "meta tensor" in str(e).lower():
+                            logger.warning(f"Meta tensor issue during streaming generation, trying to fix: {e}")
+                            # Try to fix meta tensor issue by moving model to device properly
+                            try:
+                                import torch
+                                if hasattr(self.model, 'model'):
+                                    # Try to move the model components to the correct device
+                                    for name, param in self.model.model.named_parameters():
+                                        if param.is_meta:
+                                            param.data = torch.empty_like(param, device=self.device, dtype=getattr(torch, self.dtype))
+                                
+                                # Retry with fixed model
+                                audio_generator = self.model.generate_voice_clone(
+                                    text=text,
+                                    language=language,
+                                    ref_audio=ref_audio_path,
+                                    ref_text="",
+                                    max_new_tokens=kwargs.get("max_new_tokens", 2048),
+                                    min_new_tokens=kwargs.get("min_new_tokens", 2),
+                                    temperature=kwargs.get("temperature", self.temperature),
+                                    top_k=kwargs.get("top_k", self.top_k),
+                                    top_p=kwargs.get("top_p", self.top_p),
+                                    do_sample=kwargs.get("do_sample", self.do_sample),
+                                    repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
+                                    xvec_only=kwargs.get("xvec_only", self.xvec_only),
+                                    non_streaming_mode=False,  # Enable streaming
+                                    append_silence=kwargs.get("append_silence", self.append_silence),
+                                )
+                                
+                                # Process streaming audio chunks
+                                for audio_chunk in audio_generator:
+                                    # Check if audio_chunk is valid before processing
+                                    if audio_chunk is not None:
+                                        try:
+                                            # Handle different audio chunk formats
+                                            if isinstance(audio_chunk, (list, tuple)):
+                                                # Multiple chunks in a list
+                                                for chunk in audio_chunk:
+                                                    if chunk is not None and hasattr(chunk, '__len__') and len(chunk) > 0:
+                                                        yield self._process_audio_chunk(chunk)
+                                            elif hasattr(audio_chunk, '__len__') and len(audio_chunk) > 0:
+                                                # Single chunk with length
+                                                yield self._process_audio_chunk(audio_chunk)
+                                            elif isinstance(audio_chunk, (int, float)):
+                                                # Skip numeric values (likely token counts or other metadata)
+                                                continue
+                                            else:
+                                                # Other types, try to process as single chunk
+                                                yield self._process_audio_chunk(audio_chunk)
+                                        except Exception as chunk_error:
+                                            logger.warning(f"Skipping invalid audio chunk: {chunk_error}")
+                                            continue
+                                            
+                            except Exception as e2:
+                                logger.error(f"Failed to fix meta tensor issue: {e2}")
+                                raise Exception(f"Meta tensor error: {str(e)}")
+                        else:
+                            raise e
+                else:
+                    raise Exception("No default reference audio available")
+            
+        except Exception as e:
+            logger.error(f"Error generating streaming audio: {e}")
+            import traceback
+            traceback.print_exc()
+            raise e
+    
+    def _process_audio_chunk(self, audio_chunk) -> bytes:
+        """Process a single audio chunk and convert to PCM bytes."""
+        try:
+            # Convert audio chunk to numpy array if needed
+            if isinstance(audio_chunk, np.ndarray):
+                audio_data = audio_chunk.astype(np.float32).squeeze()
+            else:
+                audio_data = np.array(audio_chunk, dtype=np.float32).squeeze()
+            
+            # Ensure we have valid audio data
+            if audio_data.size == 0:
+                return b''
+            
+            # Clip audio to prevent distortion
+            audio_data = np.clip(audio_data, -1.0, 1.0)
+            
+            # Scale to int16 range and convert to bytes
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+            pcm_bytes = audio_int16.tobytes()
+            
+            return pcm_bytes
+            
+        except Exception as e:
+            logger.error(f"Error processing audio chunk: {e}")
+            return b''
     
     def voice_clone(self, voice_id: str, audio_data: bytes, 
                    ref_text: Optional[str] = None) -> Dict[str, Any]:
@@ -763,6 +1141,10 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
             AudioProviderCapability.MULTILINGUAL,
             AudioProviderCapability.REAL_TIME
         ]
+    
+    def supports_streaming(self) -> bool:
+        """Check if provider supports streaming TTS."""
+        return True  # FasterQwen3TTS supports streaming
     
     def _get_custom_voice_ids(self) -> List[str]:
         """Get list of custom voice IDs."""

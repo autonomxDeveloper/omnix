@@ -289,6 +289,201 @@ def chat_voice_stream():
     
     return Response(generate(), mimetype='text/event-stream')
 
+@chat_bp.route('/api/chat/streaming-conversation', methods=['POST'])
+def chat_streaming_conversation():
+    """Streaming conversation endpoint with full streaming pipeline."""
+    data = request.get_json()
+    session_id, user_message, model, messages, err, status = prepare_messages(data)
+    if err:
+        return err, status
+    
+    # Get providers
+    provider = shared.get_provider()
+    if not provider:
+        return jsonify({"success": False, "error": "LLM provider not available"}), 500
+    
+    tts_provider = shared.get_tts_provider()
+    if not tts_provider:
+        return jsonify({"success": False, "error": "TTS provider not available"}), 500
+    
+    # Check if providers support streaming
+    if not provider.supports_streaming():
+        return jsonify({"success": False, "error": "LLM provider does not support streaming"}), 400
+    
+    if not tts_provider.supports_streaming():
+        return jsonify({"success": False, "error": "TTS provider does not support streaming"}), 400
+    
+    # Get speaker configuration
+    speaker = data.get('speaker', 'default')
+    clean_speaker = speaker.replace(" (Custom)", "").strip()
+    voice_clone_id = shared.custom_voices.get(clean_speaker, {}).get("voice_clone_id")
+    
+    final_speaker = voice_clone_id
+    if not final_speaker and clean_speaker and clean_speaker.lower() != 'default':
+        final_speaker = clean_speaker
+    
+    try:
+        # Start LLM streaming
+        stream_generator = provider.chat_completion(
+            messages=messages,
+            model=model or provider.config.model,
+            stream=True
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed to start LLM stream: {str(e)}"}), 500
+    
+    def generate():
+        import asyncio
+        import queue
+        import threading
+        
+        # Buffer for accumulating tokens before sending to TTS
+        token_buffer = ""
+        sentence_buffer = ""
+        sentence_idx = 0
+        ai_message = ""
+        thinking = ""
+        
+        # Async queue for TTS processing
+        tts_queue = queue.Queue()
+        audio_queue = queue.Queue()
+        
+        def tts_worker():
+            """Background worker for TTS processing."""
+            while True:
+                try:
+                    sentence = tts_queue.get(timeout=1)
+                    if sentence is None:
+                        break
+                    
+                    # Generate TTS audio
+                    try:
+                        if hasattr(tts_provider, 'generate_audio_stream'):
+                            # Use streaming TTS if available
+                            audio_chunks = []
+                            for audio_chunk in tts_provider.generate_audio_stream(
+                                text=sentence,
+                                speaker=final_speaker,
+                                language="English"
+                            ):
+                                audio_chunks.append(audio_chunk)
+                            
+                            # Combine audio chunks and convert to base64
+                            combined_audio = b''.join(audio_chunks)
+                            import base64
+                            audio_b64 = base64.b64encode(combined_audio).decode('utf-8')
+                            
+                            audio_queue.put({
+                                'type': 'audio_chunk',
+                                'audio': audio_b64,
+                                'sample_rate': 24000,
+                                'text': sentence,
+                                'index': sentence_idx
+                            })
+                        else:
+                            # Fallback to batch TTS
+                            if hasattr(tts_provider, 'generate_tts'):
+                                result = tts_provider.generate_tts(text=sentence, speaker=final_speaker, language="en")
+                            elif hasattr(tts_provider, 'generate_audio'):
+                                result = tts_provider.generate_audio(text=sentence, speaker=final_speaker, language="en")
+                            else:
+                                continue
+                            
+                            if result and result.get('success'):
+                                audio_queue.put({
+                                    'type': 'audio_chunk',
+                                    'audio': result.get('audio', ''),
+                                    'sample_rate': result.get('sample_rate', 24000),
+                                    'text': sentence,
+                                    'index': sentence_idx
+                                })
+                    except Exception as e:
+                        print(f"[STREAMING CONVERSATION TTS ERROR] {e}")
+                    finally:
+                        tts_queue.task_done()
+                        
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    print(f"[STREAMING CONVERSATION TTS WORKER ERROR] {e}")
+        
+        # Start TTS worker thread
+        tts_thread = threading.Thread(target=tts_worker, daemon=True)
+        tts_thread.start()
+        
+        try:
+            for response_chunk in stream_generator:
+                if response_chunk.content:
+                    token = response_chunk.content
+                    ai_message += token
+                    token_buffer += token
+                    
+                    # Accumulate tokens until we have a complete sentence
+                    sentence_buffer += token
+                    
+                    # Check if we have a complete sentence
+                    if any(char in sentence_buffer for char in '.!?。！？'):
+                        # Clean up the sentence
+                        sentence = sentence_buffer.strip()
+                        if len(sentence) >= 10:  # Minimum sentence length
+                            # Send to TTS worker
+                            tts_queue.put(sentence)
+                            sentence_buffer = ""
+                            sentence_idx += 1
+                        
+                        yield f"data: {json.dumps({'type': 'content', 'content': token})}\n\n"
+                
+                if response_chunk.thinking or response_chunk.reasoning:
+                    thinking += response_chunk.thinking or response_chunk.reasoning
+            
+            # Process any remaining sentence buffer
+            if sentence_buffer.strip():
+                sentence = sentence_buffer.strip()
+                if len(sentence) >= 10:
+                    tts_queue.put(sentence)
+                    sentence_idx += 1
+            
+            # Wait for all TTS tasks to complete
+            tts_queue.join()
+            
+            # Signal TTS worker to stop
+            tts_queue.put(None)
+            tts_thread.join(timeout=5)
+            
+            # Yield all audio chunks
+            while not audio_queue.empty():
+                audio_data = audio_queue.get()
+                yield f"data: {json.dumps(audio_data)}\n\n"
+            
+            # Extract thinking from content if not already captured
+            if not thinking:
+                thinking, ai_message = shared.extract_thinking(ai_message)
+            
+            # Save assistant message
+            shared.sessions_data[session_id]['messages'].append({
+                "role": "assistant",
+                "content": ai_message,
+                "thinking": thinking
+            })
+            shared.save_sessions(shared.sessions_data)
+            
+            yield f"data: {json.dumps({'type': 'done', 'thinking': thinking, 'session_id': session_id})}\n\n"
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        finally:
+            # Clean up TTS worker
+            try:
+                # Clear any remaining items in queue
+                while not tts_queue.empty():
+                    tts_queue.get()
+                    tts_queue.task_done()
+                tts_queue.put(None)
+            except:
+                pass
+    
+    return Response(generate(), mimetype='text/event-stream')
+
 @chat_bp.route('/api/conversation/greeting', methods=['POST'])
 def conversation_greeting():
     """Generate a greeting when initially opening conversation mode."""
