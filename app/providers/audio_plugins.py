@@ -13,6 +13,8 @@ import os
 import base64
 import numpy as np
 import soundfile as sf
+import io
+import wave
 from typing import Optional, Dict, List, Any, Union, Iterator
 from pathlib import Path
 import logging
@@ -375,8 +377,15 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
         try:
             # Import the faster-qwen3-tts library
             from faster_qwen3_tts import FasterQwen3TTS
+            import torch
             
             logger.info(f"Loading FasterQwen3TTS model: {self.model_name}")
+            
+            # Check if CUDA is available, fallback to CPU if not
+            if self.device == "cuda" and not torch.cuda.is_available():
+                logger.warning("CUDA not available, falling back to CPU")
+                self.device = "cpu"
+                self.dtype = "float32"  # Use float32 for CPU compatibility
             
             # Load the model with CUDA graphs
             # Handle PyTorch version compatibility issues
@@ -390,17 +399,43 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
             except Exception as e:
                 if "meta tensor" in str(e).lower():
                     logger.warning(f"Meta tensor issue detected, trying alternative loading: {e}")
-                    # Try loading with different parameters - remove torch_dtype parameter
-                    self.model = FasterQwen3TTS.from_pretrained(
-                        model_name=self.model_name,
-                        device=self.device,
-                        dtype=self.dtype,
-                        max_seq_len=self.max_seq_len
-                    )
+                    # Try to fix meta tensor issue by properly moving model to device
+                    try:
+                        # Load model first
+                        self.model = FasterQwen3TTS.from_pretrained(
+                            model_name=self.model_name,
+                            device="meta",  # Load to meta first
+                            dtype=self.dtype,
+                            max_seq_len=self.max_seq_len
+                        )
+                        
+                        # Then move to actual device using to_empty
+                        if hasattr(self.model, 'model'):
+                            self.model.model = self.model.model.to_empty(device=self.device)
+                        
+                        # Set the device for the model
+                        self.model.device = self.device
+                        
+                    except Exception as e2:
+                        logger.error(f"Failed to fix meta tensor issue: {e2}")
+                        raise e2
+                elif "CUDA graphs require CUDA device" in str(e):
+                    logger.warning(f"CUDA graphs not available, trying without CUDA graphs: {e}")
+                    # Try loading without CUDA graphs for CPU compatibility
+                    try:
+                        self.model = FasterQwen3TTS.from_pretrained(
+                            model_name=self.model_name,
+                            device=self.device,
+                            dtype=self.dtype,
+                            max_seq_len=self.max_seq_len
+                        )
+                    except Exception as e3:
+                        logger.error(f"Failed to load without CUDA graphs: {e3}")
+                        raise e3
                 else:
                     raise e
             
-            return {"running": True, "message": f"FasterQwen3TTS model loaded successfully"}
+            return {"running": True, "message": f"FasterQwen3TTS model loaded successfully on {self.device}"}
             
         except ImportError:
             return {"running": False, "message": "faster-qwen3-tts library not installed. Run: pip install faster-qwen3-tts"}
@@ -540,10 +575,33 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
                             raise e
                     
                     if audio_arrays and len(audio_arrays) > 0:
-                        # Convert to base64
-                        audio_data = np.array(audio_arrays[0])
-                        audio_bytes = audio_data.tobytes()
-                        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+                        # Convert to base64 - use proper audio handling like the demo
+                        def _concat_audio(audio_list):
+                            if isinstance(audio_list, np.ndarray):
+                                return audio_list.astype(np.float32).squeeze()
+                            parts = [np.array(a, dtype=np.float32).squeeze() for a in audio_list if len(a) > 0]
+                            return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+                        
+                        # Concatenate audio arrays and ensure they are Float32
+                        audio_data = _concat_audio(audio_arrays)
+                        
+                        # Clip audio to prevent distortion
+                        audio_data = np.clip(audio_data, -1.0, 1.0)
+                        
+                        # Scale to int16 range and convert
+                        audio_int16 = (audio_data * 32767).astype(np.int16)
+                        
+                        # Create WAV container using io.BytesIO and wave module
+                        wav_buffer = io.BytesIO()
+                        with wave.open(wav_buffer, 'wb') as wav_file:
+                            wav_file.setnchannels(1)  # Mono
+                            wav_file.setsampwidth(2)  # 2 bytes (16-bit)
+                            wav_file.setframerate(sample_rate)
+                            wav_file.writeframes(audio_int16.tobytes())
+                        
+                        # Get WAV bytes and encode to base64
+                        wav_bytes = wav_buffer.getvalue()
+                        audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
                         
                         return {
                             "success": True,
@@ -578,9 +636,33 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
                     )
                     
                     if audio_arrays and len(audio_arrays) > 0:
-                        audio_data = np.array(audio_arrays[0])
-                        audio_bytes = audio_data.tobytes()
-                        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+                        # Convert to base64 - use proper audio handling like the demo
+                        def _concat_audio(audio_list):
+                            if isinstance(audio_list, np.ndarray):
+                                return audio_list.astype(np.float32).squeeze()
+                            parts = [np.array(a, dtype=np.float32).squeeze() for a in audio_list if len(a) > 0]
+                            return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+                        
+                        # Concatenate audio arrays and ensure they are Float32
+                        audio_data = _concat_audio(audio_arrays)
+                        
+                        # Clip audio to prevent distortion
+                        audio_data = np.clip(audio_data, -1.0, 1.0)
+                        
+                        # Scale to int16 range and convert
+                        audio_int16 = (audio_data * 32767).astype(np.int16)
+                        
+                        # Create WAV container using io.BytesIO and wave module
+                        wav_buffer = io.BytesIO()
+                        with wave.open(wav_buffer, 'wb') as wav_file:
+                            wav_file.setnchannels(1)  # Mono
+                            wav_file.setsampwidth(2)  # 2 bytes (16-bit)
+                            wav_file.setframerate(sample_rate)
+                            wav_file.writeframes(audio_int16.tobytes())
+                        
+                        # Get WAV bytes and encode to base64
+                        wav_bytes = wav_buffer.getvalue()
+                        audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
                         
                         return {
                             "success": True,
