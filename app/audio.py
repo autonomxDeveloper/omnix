@@ -84,12 +84,23 @@ def tts():
     
     try:
         tts_provider = shared.get_tts_provider()
-        if tts_provider and hasattr(tts_provider, 'generate_audio'):
-            result = tts_provider.generate_audio(
-                text=text,
-                speaker=final_speaker,
-                language=language
-            )
+        if tts_provider:
+            # Try both method names for compatibility
+            if hasattr(tts_provider, 'generate_tts'):
+                result = tts_provider.generate_tts(
+                    text=text,
+                    speaker=final_speaker,
+                    language=language
+                )
+            elif hasattr(tts_provider, 'generate_audio'):
+                result = tts_provider.generate_audio(
+                    text=text,
+                    speaker=final_speaker,
+                    language=language
+                )
+            else:
+                return jsonify({"success": False, "error": "TTS provider does not support TTS generation"}), 500
+            
             if result.get('success'):
                 return jsonify({
                     "success": True, 
@@ -116,12 +127,23 @@ def tts_stream():
     
     try:
         tts_provider = shared.get_tts_provider()
-        if tts_provider and hasattr(tts_provider, 'generate_audio'):
-            result = tts_provider.generate_audio(
-                text=text,
-                speaker=final_speaker,
-                language=language
-            )
+        if tts_provider:
+            # Try both method names for compatibility
+            if hasattr(tts_provider, 'generate_tts'):
+                result = tts_provider.generate_tts(
+                    text=text,
+                    speaker=final_speaker,
+                    language=language
+                )
+            elif hasattr(tts_provider, 'generate_audio'):
+                result = tts_provider.generate_audio(
+                    text=text,
+                    speaker=final_speaker,
+                    language=language
+                )
+            else:
+                return jsonify({"success": False, "error": "TTS provider does not support TTS generation"}), 500
+            
             if result.get('success'):
                 audio_b64 = result.get('audio', '')
                 if audio_b64:
@@ -400,38 +422,3 @@ def tts_test():
     except Exception as e: 
         return jsonify({"success": False, "error": str(e)}), 500
 
-@audio_bp.route('/api/providers/status', methods=['GET'])
-def providers_status():
-    try:
-        tts_status = {"available": False, "provider": None, "error": None}
-        try:
-            tts_provider = shared.get_tts_provider()
-            if tts_provider:
-                tts_status["available"] = True
-                tts_status["provider"] = getattr(tts_provider, 'provider_name', 'unknown')
-                if hasattr(tts_provider, 'health_check'):
-                    tts_status["healthy"] = tts_provider.health_check()
-                if hasattr(tts_provider, 'get_speakers'):
-                    tts_status["speakers"] = len(tts_provider.get_speakers())
-        except Exception as e:
-            tts_status["error"] = str(e)
-        
-        stt_status = {"available": False, "provider": None, "error": None}
-        try:
-            stt_provider = shared.get_stt_provider()
-            if stt_provider:
-                stt_status["available"] = True
-                stt_status["provider"] = getattr(stt_provider, 'provider_name', 'unknown')
-                if hasattr(stt_provider, 'health_check'):
-                    stt_status["healthy"] = stt_provider.health_check()
-        except Exception as e:
-            stt_status["error"] = str(e)
-        
-        return jsonify({
-            "success": True,
-            "tts": tts_status,
-            "stt": stt_status,
-            "settings": shared.load_settings().get('audio_provider_tts', 'chatterbox')
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500

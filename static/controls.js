@@ -57,14 +57,17 @@ async function checkXTTSStatus() {
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            // Check TTS health directly first (faster, more reliable)
-            const healthResponse = await fetch('http://localhost:8020/health', { timeout: 3000 });
-            if (healthResponse.status === 200) {
-                updateXTTSStatus(true, 'TTS: Running');
-                return;
+            // For FasterQwen3TTS, check if the provider is available via the API
+            const response = await fetch('/api/providers/status');
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.tts && data.tts.available) {
+                    updateXTTSStatus(true, 'TTS: Running (FasterQwen3TTS)');
+                    return;
+                }
             }
         } catch (e) {
-            // TTS not responding, continue to retry
+            // Provider not responding, continue to retry
         }
         
         if (attempt < maxRetries) {
@@ -76,7 +79,7 @@ async function checkXTTSStatus() {
     try {
         const statusResponse = await fetch('/api/services/status', { timeout: 5000 });
         const statusData = await statusResponse.json();
-        if (statusData.tts && statusData.tts.running) {
+        if (statusData.success && statusData.tts && statusData.tts.running) {
             updateXTTSStatus(true, 'TTS: Running');
             return;
         }

@@ -189,3 +189,74 @@ def health_check():
             "provider": provider.provider_name,
             "message": str(e)
         }), 200
+
+@core_bp.route('/api/providers/status', methods=['GET'])
+def providers_status():
+    """Check status of all providers including TTS."""
+    try:
+        # Check LLM provider status
+        llm_provider = shared.get_provider()
+        llm_status = {
+            "available": False,
+            "provider": "unknown",
+            "message": "Provider not available"
+        }
+        
+        if llm_provider:
+            try:
+                is_healthy = llm_provider.test_connection()
+                llm_status = {
+                    "available": is_healthy,
+                    "provider": llm_provider.provider_name,
+                    "message": "OK" if is_healthy else "Connection failed"
+                }
+            except Exception as e:
+                print(f"[PROVIDERS STATUS] Error checking {llm_provider.provider_name} connection: {e}")
+                llm_status = {
+                    "available": False,
+                    "provider": llm_provider.provider_name,
+                    "message": str(e)
+                }
+        
+        # Check TTS provider status using singleton pattern
+        tts_status = {
+            "available": False,
+            "provider": "unknown",
+            "message": "TTS provider not available"
+        }
+        
+        try:
+            # Use the singleton pattern to get the current TTS provider
+            tts_provider = shared.get_tts_provider()
+            
+            if tts_provider:
+                try:
+                    is_healthy = tts_provider.test_connection()
+                    tts_status = {
+                        "available": is_healthy,
+                        "provider": tts_provider.provider_name,
+                        "message": "OK" if is_healthy else "Connection failed"
+                    }
+                except Exception as e:
+                    print(f"[PROVIDERS STATUS] Error checking {tts_provider.provider_name} connection: {e}")
+                    tts_status = {
+                        "available": False,
+                        "provider": tts_provider.provider_name,
+                        "message": str(e)
+                    }
+        except Exception as e:
+            print(f"[PROVIDERS STATUS] Error checking TTS provider: {e}")
+        
+        return jsonify({
+            "success": True,
+            "llm": llm_status,
+            "tts": tts_status
+        })
+    except Exception as e:
+        print(f"[PROVIDERS STATUS] Error checking providers status: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "llm": {"available": False, "provider": "unknown", "message": "Error checking status"},
+            "tts": {"available": False, "provider": "unknown", "message": "Error checking status"}
+        }), 500
