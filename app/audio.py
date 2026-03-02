@@ -161,8 +161,18 @@ def get_speakers():
     except Exception as e:
         print(f"Error getting speakers from provider: {e}")
     
+    # Only include custom voices that have actual audio files in voice_clones directory
+    voice_clones_dir = os.path.join(shared.BASE_DIR, 'voice_clones')
+    available_clone_files = set()
+    if os.path.exists(voice_clones_dir):
+        for filename in os.listdir(voice_clones_dir):
+            if filename.lower().endswith('.wav'):
+                # Remove .wav extension to get voice name
+                voice_name = os.path.splitext(filename)[0]
+                available_clone_files.add(voice_name)
+    
     for k, v in shared.custom_voices.items():
-        if k not in seen:
+        if k not in seen and k in available_clone_files:
             seen.add(k)
             speakers.append({
                 "id": k, 
