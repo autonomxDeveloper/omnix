@@ -422,13 +422,25 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
                 elif "CUDA graphs require CUDA device" in str(e):
                     logger.warning(f"CUDA graphs not available, trying without CUDA graphs: {e}")
                     # Try loading without CUDA graphs for CPU compatibility
+                    # Use a different approach - load with CPU first then move to CUDA if available
                     try:
+                        # First try loading with CPU device
+                        cpu_device = "cpu" if self.device == "cuda" else self.device
+                        cpu_dtype = "float32" if self.device == "cuda" else self.dtype
+                        
                         self.model = FasterQwen3TTS.from_pretrained(
                             model_name=self.model_name,
-                            device=self.device,
-                            dtype=self.dtype,
+                            device=cpu_device,
+                            dtype=cpu_dtype,
                             max_seq_len=self.max_seq_len
                         )
+                        
+                        # If we wanted CUDA but loaded to CPU, try to move to CUDA
+                        if self.device == "cuda" and torch.cuda.is_available():
+                            logger.info("Moving model from CPU to CUDA")
+                            self.model = self.model.to("cuda")
+                            self.model.device = "cuda"
+                        
                     except Exception as e3:
                         logger.error(f"Failed to load without CUDA graphs: {e3}")
                         raise e3
