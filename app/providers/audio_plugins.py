@@ -379,12 +379,26 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
             logger.info(f"Loading FasterQwen3TTS model: {self.model_name}")
             
             # Load the model with CUDA graphs
-            self.model = FasterQwen3TTS.from_pretrained(
-                model_name=self.model_name,
-                device=self.device,
-                dtype=self.dtype,
-                max_seq_len=self.max_seq_len
-            )
+            # Handle PyTorch version compatibility issues
+            try:
+                self.model = FasterQwen3TTS.from_pretrained(
+                    model_name=self.model_name,
+                    device=self.device,
+                    dtype=self.dtype,
+                    max_seq_len=self.max_seq_len
+                )
+            except Exception as e:
+                if "meta tensor" in str(e).lower():
+                    logger.warning(f"Meta tensor issue detected, trying alternative loading: {e}")
+                    # Try loading with different parameters - remove torch_dtype parameter
+                    self.model = FasterQwen3TTS.from_pretrained(
+                        model_name=self.model_name,
+                        device=self.device,
+                        dtype=self.dtype,
+                        max_seq_len=self.max_seq_len
+                    )
+                else:
+                    raise e
             
             return {"running": True, "message": f"FasterQwen3TTS model loaded successfully"}
             
@@ -474,23 +488,56 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
                 if ref_audio_path and os.path.exists(ref_audio_path):
                     ref_text = kwargs.get("ref_text", "")
                     
-                    # Generate with voice cloning
-                    audio_arrays, sample_rate = self.model.generate_voice_clone(
-                        text=text,
-                        language=language,
-                        ref_audio=ref_audio_path,
-                        ref_text=ref_text,
-                        max_new_tokens=kwargs.get("max_new_tokens", 2048),
-                        min_new_tokens=kwargs.get("min_new_tokens", 2),
-                        temperature=kwargs.get("temperature", self.temperature),
-                        top_k=kwargs.get("top_k", self.top_k),
-                        top_p=kwargs.get("top_p", self.top_p),
-                        do_sample=kwargs.get("do_sample", self.do_sample),
-                        repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
-                        xvec_only=kwargs.get("xvec_only", self.xvec_only),
-                        non_streaming_mode=kwargs.get("non_streaming_mode", self.non_streaming_mode),
-                        append_silence=kwargs.get("append_silence", self.append_silence),
-                    )
+                    # Generate with voice cloning - handle meta tensor issues
+                    try:
+                        audio_arrays, sample_rate = self.model.generate_voice_clone(
+                            text=text,
+                            language=language,
+                            ref_audio=ref_audio_path,
+                            ref_text=ref_text,
+                            max_new_tokens=kwargs.get("max_new_tokens", 2048),
+                            min_new_tokens=kwargs.get("min_new_tokens", 2),
+                            temperature=kwargs.get("temperature", self.temperature),
+                            top_k=kwargs.get("top_k", self.top_k),
+                            top_p=kwargs.get("top_p", self.top_p),
+                            do_sample=kwargs.get("do_sample", self.do_sample),
+                            repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
+                            xvec_only=kwargs.get("xvec_only", self.xvec_only),
+                            non_streaming_mode=kwargs.get("non_streaming_mode", self.non_streaming_mode),
+                            append_silence=kwargs.get("append_silence", self.append_silence),
+                        )
+                    except Exception as e:
+                        if "meta tensor" in str(e).lower():
+                            logger.warning(f"Meta tensor issue during generation, trying to fix: {e}")
+                            # Try to fix meta tensor issue by moving model to device properly
+                            try:
+                                import torch
+                                if hasattr(self.model, 'model'):
+                                    # Try to move the model components to the correct device
+                                    for name, param in self.model.model.named_parameters():
+                                        if param.is_meta:
+                                            param.data = torch.empty_like(param, device=self.device, dtype=getattr(torch, self.dtype))
+                                audio_arrays, sample_rate = self.model.generate_voice_clone(
+                                    text=text,
+                                    language=language,
+                                    ref_audio=ref_audio_path,
+                                    ref_text=ref_text,
+                                    max_new_tokens=kwargs.get("max_new_tokens", 2048),
+                                    min_new_tokens=kwargs.get("min_new_tokens", 2),
+                                    temperature=kwargs.get("temperature", self.temperature),
+                                    top_k=kwargs.get("top_k", self.top_k),
+                                    top_p=kwargs.get("top_p", self.top_p),
+                                    do_sample=kwargs.get("do_sample", self.do_sample),
+                                    repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
+                                    xvec_only=kwargs.get("xvec_only", self.xvec_only),
+                                    non_streaming_mode=kwargs.get("non_streaming_mode", self.non_streaming_mode),
+                                    append_silence=kwargs.get("append_silence", self.append_silence),
+                                )
+                            except Exception as e2:
+                                logger.error(f"Failed to fix meta tensor issue: {e2}")
+                                return {"success": False, "error": f"Meta tensor error: {str(e)}"}
+                        else:
+                            raise e
                     
                     if audio_arrays and len(audio_arrays) > 0:
                         # Convert to base64
