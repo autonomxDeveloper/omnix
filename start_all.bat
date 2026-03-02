@@ -5,7 +5,7 @@ echo ================================================
 echo.
 echo This will start:
 echo   1. Parakeet STT Server (port 8000) - Voice recognition
-echo   2. Chatterbox TTS TURBO (port 8020) - Fast English voice synthesis
+echo   2. FasterQwen3TTS Model (in-app) - Real-time multilingual TTS with voice cloning
 echo   3. Chatbot Web Server (port 5000) - Main application
 echo.
 echo Note: Make sure LM Studio is running with a model loaded.
@@ -48,13 +48,14 @@ if exist "%~dp0parakeet_stt_server.py" (
 :: Wait a bit for STT to start
 timeout /t 5 /nobreak >nul
 
-:: Start Chatterbox TTS TURBO Server in background
-:: GPU DSP Configuration:
-::   USE_GPU_DSP=true        - All DSP (resample, DC offset, normalize) on GPU
-::   STREAM_SAMPLE_RATE=48000 - Output sample rate for streaming (48kHz)
-::   ENABLE_ENHANCEMENT=false - DeepFilterNet enhancement (only for offline WAV)
-echo [2/3] Starting Chatterbox TTS TURBO on port 8020...
-start "Chatterbox-TTS" cmd /k "set USE_GPU_DSP=true && set STREAM_SAMPLE_RATE=48000 && set ENABLE_ENHANCEMENT=false && python chatterbox_tts_server.py"
+:: Start FasterQwen3TTS Model Setup
+:: Note: FasterQwen3TTS loads the model directly in the application,
+:: so no separate server process is needed. The model will be loaded
+:: automatically when the chatbot starts and TTS is first used.
+echo [2/3] FasterQwen3TTS model will load automatically when needed...
+echo    Model: Qwen/Qwen3-TTS-12Hz-0.6B-Base (configurable in settings)
+echo    Device: CUDA (GPU) or CPU fallback
+echo    Features: 6-10x speedup with CUDA graphs, voice cloning, multilingual
 
 
 :: Wait a bit for TTS to start

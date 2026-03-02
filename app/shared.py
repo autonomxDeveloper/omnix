@@ -27,19 +27,40 @@ custom_voices = {}
 downloads = {}
 llamacpp_server_downloads = {}
 
+# Singleton Provider Instances
+_tts_provider_instance = None
+_tts_provider_name = None
+_stt_provider_instance = None
+_stt_provider_name = None
+
 # Provider system
 from app.providers import get_registry, BaseProvider, ProviderConfig
 from app.providers.audio_registry import get_audio_registry, get_tts_provider, get_stt_provider
 
 DEFAULT_SETTINGS = {
     "provider": "lmstudio",
-    "audio_provider_tts": "chatterbox",
+    "audio_provider_tts": "faster-qwen3-tts",
     "audio_provider_stt": "parakeet",
     "global_system_prompt": """You are an intelligent conversational AI designed for natural, engaging dialogue. Respond in a clear, friendly, and human-like manner while remaining concise and coherent. Prioritize understanding the user's intent and replying directly, without unnecessary elaboration or filler. Keep responses focused and easy to follow, using natural phrasing rather than formal or technical language unless required. Maintain conversational flow across turns and adapt smoothly to the user's tone. Default to brevity and do not exceed five sentences unless the user explicitly asks for more detail.""",
     "lmstudio": {"base_url": "http://localhost:1234"},
     "openrouter": {"api_key": "", "model": "openai/gpt-4o-mini", "context_size": 128000, "thinking_budget": 0},
     "cerebras": {"api_key": "", "model": "llama-3.3-70b-versatile"},
     "llamacpp": {"base_url": "http://localhost:8080", "model": "", "download_location": "server", "auto_start": False},
+    "faster-qwen3-tts": {
+        "model_name": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "max_seq_len": 2048,
+        "chunk_size": 12,
+        "temperature": 0.9,
+        "top_k": 50,
+        "top_p": 1.0,
+        "do_sample": True,
+        "repetition_penalty": 1.05,
+        "xvec_only": True,
+        "non_streaming_mode": True,
+        "append_silence": True
+    },
     "chatterbox": {"base_url": "http://localhost:8020"},
     "parakeet": {"base_url": "http://localhost:8000"}
 }
@@ -260,7 +281,7 @@ def get_global_system_prompt():
 
 def get_tts_provider(provider_name: Optional[str] = None) -> Optional[Any]:
     """
-    Get a TTS provider instance based on settings.
+    Get a TTS provider instance based on settings using singleton pattern.
     
     Args:
         provider_name: Optional provider name override, otherwise uses settings
@@ -268,33 +289,70 @@ def get_tts_provider(provider_name: Optional[str] = None) -> Optional[Any]:
     Returns:
         TTS provider instance or None if not available
     """
+    global _tts_provider_instance, _tts_provider_name
+    
     settings = load_settings()
-    provider = provider_name or settings.get('audio_provider_tts', 'chatterbox')
+    provider = provider_name or settings.get('audio_provider_tts', 'faster-qwen3-tts')
+    
+    # Check if we already have the correct provider cached
+    if _tts_provider_instance is not None and _tts_provider_name == provider:
+        return _tts_provider_instance
+    
+    # If we have a different provider cached, stop it first
+    if _tts_provider_instance is not None:
+        try:
+            _tts_provider_instance.stop()
+        except Exception as e:
+            print(f"Error stopping previous TTS provider: {e}")
+        _tts_provider_instance = None
+        _tts_provider_name = None
     
     # Build provider config from settings
     provider_config = None
     try:
         provider_settings = settings.get(provider, {})
-        base_url = provider_settings.get("base_url")
-        if not base_url:
-            # Fallback to default base URL if not configured
-            if provider == 'chatterbox':
-                base_url = "http://localhost:8020"
-            elif provider == 'parakeet':
-                base_url = "http://localhost:8000"
-            else:
-                base_url = None
         
-        provider_config = {
-            "base_url": base_url,
-            "timeout": provider_settings.get("timeout", 300),
-            "max_retries": provider_settings.get("max_retries", 3),
-            "extra_params": provider_settings.get("extra_params", {})
-        }
+        if provider == 'faster-qwen3-tts':
+            # For faster-qwen3-tts, use the full settings as config
+            provider_config = provider_settings
+        else:
+            # For other providers, use the base URL approach
+            base_url = provider_settings.get("base_url")
+            if not base_url:
+                # Fallback to default base URL if not configured
+                if provider == 'chatterbox':
+                    base_url = "http://localhost:8020"
+                elif provider == 'parakeet':
+                    base_url = "http://localhost:8000"
+                else:
+                    base_url = None
+            
+            provider_config = {
+                "base_url": base_url,
+                "timeout": provider_settings.get("timeout", 300),
+                "max_retries": provider_settings.get("max_retries", 3),
+                "extra_params": provider_settings.get("extra_params", {})
+            }
         
         # Create provider instance using audio registry
         registry = get_audio_registry()
         provider_instance = registry.create_tts_provider(provider, config=provider_config)
+        
+        # Start the provider if it has a start method
+        if provider_instance and hasattr(provider_instance, 'start'):
+            try:
+                start_result = provider_instance.start()
+                if not start_result.get('running', False):
+                    print(f"Failed to start TTS provider '{provider}': {start_result.get('message', 'Unknown error')}")
+                    return None
+            except Exception as e:
+                print(f"Error starting TTS provider '{provider}': {e}")
+                return None
+        
+        # Cache the successful instance
+        _tts_provider_instance = provider_instance
+        _tts_provider_name = provider
+        
         return provider_instance
         
     except Exception as e:
@@ -303,7 +361,7 @@ def get_tts_provider(provider_name: Optional[str] = None) -> Optional[Any]:
 
 def get_stt_provider(provider_name: Optional[str] = None) -> Optional[Any]:
     """
-    Get an STT provider instance based on settings.
+    Get an STT provider instance based on settings using singleton pattern.
     
     Args:
         provider_name: Optional provider name override, otherwise uses settings
@@ -311,8 +369,23 @@ def get_stt_provider(provider_name: Optional[str] = None) -> Optional[Any]:
     Returns:
         STT provider instance or None if not available
     """
+    global _stt_provider_instance, _stt_provider_name
+    
     settings = load_settings()
     provider = provider_name or settings.get('audio_provider_stt', 'parakeet')
+    
+    # Check if we already have the correct provider cached
+    if _stt_provider_instance is not None and _stt_provider_name == provider:
+        return _stt_provider_instance
+    
+    # If we have a different provider cached, stop it first
+    if _stt_provider_instance is not None:
+        try:
+            _stt_provider_instance.stop()
+        except Exception as e:
+            print(f"Error stopping previous STT provider: {e}")
+        _stt_provider_instance = None
+        _stt_provider_name = None
     
     # Build provider config from settings
     provider_config = None
@@ -328,6 +401,22 @@ def get_stt_provider(provider_name: Optional[str] = None) -> Optional[Any]:
         # Create provider instance using audio registry
         registry = get_audio_registry()
         provider_instance = registry.create_stt_provider(provider, config=provider_config)
+        
+        # Start the provider if it has a start method
+        if provider_instance and hasattr(provider_instance, 'start'):
+            try:
+                start_result = provider_instance.start()
+                if not start_result.get('running', False):
+                    print(f"Failed to start STT provider '{provider}': {start_result.get('message', 'Unknown error')}")
+                    return None
+            except Exception as e:
+                print(f"Error starting STT provider '{provider}': {e}")
+                return None
+        
+        # Cache the successful instance
+        _stt_provider_instance = provider_instance
+        _stt_provider_name = provider
+        
         return provider_instance
         
     except Exception as e:

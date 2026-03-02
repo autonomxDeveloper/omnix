@@ -380,6 +380,7 @@ class AudioProviderRegistry:
         self._discovered = False
 
 
+
 # Global registry instance
 _registry = AudioProviderRegistry()
 
