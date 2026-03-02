@@ -516,103 +516,107 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
             elif language.lower() == 'ko':
                 language = "Korean"
             
-            # Handle voice cloning
-            if speaker and speaker != "default" and speaker in self._get_custom_voice_ids():
-                # Use voice cloning with custom voice
-                ref_audio_path = self._get_voice_audio_path(speaker)
-                if ref_audio_path and os.path.exists(ref_audio_path):
-                    ref_text = kwargs.get("ref_text", "")
-                    
-                    # Generate with voice cloning - handle meta tensor issues
-                    try:
-                        audio_arrays, sample_rate = self.model.generate_voice_clone(
-                            text=text,
-                            language=language,
-                            ref_audio=ref_audio_path,
-                            ref_text=ref_text,
-                            max_new_tokens=kwargs.get("max_new_tokens", 2048),
-                            min_new_tokens=kwargs.get("min_new_tokens", 2),
-                            temperature=kwargs.get("temperature", self.temperature),
-                            top_k=kwargs.get("top_k", self.top_k),
-                            top_p=kwargs.get("top_p", self.top_p),
-                            do_sample=kwargs.get("do_sample", self.do_sample),
-                            repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
-                            xvec_only=kwargs.get("xvec_only", self.xvec_only),
-                            non_streaming_mode=kwargs.get("non_streaming_mode", self.non_streaming_mode),
-                            append_silence=kwargs.get("append_silence", self.append_silence),
-                        )
-                    except Exception as e:
-                        if "meta tensor" in str(e).lower():
-                            logger.warning(f"Meta tensor issue during generation, trying to fix: {e}")
-                            # Try to fix meta tensor issue by moving model to device properly
-                            try:
-                                import torch
-                                if hasattr(self.model, 'model'):
-                                    # Try to move the model components to the correct device
-                                    for name, param in self.model.model.named_parameters():
-                                        if param.is_meta:
-                                            param.data = torch.empty_like(param, device=self.device, dtype=getattr(torch, self.dtype))
-                                audio_arrays, sample_rate = self.model.generate_voice_clone(
-                                    text=text,
-                                    language=language,
-                                    ref_audio=ref_audio_path,
-                                    ref_text=ref_text,
-                                    max_new_tokens=kwargs.get("max_new_tokens", 2048),
-                                    min_new_tokens=kwargs.get("min_new_tokens", 2),
-                                    temperature=kwargs.get("temperature", self.temperature),
-                                    top_k=kwargs.get("top_k", self.top_k),
-                                    top_p=kwargs.get("top_p", self.top_p),
-                                    do_sample=kwargs.get("do_sample", self.do_sample),
-                                    repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
-                                    xvec_only=kwargs.get("xvec_only", self.xvec_only),
-                                    non_streaming_mode=kwargs.get("non_streaming_mode", self.non_streaming_mode),
-                                    append_silence=kwargs.get("append_silence", self.append_silence),
-                                )
-                            except Exception as e2:
-                                logger.error(f"Failed to fix meta tensor issue: {e2}")
-                                return {"success": False, "error": f"Meta tensor error: {str(e)}"}
+            # Handle voice cloning - check if speaker is in custom voices or is a valid voice ID
+            if speaker and speaker != "default":
+                # Check if speaker exists in custom voices
+                if speaker in self._get_custom_voice_ids():
+                    # Use voice cloning with custom voice
+                    ref_audio_path = self._get_voice_audio_path(speaker)
+                    if ref_audio_path and os.path.exists(ref_audio_path):
+                        ref_text = kwargs.get("ref_text", "")
+                        
+                        # Generate with voice cloning - handle meta tensor issues
+                        try:
+                            audio_arrays, sample_rate = self.model.generate_voice_clone(
+                                text=text,
+                                language=language,
+                                ref_audio=ref_audio_path,
+                                ref_text=ref_text,
+                                max_new_tokens=kwargs.get("max_new_tokens", 2048),
+                                min_new_tokens=kwargs.get("min_new_tokens", 2),
+                                temperature=kwargs.get("temperature", self.temperature),
+                                top_k=kwargs.get("top_k", self.top_k),
+                                top_p=kwargs.get("top_p", self.top_p),
+                                do_sample=kwargs.get("do_sample", self.do_sample),
+                                repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
+                                xvec_only=kwargs.get("xvec_only", self.xvec_only),
+                                non_streaming_mode=kwargs.get("non_streaming_mode", self.non_streaming_mode),
+                                append_silence=kwargs.get("append_silence", self.append_silence),
+                            )
+                        except Exception as e:
+                            if "meta tensor" in str(e).lower():
+                                logger.warning(f"Meta tensor issue during generation, trying to fix: {e}")
+                                # Try to fix meta tensor issue by moving model to device properly
+                                try:
+                                    import torch
+                                    if hasattr(self.model, 'model'):
+                                        # Try to move the model components to the correct device
+                                        for name, param in self.model.model.named_parameters():
+                                            if param.is_meta:
+                                                param.data = torch.empty_like(param, device=self.device, dtype=getattr(torch, self.dtype))
+                                    audio_arrays, sample_rate = self.model.generate_voice_clone(
+                                        text=text,
+                                        language=language,
+                                        ref_audio=ref_audio_path,
+                                        ref_text=ref_text,
+                                        max_new_tokens=kwargs.get("max_new_tokens", 2048),
+                                        min_new_tokens=kwargs.get("min_new_tokens", 2),
+                                        temperature=kwargs.get("temperature", self.temperature),
+                                        top_k=kwargs.get("top_k", self.top_k),
+                                        top_p=kwargs.get("top_p", self.top_p),
+                                        do_sample=kwargs.get("do_sample", self.do_sample),
+                                        repetition_penalty=kwargs.get("repetition_penalty", self.repetition_penalty),
+                                        xvec_only=kwargs.get("xvec_only", self.xvec_only),
+                                        non_streaming_mode=kwargs.get("non_streaming_mode", self.non_streaming_mode),
+                                        append_silence=kwargs.get("append_silence", self.append_silence),
+                                    )
+                                except Exception as e2:
+                                    logger.error(f"Failed to fix meta tensor issue: {e2}")
+                                    return {"success": False, "error": f"Meta tensor error: {str(e)}"}
+                            else:
+                                raise e
+                        
+                        if audio_arrays and len(audio_arrays) > 0:
+                            # Convert to base64 - use proper audio handling like the demo
+                            def _concat_audio(audio_list):
+                                if isinstance(audio_list, np.ndarray):
+                                    return audio_list.astype(np.float32).squeeze()
+                                parts = [np.array(a, dtype=np.float32).squeeze() for a in audio_list if len(a) > 0]
+                                return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+                            
+                            # Concatenate audio arrays and ensure they are Float32
+                            audio_data = _concat_audio(audio_arrays)
+                            
+                            # Clip audio to prevent distortion
+                            audio_data = np.clip(audio_data, -1.0, 1.0)
+                            
+                            # Scale to int16 range and convert
+                            audio_int16 = (audio_data * 32767).astype(np.int16)
+                            
+                            # Create WAV container using io.BytesIO and wave module
+                            wav_buffer = io.BytesIO()
+                            with wave.open(wav_buffer, 'wb') as wav_file:
+                                wav_file.setnchannels(1)  # Mono
+                                wav_file.setsampwidth(2)  # 2 bytes (16-bit)
+                                wav_file.setframerate(sample_rate)
+                                wav_file.writeframes(audio_int16.tobytes())
+                            
+                            # Get WAV bytes and encode to base64
+                            wav_bytes = wav_buffer.getvalue()
+                            audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
+                            
+                            return {
+                                "success": True,
+                                "audio": audio_b64,
+                                "sample_rate": sample_rate,
+                                "format": "audio/wav"
+                            }
                         else:
-                            raise e
-                    
-                    if audio_arrays and len(audio_arrays) > 0:
-                        # Convert to base64 - use proper audio handling like the demo
-                        def _concat_audio(audio_list):
-                            if isinstance(audio_list, np.ndarray):
-                                return audio_list.astype(np.float32).squeeze()
-                            parts = [np.array(a, dtype=np.float32).squeeze() for a in audio_list if len(a) > 0]
-                            return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
-                        
-                        # Concatenate audio arrays and ensure they are Float32
-                        audio_data = _concat_audio(audio_arrays)
-                        
-                        # Clip audio to prevent distortion
-                        audio_data = np.clip(audio_data, -1.0, 1.0)
-                        
-                        # Scale to int16 range and convert
-                        audio_int16 = (audio_data * 32767).astype(np.int16)
-                        
-                        # Create WAV container using io.BytesIO and wave module
-                        wav_buffer = io.BytesIO()
-                        with wave.open(wav_buffer, 'wb') as wav_file:
-                            wav_file.setnchannels(1)  # Mono
-                            wav_file.setsampwidth(2)  # 2 bytes (16-bit)
-                            wav_file.setframerate(sample_rate)
-                            wav_file.writeframes(audio_int16.tobytes())
-                        
-                        # Get WAV bytes and encode to base64
-                        wav_bytes = wav_buffer.getvalue()
-                        audio_b64 = base64.b64encode(wav_bytes).decode('utf-8')
-                        
-                        return {
-                            "success": True,
-                            "audio": audio_b64,
-                            "sample_rate": sample_rate,
-                            "format": "audio/wav"
-                        }
+                            return {"success": False, "error": "No audio generated"}
                     else:
-                        return {"success": False, "error": "No audio generated"}
+                        return {"success": False, "error": f"Reference audio not found for speaker: {speaker}"}
                 else:
-                    return {"success": False, "error": f"Reference audio not found for speaker: {speaker}"}
+                    return {"success": False, "error": f"Speaker '{speaker}' not found in custom voices"}
             else:
                 # Use default voice generation (not yet implemented in this provider)
                 # For now, fall back to voice cloning with a default reference audio
@@ -716,12 +720,13 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
                 )
                 
                 if audio_arrays and len(audio_arrays) > 0:
-                    # Save the reference audio for future use
+                    # Save the user's reference audio for future use
                     voice_clones_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'voice_clones')
                     os.makedirs(voice_clones_dir, exist_ok=True)
                     
                     ref_audio_path = os.path.join(voice_clones_dir, f"{voice_id}.wav")
-                    sf.write(ref_audio_path, audio_arrays[0], sample_rate)
+                    with open(ref_audio_path, "wb") as f:
+                        f.write(audio_data)
                     
                     return {
                         "success": True,
