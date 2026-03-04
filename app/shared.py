@@ -21,6 +21,9 @@ TTS_BASE_URL = "http://localhost:8020"
 TTS_SAMPLE_RATE = 24000
 STT_BASE_URL = "http://localhost:8000"
 
+# Secrets file path
+SECRETS_FILE = os.path.join(DATA_DIR, 'secrets.json')
+
 # Global Shared States
 sessions_data = {}
 custom_voices = {}
@@ -122,6 +125,21 @@ def migrate_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     
     return migrated
 
+def load_secrets():
+    """Load API keys and sensitive configuration from secrets file."""
+    if os.path.exists(SECRETS_FILE):
+        try:
+            with open(SECRETS_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading secrets: {e}")
+    return {"api_keys": {}}
+
+def save_secrets(secrets):
+    """Save API keys and sensitive configuration to secrets file."""
+    with open(SECRETS_FILE, 'w') as f:
+        json.dump(secrets, f, indent=2)
+
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -200,6 +218,7 @@ def get_provider(provider_name: Optional[str] = None) -> Optional[BaseProvider]:
         BaseProvider instance or None if not available
     """
     settings = load_settings()
+    secrets = load_secrets()
     provider = provider_name or settings.get('provider', 'lmstudio')
     
     # Build provider config from settings
@@ -207,9 +226,11 @@ def get_provider(provider_name: Optional[str] = None) -> Optional[BaseProvider]:
     try:
         if provider == 'openrouter':
             or_settings = settings.get('openrouter', {})
+            # Get API key from secrets file first, fallback to settings
+            api_key = secrets.get('api_keys', {}).get('openrouter', '') or or_settings.get('api_key', '')
             provider_config = ProviderConfig(
                 provider_type='openrouter',
-                api_key=or_settings.get('api_key', ''),
+                api_key=api_key,
                 base_url='https://openrouter.ai/api/v1',
                 model=or_settings.get('model', 'openai/gpt-4o-mini'),
                 extra_params={
@@ -219,9 +240,11 @@ def get_provider(provider_name: Optional[str] = None) -> Optional[BaseProvider]:
             )
         elif provider == 'cerebras':
             cb_settings = settings.get('cerebras', {})
+            # Get API key from secrets file first, fallback to settings
+            api_key = secrets.get('api_keys', {}).get('cerebras', '') or cb_settings.get('api_key', '')
             provider_config = ProviderConfig(
                 provider_type='cerebras',
-                api_key=cb_settings.get('api_key', ''),
+                api_key=api_key,
                 base_url='https://api.cerebras.ai',
                 model=cb_settings.get('model', 'llama-3.3-70b-versatile')
             )
