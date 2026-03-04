@@ -453,79 +453,24 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
                 self.device = "cpu"
                 self.dtype = "float32"  # Use float32 for CPU compatibility
             
-            # Load the model with CUDA graphs
-            # Handle PyTorch version compatibility issues
-            try:
-                self.model = FasterQwen3TTS.from_pretrained(
-                    model_name=self.model_name,
-                    device=self.device,
-                    dtype=self.dtype,
-                    max_seq_len=self.max_seq_len
-                )
-            except Exception as e:
-                if "meta tensor" in str(e).lower():
-                    logger.warning(f"Meta tensor issue detected, trying alternative loading: {e}")
-                    # Try to fix meta tensor issue by properly moving model to device
-                    try:
-                        # Load model first
-                        self.model = FasterQwen3TTS.from_pretrained(
-                            model_name=self.model_name,
-                            device="meta",  # Load to meta first
-                            dtype=self.dtype,
-                            max_seq_len=self.max_seq_len
-                        )
-                        
-                        # Then move to actual device using to_empty
-                        if hasattr(self.model, 'model'):
-                            self.model.model = self.model.model.to_empty(device=self.device)
-                        
-                        # Set the device for the model
-                        self.model.device = self.device
-                        
-                    except Exception as e2:
-                        logger.error(f"Failed to fix meta tensor issue: {e2}")
-                        raise e2
-                elif "CUDA graphs require CUDA device" in str(e):
-                    logger.warning(f"CUDA graphs not available, trying without CUDA graphs: {e}")
-                    # Try loading without CUDA graphs for CPU compatibility
-                    # Use a different approach - load with CPU first then move to CUDA if available
-                    try:
-                        # First try loading with CPU device
-                        cpu_device = "cpu" if self.device == "cuda" else self.device
-                        cpu_dtype = "float32" if self.device == "cuda" else self.dtype
-                        
-                        self.model = FasterQwen3TTS.from_pretrained(
-                            model_name=self.model_name,
-                            device=cpu_device,
-                            dtype=cpu_dtype,
-                            max_seq_len=self.max_seq_len
-                        )
-                        
-                        # If we wanted CUDA but loaded to CPU, try to move to CUDA
-                        if self.device == "cuda" and torch.cuda.is_available():
-                            logger.info("Moving model from CPU to CUDA")
-                            self.model = self.model.to("cuda")
-                            self.model.device = "cuda"
-                        
-                    except Exception as e3:
-                        logger.error(f"Failed to load without CUDA graphs: {e3}")
-                        # Final fallback: try loading with CPU and float32
-                        try:
-                            logger.warning("Final fallback: loading with CPU and float32")
-                            self.model = FasterQwen3TTS.from_pretrained(
-                                model_name=self.model_name,
-                                device="cpu",
-                                dtype="float32",
-                                max_seq_len=self.max_seq_len
-                            )
-                            self.device = "cpu"
-                            self.dtype = "float32"
-                            logger.info("Successfully loaded model on CPU with float32")
-                        except Exception as e4:
-                            logger.error(f"Final fallback failed: {e4}")
-                            raise e4
-                else:
-                    raise e
+            # Load the model with proper device handling
+            # Use the same approach as simple_tts_server_with_ui.py
+            self.model = FasterQwen3TTS.from_pretrained(
+                model_name=self.model_name,
+                device=self.device,
+                dtype=self.dtype,
+                max_seq_len=self.max_seq_len
+            )
+            
+            # Capture CUDA graphs for performance (only if CUDA is available)
+            if self.device == "cuda":
+                try:
+                    logger.info("Capturing CUDA graphs for performance optimization...")
+                    self.model._warmup(prefill_len=100)
+                    logger.info("CUDA graphs captured successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to capture CUDA graphs: {e}")
+                    # Continue without CUDA graphs - the model will still work
             
             return {"running": True, "message": f"FasterQwen3TTS model loaded successfully on {self.device}"}
             
