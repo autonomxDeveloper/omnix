@@ -156,7 +156,7 @@ def check_cuda():
 
 def main():
     """Main setup function."""
-    print("🚀 Setting up FasterQwen3TTS integration for Omnix...")
+    print("Setting up FasterQwen3TTS integration for Omnix...")
     print("=" * 60)
     
     # Check Python version
