@@ -18,6 +18,19 @@ def create_app():
     # Force Flask to look for templates and static files in the root directory
     app = Flask(__name__, template_folder='templates', static_folder='static')
     
+    # Pre-load TTS provider on app startup for immediate availability
+    with app.app_context():
+        try:
+            import app.shared as shared
+            # Force TTS provider initialization
+            tts_provider = shared.get_tts_provider()
+            if tts_provider:
+                print(f"[APP-STARTUP] TTS provider '{tts_provider.provider_name}' initialized successfully")
+            else:
+                print("[APP-STARTUP] No TTS provider configured or available")
+        except Exception as e:
+            print(f"[APP-STARTUP] Failed to initialize TTS provider: {e}")
+    
     # Register all Blueprints
     app.register_blueprint(core_bp)
     app.register_blueprint(chat_bp)
