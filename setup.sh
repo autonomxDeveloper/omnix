@@ -80,7 +80,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "[6/7] Installing Chatterbox TTS TURBO..."
+echo "[6/8] Installing Chatterbox TTS TURBO..."
 pip install chatterbox-tts==0.1.6
 if [ $? -ne 0 ]; then
     echo "WARNING: Failed to install Chatterbox TTS"
@@ -88,7 +88,15 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "[7/7] Installing NeMo ASR for Parakeet STT..."
+echo "[7/8] Installing FasterQwen3TTS..."
+pip install faster-qwen3-tts>=0.2.4
+if [ $? -ne 0 ]; then
+    echo "WARNING: Failed to install FasterQwen3TTS"
+    echo "You can try: pip install faster-qwen3-tts"
+fi
+
+echo ""
+echo "[8/8] Installing NeMo ASR for Parakeet STT..."
 pip install "nemo_toolkit[asr]"
 if [ $? -ne 0 ]; then
     echo "WARNING: Failed to install NeMo ASR"

@@ -75,11 +75,19 @@ if errorlevel 1 (
 )
 
 echo.
-echo [6/7] Installing Chatterbox TTS TURBO...
+echo [6/8] Installing Chatterbox TTS TURBO...
 pip install chatterbox-tts==0.1.6
 if errorlevel 1 (
     echo WARNING: Failed to install Chatterbox TTS
     echo You can try: pip install chatterbox-tts
+)
+
+echo.
+echo [7/8] Installing FasterQwen3TTS...
+pip install faster-qwen3-tts>=0.2.4
+if errorlevel 1 (
+    echo WARNING: Failed to install FasterQwen3TTS
+    echo You can try: pip install faster-qwen3-tts
 )
 
 echo.
