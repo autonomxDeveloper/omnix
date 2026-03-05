@@ -24,11 +24,35 @@ if [ -d "venv" ]; then
     echo "[Setup] Activating virtual environment..."
     source venv/bin/activate
 else
-    echo "WARNING: Virtual environment not found. You may need to run setup.sh first."
-    echo "Continuing without virtual environment..."
+    echo "WARNING: Virtual environment not found. Creating now..."
+    python3 -m venv venv
+    source venv/bin/activate
+    echo "[Setup] Installing faster-qwen3-tts in virtual environment..."
+    pip install faster-qwen3-tts>=0.2.4
+    echo "[Setup] Virtual environment created and faster-qwen3-tts installed."
 fi
 
-# Install dependencies
+# Check if PyTorch is already installed
+echo "[Setup] Checking PyTorch installation..."
+python -c "import torch; print('PyTorch already installed:', torch.__version__)" >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "[Setup] PyTorch not found, installing CUDA-enabled PyTorch for RTX 4090 compatibility..."
+    pip install torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
+else
+    echo "[Setup] PyTorch already installed, skipping download."
+fi
+
+# Check if faster-qwen3-tts is already installed
+echo "[Setup] Checking faster-qwen3-tts installation..."
+python -c "import faster_qwen3_tts; print('faster-qwen3-tts already installed:', faster_qwen3_tts.__version__)" >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "[Setup] faster-qwen3-tts not found, installing..."
+    pip install faster-qwen3-tts>=0.2.4
+else
+    echo "[Setup] faster-qwen3-tts already installed, skipping download."
+fi
+
+# Install other dependencies
 echo "[Setup] Installing Python dependencies..."
 pip install -q fastapi uvicorn websockets aiohttp pydub numpy soundfile 2>/dev/null
 
