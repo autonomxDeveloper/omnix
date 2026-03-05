@@ -2166,8 +2166,9 @@ body::before {
 
 /* Saved Voices List */
 .saved-voices-list {
-    max-height: 200px;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .saved-voice-item {
@@ -2178,7 +2179,6 @@ body::before {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
-    margin-bottom: 8px;
     transition: var(--transition);
 }
 
