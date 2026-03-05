@@ -29,6 +29,10 @@ if exist "venv" (
 echo [Setup] Installing Python dependencies...
 pip install -q fastapi uvicorn websockets aiohttp pydub numpy soundfile 2>nul
 
+:: Install CUDA-enabled PyTorch for optimal performance
+echo [Setup] Installing CUDA-enabled PyTorch for RTX 4090 compatibility...
+pip install torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124 2>nul
+
 :: Set PARAKEET_FORCE_CPU=true if you want STT to use CPU (e.g., if GPU memory is limited)
 :: Default is GPU mode - both LLM and STT share the GPU
 if not defined PARAKEET_FORCE_CPU (

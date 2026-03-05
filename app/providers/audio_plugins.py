@@ -455,12 +455,46 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
             
             # Load the model with proper device handling
             # Use the same approach as simple_tts_server_with_ui.py
-            self.model = FasterQwen3TTS.from_pretrained(
-                model_name=self.model_name,
-                device=self.device,
-                dtype=self.dtype,
-                max_seq_len=self.max_seq_len
-            )
+            try:
+                self.model = FasterQwen3TTS.from_pretrained(
+                    model_name=self.model_name,
+                    device=self.device,
+                    dtype=self.dtype,
+                    max_seq_len=self.max_seq_len
+                )
+            except Exception as e:
+                if "meta tensor" in str(e).lower():
+                    logger.warning(f"Meta tensor issue during model loading, trying to fix: {e}")
+                    # Try to fix meta tensor issue by using to_empty approach
+                    try:
+                        import torch
+                        # Load model to meta device first, then move to target device
+                        self.model = FasterQwen3TTS.from_pretrained(
+                            model_name=self.model_name,
+                            device="meta",  # Load to meta first
+                            dtype=self.dtype,
+                            max_seq_len=self.max_seq_len
+                        )
+                        
+                        # Move model to target device using to_empty approach
+                        if hasattr(self.model, 'model'):
+                            # Create empty model on target device using to_empty
+                            target_device = torch.device(self.device)
+                            empty_model = self.model.model.to_empty(device=target_device)
+                            
+                            # Copy state dict to empty model
+                            state_dict = self.model.model.state_dict()
+                            empty_model.load_state_dict(state_dict)
+                            
+                            # Replace the model
+                            self.model.model = empty_model
+                            
+                        logger.info("Meta tensor issue fixed, model loaded successfully")
+                    except Exception as e2:
+                        logger.error(f"Failed to fix meta tensor issue: {e2}")
+                        raise Exception(f"Meta tensor error: {str(e)}")
+                else:
+                    raise e
             
             # Capture CUDA graphs for performance (only if CUDA is available)
             if self.device == "cuda":
