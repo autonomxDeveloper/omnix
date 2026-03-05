@@ -62,6 +62,10 @@ def install_dependencies():
     
     for dep in deps:
         run_command(f"pip install {dep}", f"Installing {dep}")
+    
+    # Install CUDA-enabled PyTorch for RTX 4090 compatibility
+    print("Installing CUDA-enabled PyTorch for optimal performance...")
+    run_command("pip install torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124", "Installing CUDA-enabled PyTorch")
 
 def setup_reference_audio():
     """Set up reference audio files for voice cloning."""
