@@ -83,10 +83,10 @@ echo    Device: CUDA (GPU) or CPU fallback
 echo    Features: 6-10x speedup with CUDA graphs, voice cloning, multilingual
 
 :: Start FasterQwen3TTS server in background
-if exist "%~dp0start_faster_qwen3_tts.bat" (
-    start "FasterQwen3TTS" cmd /k "cd /d "%~dp0" && start_faster_qwen3_tts.bat"
+if exist "%~dp0models\tts\faster-qwen3-tts-streaming-server.py" (
+    start "FasterQwen3TTS" cmd /k "cd /d "%~dp0" && python models\tts\faster-qwen3-tts-streaming-server.py"
 ) else (
-    echo WARNING: start_faster_qwen3_tts.bat not found - TTS will not be available
+    echo WARNING: faster-qwen3-tts-streaming-server.py not found - TTS will not be available
     echo Run setup_faster_qwen3_tts.py to install the model.
 )
 
