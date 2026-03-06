@@ -1499,6 +1499,53 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
     }
 }
 
+// OpenAI-Compatible Provider Settings
+async function saveOpenAICompatibleSettings() {
+    const url = document.getElementById('openai-compatible-url').value.trim();
+    const apiKey = document.getElementById('openai-compatible-api-key').value.trim();
+    const model = document.getElementById('openai-compatible-model').value.trim();
+    
+    if (!url) {
+        alert('Please enter the API URL');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/providers/openai_compatible/settings', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ url, api_key: apiKey, model })
+        });
+        
+        if (response.ok) {
+            alert('Settings saved successfully');
+            loadOpenAICompatibleSettings();
+        } else {
+            const error = await response.json();
+            alert('Error saving settings: ' + error.error);
+        }
+    } catch (error) {
+        console.error('Error saving OpenAI-compatible settings:', error);
+        alert('Error saving settings');
+    }
+}
+
+async function loadOpenAICompatibleSettings() {
+    try {
+        const response = await fetch('/api/providers/openai_compatible/settings');
+        if (response.ok) {
+            const settings = await response.json();
+            document.getElementById('openai-compatible-url').value = settings.url || '';
+            document.getElementById('openai-compatible-api-key').value = settings.api_key || '';
+            document.getElementById('openai-compatible-model').value = settings.model || '';
+        }
+    } catch (error) {
+        console.error('Error loading OpenAI-compatible settings:', error);
+    }
+}
+
 // Initialize on DOM ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', setupConversationMode);

@@ -388,16 +388,52 @@
                 <button class="modal-close" id="closeSettings">&times;</button>
             </div>
             <div class="modal-body">
-    <!-- Provider Selection -->
+                <!-- Provider Selection -->
     <div class="setting-group">
         <label>Provider</label>
         <select id="providerSelect" class="model-select">
             <option value="cerebras">Cerebras (Fastest)</option>
             <option value="openrouter">OpenRouter (Cloud)</option>
+            <option value="openai_compatible">OpenAI Compatible (Custom)</option>
             <option value="lmstudio">LM Studio (Local)</option>
             <option value="llamacpp">llama.cpp (Local)</option>
         </select>
     </div>
+
+                <!-- OpenAI Compatible Settings -->
+                <div id="openaiCompatibleSettings" style="display: none;">
+                    <div class="setting-group">
+                        <label>API Base URL</label>
+                        <input type="text" id="openaiCompatibleUrl" class="system-prompt-input" placeholder="https://your-api.com/v1">
+                        <p style="font-size: 0.75rem; color: #666; margin: 4px 0 0 0;">Base URL for the OpenAI-compatible API (e.g., Azure OpenAI, custom deployment)</p>
+                    </div>
+                    <div class="setting-group">
+                        <label>API Key</label>
+                        <input type="password" id="openaiCompatibleApiKey" class="system-prompt-input" placeholder="Your API key">
+                    </div>
+                    <div class="setting-group">
+                        <label>Model ID</label>
+                        <input type="text" id="openaiCompatibleModel" class="system-prompt-input" placeholder="gpt-4, gpt-3.5-turbo, your-custom-model">
+                    </div>
+                    <div class="setting-group">
+                        <label>Custom Headers</label>
+                        <div id="customHeadersContainer" class="custom-headers-container">
+                            <!-- Custom headers will be added here dynamically -->
+                        </div>
+                        <button id="addCustomHeaderBtn" class="btn-secondary" style="margin-top: 8px; width: 100%;">+ Add Header</button>
+                    </div>
+                    <div class="setting-group">
+                        <label>Thinking Budget (0 = disabled)</label>
+                        <input type="number" id="openaiCompatibleThinking" class="system-prompt-input" value="0">
+                    </div>
+                    <div class="setting-group">
+                        <label>Timeout (seconds)</label>
+                        <input type="number" id="openaiCompatibleTimeout" class="system-prompt-input" value="300">
+                    </div>
+                    <p style="margin-top: 12px; font-size: 0.8rem; color: #666;">
+                        💡 Supports Azure OpenAI, custom deployments, and any OpenAI-compatible API
+                    </p>
+                </div>
 
                 <!-- LM Studio Settings -->
                 <div id="lmstudioSettings">
