@@ -14,7 +14,7 @@
   },
   "cerebras": {
     "api_key": "csk-ekcv4wyvntn43c56639cw2p8yreyj588wt59wmykfkkrvkeh",
-    "model": "gpt-oss-120b"
+    "model": ""
   },
   "llamacpp": {
     "base_url": "http://localhost:8080",
