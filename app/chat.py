@@ -356,8 +356,13 @@ def chat_streaming_conversation():
         # Track streaming state per sentence
         current_sentence_idx = -1
         
+        import time as time_module
+        tts_start_time = None
+        chunk_start_time = None
+        
         def tts_worker():
             """Background worker for TTS processing - streams chunks immediately."""
+            nonlocal tts_start_time, chunk_start_time
             while True:
                 try:
                     item = tts_queue.get(timeout=1)
@@ -365,6 +370,8 @@ def chat_streaming_conversation():
                         break
                     
                     sentence, sentence_idx = item
+                    tts_start_time = time_module.time()
+                    print(f"[TTS DEBUG] Starting TTS for sentence {sentence_idx}: '{sentence[:30]}...'")
                     
                     # Generate TTS audio - stream EACH chunk immediately like reference
                     try:
@@ -377,9 +384,21 @@ def chat_streaming_conversation():
                                 text=sentence,
                                 speaker=final_speaker,
                                 language="English",
-                                chunk_size=8  # Small chunk for faster response
+                                chunk_size=2,  # Smallest chunk for fastest first audio
+                                non_streaming_mode=False,
+                                temperature=0.6,
+                                top_k=20,
+                                top_p=0.85,
+                                repetition_penalty=1.0,
+                                append_silence=False,
+                                max_new_tokens=180
                             ):
                                 if audio_chunk is not None and len(audio_chunk) > 0:
+                                    chunk_gen_time = (time_module.time() - tts_start_time) * 1000
+                                    print(f"[TTS DEBUG] Sentence {sentence_idx} chunk generated in {chunk_gen_time:.0f}ms")
+                                    if chunk_start_time is None:
+                                        chunk_start_time = time_module.time()
+                                    
                                     sample_rate = sr
                                     
                                     # Convert float32 to int16 PCM
@@ -396,6 +415,7 @@ def chat_streaming_conversation():
                                             'index': sentence_idx,
                                             'first_chunk': first_chunk
                                         })
+                                        print(f"[TTS DEBUG] Added audio chunk to queue: sentence {sentence_idx}, first={first_chunk}, size={len(pcm_int16)} bytes")
                                     first_chunk = False
                         else:
                             # Fallback to batch TTS
@@ -442,17 +462,25 @@ def chat_streaming_conversation():
                     # Accumulate tokens until we have a complete sentence
                     sentence_buffer += token
                     
-                    # Check if we have a complete sentence
+                    # Check if we have a complete sentence OR enough text for TTS
                     if any(char in sentence_buffer for char in '.!?。！？'):
                         # Clean up the sentence
                         sentence = sentence_buffer.strip()
-                        if len(sentence) >= 10:  # Minimum sentence length
+                        if len(sentence) >= 5:  # Minimum sentence length
                             # Send to TTS worker with sentence index
+                            print(f"[CHAT DEBUG] Queuing sentence for TTS: '{sentence[:30]}...' at idx {sentence_idx}")
                             tts_queue.put((sentence, sentence_idx))
                             sentence_idx += 1
                         
                         # Yield the full accumulated text for display (not just current token)
                         yield f"data: {json.dumps({'type': 'content', 'content': sentence_buffer})}\n\n"
+                        sentence_buffer = ""
+                    elif len(sentence_buffer) >= 8:
+                        # No sentence end yet but have enough text - start TTS anyway
+                        sentence = sentence_buffer.strip()
+                        print(f"[CHAT DEBUG] Queuing partial for TTS (no sentence end): '{sentence[:30]}...' at idx {sentence_idx}")
+                        tts_queue.put((sentence, sentence_idx))
+                        sentence_idx += 1
                         sentence_buffer = ""
                     else:
                         # No sentence complete yet, yield current token
@@ -466,6 +494,7 @@ def chat_streaming_conversation():
                     while len(audio_chunks_list) > last_audio_idx + 1:
                         last_audio_idx += 1
                         audio_data = audio_chunks_list[last_audio_idx]
+                        print(f"[CHAT DEBUG] Yielding audio chunk to client: sentence {audio_data.get('index')}, first={audio_data.get('first_chunk')}")
                         yield f"data: {json.dumps(audio_data)}\n\n"
             
             # Process any remaining sentence buffer
@@ -544,6 +573,26 @@ def conversation_greeting():
             result = tts_provider.generate_audio(text=greeting_text, speaker=final_speaker, language="en")
         else:
             return jsonify({"success": False, "error": "Provider missing method"}), 500
+        
+        try:
+            if hasattr(tts_provider, 'generate_audio_stream'):
+                import threading
+                def warmup_streaming():
+                    try:
+                        print("[WARMUP] Starting streaming mode warmup...")
+                        for _ in tts_provider.generate_audio_stream(
+                            text="a", speaker=final_speaker, language="English",
+                            chunk_size=2, non_streaming_mode=False,
+                            temperature=0.6, top_k=20, append_silence=False,
+                            max_new_tokens=60
+                        ):
+                            break
+                        print("[WARMUP] Streaming mode warmed up!")
+                    except Exception as e:
+                        print(f"[WARMUP] Error: {e}")
+                threading.Thread(target=warmup_streaming, daemon=True).start()
+        except:
+            pass
             
         if result and result.get('success'):
             return jsonify({
