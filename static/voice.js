@@ -600,7 +600,12 @@ async function speakTextWithInterruption(text, speaker = 'en') {
         const data = await response.json();
         
         if (data.success && data.audio) {
-            await playTTS(data.audio);
+            // Use TTSQueue for gapless Web Audio API playback
+            if (window.TTSQueue && window.TTSQueue.enqueueAudio) {
+                window.TTSQueue.enqueueAudio(data.audio, data.sample_rate || 24000);
+            } else {
+                await playTTS(data.audio);
+            }
         }
     } catch (error) {
         console.error('TTS Error:', error);
@@ -743,7 +748,14 @@ async function playConversationGreeting() {
         if (data.success && data.audio) {
             console.log('[GREETING] Playing greeting via Flask:', data.text);
             addConversationMessageAI(data.text);
-            await playTTS(data.audio, data.sample_rate);
+            // Use TTSQueue for gapless Web Audio API playback
+            if (window.TTSQueue && window.TTSQueue.enqueueAudio) {
+                console.log('[GREETING] Using TTSQueue for playback');
+                window.TTSQueue.enqueueAudio(data.audio, data.sample_rate || 24000);
+            } else {
+                console.log('[GREETING] Using fallback playTTS');
+                await playTTS(data.audio, data.sample_rate);
+            }
             showCircleIndicator('idle');
             updateConversationStatus('Ready to chat');
             return true;
@@ -1261,7 +1273,13 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
         
         const { audioBase64, sampleRate } = window.globalAudioPlayQueue.shift();
         try {
-            await playTTS(audioBase64, sampleRate);
+            // Use TTSQueue for gapless Web Audio API playback
+            if (window.TTSQueue && window.TTSQueue.enqueueAudio) {
+                window.TTSQueue.enqueueAudio(audioBase64, sampleRate);
+            } else {
+                // Fallback to old method
+                await playTTS(audioBase64, sampleRate);
+            }
         } catch (e) {
             console.error('Audio playback error:', e);
         }
@@ -1287,16 +1305,14 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
         // Don't queue more audio if stop requested
         if (stopAudioRequested) return;
         
-        window.globalAudioPlayQueue.push({ audioBase64, sampleRate });
-        
-        if (conversationMode) {
-            updateConversationStatus('🔊 Speaking...', 'speaking');
-            showCircleIndicator('speaking');
+        // Use TTS Queue's Web Audio API for gapless playback
+        if (window.TTSQueue && window.TTSQueue.enqueueAudio) {
+            window.TTSQueue.enqueueAudio(audioBase64, sampleRate);
+        } else {
+            // Fallback to old method
+            window.globalAudioPlayQueue.push({ audioBase64, sampleRate });
+            playNextAudio();
         }
-        
-        // Always try to start playback - if already playing, playNextAudio will return early
-        // but when current audio finishes, it will check queue and play next
-        playNextAudio();
     }
     
     try {

@@ -3,80 +3,151 @@
  * Manages TTS audio queuing and sequential playback
  */
 
-// Global audio playback control for WAV mode (REST API)
+console.log('[TTS-QUEUE] Starting to load...');
+
+try {
+
+// Global audio playback control
 let globalAudioPlayQueue = [];
-let globalAudioPlaying = false;
 
 // Streaming TTS WebSocket connection
 let ttsWebSocket = null;
 
 // ============================================================
-// GLOBAL AUDIO QUEUE (WAV Mode - REST API)
+// WEB AUDIO API STREAMING (Gapless playback)
 // ============================================================
 
+let streamingAudioContext = null;
+let currentSource = null;
+let streamingSampleRate = 24000;
+let isPlaying = false;
+let pendingChunks = []; // Chunks waiting to be played
+
 /**
- * Enqueue audio chunk for sequential playback
- * @param {string} audioBase64 - Base64 encoded complete WAV file
- * @param {number} sampleRate - Sample rate of the audio
+ * Initialize Web Audio context for streaming playback
  */
-function enqueueAudio(audioBase64, sampleRate) {
-    // Don't queue more audio if stop requested
-    if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
-        return;
+function initStreamingAudio() {
+    if (!streamingAudioContext) {
+        streamingAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: streamingSampleRate
+        });
     }
-    
-    globalAudioPlayQueue.push({ audioBase64, sampleRate });
-    
-    if (conversationMode) {
-        updateConversationStatus('🔊 Speaking...', 'speaking');
-        showCircleIndicator('speaking');
+    if (streamingAudioContext.state === 'suspended') {
+        streamingAudioContext.resume();
     }
-    
-    // Always try to start playback
-    playNextAudio();
 }
 
 /**
- * Play next audio chunk in the global queue
+ * Convert base64 PCM to float32 samples
  */
-async function playNextAudio() {
-    // Check if stop was requested
-    if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
-        globalAudioPlaying = false;
-        globalAudioPlayQueue = [];
-        return;
+function base64ToFloat32(b64) {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
     }
-    
-    // If already playing or nothing in queue, just return
-    if (globalAudioPlaying || globalAudioPlayQueue.length === 0) return;
-    
-    globalAudioPlaying = true;
-    const audioPlayStartTime = performance.now();
-    
-    const { audioBase64, sampleRate } = globalAudioPlayQueue.shift();
-    try {
-        // Use the AudioPlayer module's playTTS function
-        if (typeof window.AudioPlayer !== 'undefined' && window.AudioPlayer.playTTS) {
-            await window.AudioPlayer.playTTS(audioBase64, sampleRate);
-        } else {
-            console.error('[TTS-QUEUE] AudioPlayer.playTTS not available');
+    const int16 = new Int16Array(bytes.buffer);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 32768.0;
+    }
+    return float32;
+}
+
+/**
+ * Play next pending chunk in the queue
+ */
+function playNextPendingChunk() {
+    // Stop requested
+    if (typeof window.stopAudioRequested !== 'undefined' && window.stopAudioRequested) {
+        pendingChunks = [];
+        isPlaying = false;
+        if (typeof window.conversationMode !== 'undefined' && window.conversationMode) {
+            if (typeof updateConversationStatus === 'function') updateConversationStatus('Ready to chat');
+            if (typeof showCircleIndicator === 'function') showCircleIndicator('idle');
         }
-    } catch (e) {
-        console.error('[TTS-QUEUE] Audio playback error:', e);
-    }
-    
-    // Check stop flag again after playback
-    if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
-        globalAudioPlaying = false;
-        globalAudioPlayQueue = [];
         return;
     }
     
-    globalAudioPlaying = false;
+    if (pendingChunks.length === 0) {
+        isPlaying = false;
+        if (typeof window.conversationMode !== 'undefined' && window.conversationMode) {
+            if (typeof updateConversationStatus === 'function') updateConversationStatus('Ready to chat');
+            if (typeof showCircleIndicator === 'function') showCircleIndicator('idle');
+        }
+        return;
+    }
     
-    // Immediately check for more in queue
-    if (globalAudioPlayQueue.length > 0 && !stopAudioRequested) {
-        setTimeout(() => playNextAudio(), 0);
+    const float32Chunk = pendingChunks.shift();
+    initStreamingAudio();
+    
+    // Create AudioBuffer for this chunk
+    const audioBuffer = streamingAudioContext.createBuffer(
+        1, 
+        float32Chunk.length, 
+        streamingSampleRate
+    );
+    audioBuffer.copyToChannel(float32Chunk, 0);
+    
+    // Create and start source
+    currentSource = streamingAudioContext.createBufferSource();
+    currentSource.buffer = audioBuffer;
+    currentSource.connect(streamingAudioContext.destination);
+    
+    currentSource.onended = () => {
+        // Play next chunk immediately
+        playNextPendingChunk();
+    };
+    
+    currentSource.start();
+}
+
+/**
+ * Stop streaming audio playback
+ */
+function stopStreamingAudio() {
+    if (currentSource) {
+        try {
+            currentSource.stop();
+        } catch (e) {}
+        currentSource = null;
+    }
+    isPlaying = false;
+    pendingChunks = [];
+    globalAudioPlayQueue = [];
+}
+
+// Export for external use
+window.stopStreamingAudio = stopStreamingAudio;
+
+/**
+ * Enqueue audio chunk for streaming playback (gapless)
+ * @param {string} audioBase64 - Base64 encoded PCM data
+ * @param {number} sampleRate - Sample rate of the audio
+ */
+function enqueueAudio(audioBase64, sampleRate) {
+    // Stop requested - don't play
+    if (typeof window.stopAudioRequested !== 'undefined' && window.stopAudioRequested) {
+        return;
+    }
+    
+    streamingSampleRate = sampleRate || 24000;
+    
+    // Convert base64 PCM to float32
+    const float32Chunk = base64ToFloat32(audioBase64);
+    
+    if (typeof window.conversationMode !== 'undefined' && window.conversationMode) {
+        if (typeof updateConversationStatus === 'function') updateConversationStatus('🔊 Speaking...', 'speaking');
+        if (typeof showCircleIndicator === 'function') showCircleIndicator('speaking');
+    }
+    
+    // Add to pending chunks
+    pendingChunks.push(float32Chunk);
+    
+    // Start playback if not already playing
+    if (!isPlaying) {
+        isPlaying = true;
+        playNextPendingChunk();
     }
 }
 
@@ -195,8 +266,14 @@ function clearAudioQueue() {
 // Export for use in other modules
 window.TTSQueue = {
     enqueueAudio,
-    playNextAudio,
+    playNextAudio: () => {}, // Legacy stub
     clearAudioQueue,
     connectTTSWebSocket,
     speakTextViaWebSocket
 };
+
+console.log('[TTS-QUEUE] Loaded and ready');
+
+} catch (e) {
+    console.error('[TTS-QUEUE] Error loading:', e);
+}
