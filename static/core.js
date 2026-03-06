@@ -649,12 +649,21 @@ function setupEventListeners() {
     
     saveSettings.addEventListener('click', saveSettingsHandler);
     
-    providerSelect.addEventListener('change', () => {
+    providerSelect.addEventListener('change', async () => {
         const provider = providerSelect.value;
         lmstudioSettings.style.display = provider === 'lmstudio' ? 'block' : 'none';
         openrouterSettings.style.display = provider === 'openrouter' ? 'block' : 'none';
         cerebrasSettings.style.display = provider === 'cerebras' ? 'block' : 'none';
         llamacppSettings.style.display = provider === 'llamacpp' ? 'block' : 'none';
+        
+        // Load saved API keys and settings when switching providers
+        if (provider === 'cerebras') {
+            // Load Cerebras settings to show saved API key
+            await loadCerebrasSettings();
+        } else if (provider === 'openrouter') {
+            // Load OpenRouter settings to show saved API key
+            await loadOpenRouterSettings();
+        }
         
         // Load LLM models for llama.cpp when provider is switched to llama.cpp
         if (provider === 'llamacpp') {
@@ -1027,6 +1036,88 @@ async function loadCerebrasModels() {
         loadCerebrasModelsBtn.textContent = 'Load Models';
     } finally {
         loadCerebrasModelsBtn.disabled = false;
+    }
+}
+
+// Load Cerebras settings to show saved API key
+async function loadCerebrasSettings() {
+    try {
+        const response = await fetch('/api/settings');
+        const data = await response.json();
+        
+        if (data.success && data.settings && data.settings.cerebras) {
+            const settings = data.settings.cerebras;
+            
+            if (cerebrasApiKeyInput) {
+                const storedApiKey = settings.api_key;
+                if (storedApiKey && storedApiKey.length > 4) {
+                    // Show masked key in the input field (first 8 chars + ...)
+                    const maskedKey = storedApiKey.substring(0, 8) + '...' + storedApiKey.slice(-4);
+                    cerebrasApiKeyInput.value = maskedKey;
+                } else if (storedApiKey) {
+                    cerebrasApiKeyInput.placeholder = 'API key saved';
+                } else {
+                    cerebrasApiKeyInput.placeholder = 'Get from cloud.cerebras.com';
+                }
+            }
+            
+            if (cerebrasModelInput) {
+                const savedModel = settings.model || 'llama-3.3-70b-versatile';
+                let modelExists = false;
+                for (let i = 0; i < cerebrasModelInput.options.length; i++) {
+                    if (cerebrasModelInput.options[i].value === savedModel) {
+                        modelExists = true;
+                        break;
+                    }
+                }
+                if (!modelExists && savedModel) {
+                    const option = document.createElement('option');
+                    option.value = savedModel;
+                    option.textContent = savedModel;
+                    cerebrasModelInput.appendChild(option);
+                }
+                cerebrasModelInput.value = savedModel;
+            }
+        }
+    } catch (error) {
+        console.error('Error loading Cerebras settings:', error);
+    }
+}
+
+// Load OpenRouter settings to show saved API key
+async function loadOpenRouterSettings() {
+    try {
+        const response = await fetch('/api/settings');
+        const data = await response.json();
+        
+        if (data.success && data.settings && data.settings.openrouter) {
+            const settings = data.settings.openrouter;
+            
+            if (openrouterApiKeyInput) {
+                const storedApiKey = settings.api_key;
+                if (storedApiKey && storedApiKey.length > 4) {
+                    openrouterApiKeyInput.placeholder = '••••' + storedApiKey.slice(-4);
+                } else if (storedApiKey) {
+                    openrouterApiKeyInput.placeholder = 'API key saved';
+                } else {
+                    openrouterApiKeyInput.placeholder = 'sk-or-...';
+                }
+            }
+            
+            if (openrouterModelInput) {
+                openrouterModelInput.value = settings.model || 'openai/gpt-4o-mini';
+            }
+            
+            if (openrouterContextInput) {
+                openrouterContextInput.value = settings.context_size || 128000;
+            }
+            
+            if (openrouterThinkingInput) {
+                openrouterThinkingInput.value = settings.thinking_budget || 0;
+            }
+        }
+    } catch (error) {
+        console.error('Error loading OpenRouter settings:', error);
     }
 }
 
