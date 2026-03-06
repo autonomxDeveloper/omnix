@@ -199,6 +199,8 @@
     --radius-md: 12px;
     --radius-sm: 8px;
     --transition: all 0.2s ease;
+    --input-bg: #1a1a24;
+    --danger-color: #ef4444;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -2757,6 +2759,8 @@ body::before {
     --text-secondary: #4a4a5e;
     --text-muted: #8a8a9e;
     --border-color: #e0e0e8;
+    --input-bg: #f0f0f5;
+    --danger-color: #ef4444;
 }
 
 .theme-toggle-btn {
@@ -3285,6 +3289,49 @@ pre:hover .code-copy-btn {
     gap: 8px;
     justify-content: flex-end;
     margin-top: 8px;
+}
+
+/* Custom Headers Container */
+.custom-headers-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.custom-header-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.custom-header-input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.custom-header-input::placeholder {
+    color: var(--text-muted);
+}
+
+.custom-header-remove-btn {
+    background: var(--danger-color);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 8px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: background 0.2s;
+}
+
+.custom-header-remove-btn:hover {
+    background: #ef4444;
 }
 
 /* Voice Personalities Section */

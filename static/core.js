@@ -112,6 +112,15 @@ const cerebrasApiKeyInput = document.getElementById('cerebrasApiKey');
 const cerebrasModelInput = document.getElementById('cerebrasModel');
 const cerebrasSettings = document.getElementById('cerebrasSettings');
 const loadCerebrasModelsBtn = document.getElementById('loadCerebrasModels');
+const openaiCompatibleSettings = document.getElementById('openaiCompatibleSettings');
+const openaiCompatibleUrl = document.getElementById('openaiCompatibleUrl');
+const openaiCompatibleApiKey = document.getElementById('openaiCompatibleApiKey');
+const openaiCompatibleModel = document.getElementById('openaiCompatibleModel');
+const openaiCompatibleThinking = document.getElementById('openaiCompatibleThinking');
+const openaiCompatibleTimeout = document.getElementById('openaiCompatibleTimeout');
+const loadOpenAiCompatibleModelsBtn = document.getElementById('loadOpenAiCompatibleModels');
+const customHeadersContainer = document.getElementById('customHeadersContainer');
+const addCustomHeaderBtn = document.getElementById('addCustomHeaderBtn');
 const llamacppSettings = document.getElementById('llamacppSettings');
 const llamacppUrlInput = document.getElementById('llamacppUrl');
 const llamacppModelInput = document.getElementById('llamacppModel');
@@ -655,6 +664,7 @@ function setupEventListeners() {
         openrouterSettings.style.display = provider === 'openrouter' ? 'block' : 'none';
         cerebrasSettings.style.display = provider === 'cerebras' ? 'block' : 'none';
         llamacppSettings.style.display = provider === 'llamacpp' ? 'block' : 'none';
+        openaiCompatibleSettings.style.display = provider === 'openai_compatible' ? 'block' : 'none';
         
         // Load saved API keys and settings when switching providers
         if (provider === 'cerebras') {
@@ -677,12 +687,47 @@ function setupEventListeners() {
         loadCerebrasModelsBtn.addEventListener('click', loadCerebrasModels);
     }
     
+    // OpenAI Compatible models button
+    if (loadOpenAiCompatibleModelsBtn) {
+        loadOpenAiCompatibleModelsBtn.addEventListener('click', loadOpenAiCompatibleModels);
+    }
+    
+    // Custom headers functionality
+    if (addCustomHeaderBtn) {
+        addCustomHeaderBtn.addEventListener('click', addCustomHeader);
+    }
+    
     // Save speaker selection when changed and trigger immediate voice test
     if (ttsSpeaker) {
         ttsSpeaker.addEventListener('change', async () => {
             localStorage.setItem('selectedSpeaker', ttsSpeaker.value);
             console.log('[CORE] Saved speaker selection:', ttsSpeaker.value);
         });
+    }
+}
+
+// Add custom header field
+function addCustomHeader() {
+    if (!customHeadersContainer) return;
+    
+    const headerDiv = document.createElement('div');
+    headerDiv.className = 'custom-header-field';
+    headerDiv.innerHTML = `
+        <input type="text" placeholder="Header name" class="custom-header-name" />
+        <input type="text" placeholder="Header value" class="custom-header-value" />
+        <button type="button" class="remove-header-btn" onclick="removeCustomHeader(this)">Remove</button>
+    `;
+    
+    customHeadersContainer.appendChild(headerDiv);
+}
+
+// Remove custom header field
+function removeCustomHeader(button) {
+    if (!customHeadersContainer) return;
+    
+    const headerDiv = button.closest('.custom-header-field');
+    if (headerDiv) {
+        customHeadersContainer.removeChild(headerDiv);
     }
 }
 
@@ -972,6 +1017,64 @@ async function loadOpenRouterModels() {
     } finally {
         loadOpenRouterModelsBtn.textContent = 'Load Models';
         loadOpenRouterModelsBtn.disabled = false;
+    }
+}
+
+// Load OpenAI Compatible models
+async function loadOpenAiCompatibleModels() {
+    const apiKey = openaiCompatibleApiKey.value.trim();
+    const baseUrl = openaiCompatibleUrl.value.trim();
+    
+    if (!apiKey) {
+        alert('Please enter your OpenAI-compatible API key first');
+        return;
+    }
+    
+    if (!baseUrl) {
+        alert('Please enter your OpenAI-compatible API base URL first');
+        return;
+    }
+    
+    loadOpenAiCompatibleModelsBtn.textContent = 'Loading...';
+    loadOpenAiCompatibleModelsBtn.disabled = true;
+    
+    const settings = {
+        provider: 'openai_compatible',
+        openai_compatible: {
+            api_key: apiKey,
+            base_url: baseUrl,
+            model: openaiCompatibleModel.value
+        }
+    };
+    
+    try {
+        await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(settings)
+        });
+        
+        const response = await fetch('/api/openai_compatible/models');
+        const data = await response.json();
+        
+        if (data.success && data.models) {
+            openaiCompatibleModel.innerHTML = '';
+            data.models.forEach(m => {
+                const option = document.createElement('option');
+                option.value = m.id || m;
+                option.textContent = m.name || m.id || m;
+                openaiCompatibleModel.appendChild(option);
+            });
+            loadOpenAiCompatibleModelsBtn.textContent = 'Models Loaded!';
+        } else {
+            alert('Error loading models: ' + (data.error || 'Unknown error'));
+            loadOpenAiCompatibleModelsBtn.textContent = 'Load Models';
+        }
+    } catch (error) {
+        alert('Error loading models: ' + error.message);
+        loadOpenAiCompatibleModelsBtn.textContent = 'Load Models';
+    } finally {
+        loadOpenAiCompatibleModelsBtn.disabled = false;
     }
 }
 
@@ -2470,5 +2573,49 @@ if (settingsModal) {
             loadLlmModelsForLlamaCpp();
         }
     });
+}
+
+// Save system prompt
+async function saveSystemPromptHandler() {
+    const systemPrompt = systemPromptInput ? systemPromptInput.value : '';
+    const globalSystemPrompt = globalSystemPromptInput ? globalSystemPromptInput.value : '';
+    
+    try {
+        const response = await fetch('/api/system-prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                system_prompt: systemPrompt,
+                global_system_prompt: globalSystemPrompt
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+            console.error('Error saving system prompt:', data.error);
+        }
+    } catch (error) {
+        console.error('Error saving system prompt:', error);
+    }
+}
+
+// Load system prompt
+async function loadSystemPrompt() {
+    try {
+        const response = await fetch('/api/system-prompt');
+        const data = await response.json();
+        
+        if (data.success) {
+            if (systemPromptInput && data.system_prompt) {
+                systemPromptInput.value = data.system_prompt;
+            }
+            if (globalSystemPromptInput && data.global_system_prompt) {
+                globalSystemPromptInput.value = data.global_system_prompt;
+            }
+        }
+    } catch (error) {
+        console.error('Error loading system prompt:', error);
+    }
 }
 
