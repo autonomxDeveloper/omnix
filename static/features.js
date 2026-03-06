@@ -210,7 +210,6 @@ function applyPreset(presetKey) {
     if (!presetKey || !SYSTEM_PROMPT_PRESETS[presetKey]) return;
     
     const preset = SYSTEM_PROMPT_PRESETS[presetKey];
-    const systemPromptInput = document.getElementById('systemPrompt');
     const globalPromptInput = document.getElementById('globalSystemPrompt');
     
     if (systemPromptInput) {

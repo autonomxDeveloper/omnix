@@ -14,11 +14,11 @@
   },
   "cerebras": {
     "api_key": "csk-ekcv4wyvntn43c56639cw2p8yreyj588wt59wmykfkkrvkeh",
-    "model": ""
+    "model": "gpt-oss-120b"
   },
   "llamacpp": {
     "base_url": "http://localhost:8080",
-    "model": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+    "model": "",
     "download_location": "llm",
     "auto_start": true
   },

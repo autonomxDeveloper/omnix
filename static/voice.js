@@ -124,11 +124,13 @@ function exitConversationMode() {
     }
     
     // Clear global audio queue
-    globalAudioPlayQueue = [];
-    globalAudioPlaying = false;
+    window.globalAudioPlayQueue = [];
+    window.globalAudioPlaying = false;
     
     // Clear TTS queue
-    clearTTSQueue();
+    if (typeof window.AudioPlayer?.clearTTSQueue === 'function') {
+        window.AudioPlayer.clearTTSQueue();
+    }
     
     // Hide the circle indicator and tap to talk
     hideCircleIndicator();
@@ -1136,10 +1138,10 @@ async function sendConversationMessageRESTFromMic(message, totalStartTime, sttDu
 // TTS audio queue - uses shared queue from chat.js
 // Variables ttsAudioQueue, ttsIsPlayingQueue defined in chat.js
 
-// Global audio playback control
-let globalAudioPlayQueue = [];
-let globalAudioPlaying = false;
-let stopAudioRequested = false;
+// Global audio playback control - make these global variables
+window.globalAudioPlayQueue = [];
+window.globalAudioPlaying = false;
+window.stopAudioRequested = false;
 
 // Latency tracking for first audio optimization
 let latencyTracking = {
@@ -1210,23 +1212,23 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
     let lastContentReceivedTime = null;
     
     // Use global audio playback queue
-    globalAudioPlayQueue = [];
-    globalAudioPlaying = false;
+    window.globalAudioPlayQueue = [];
+    window.globalAudioPlaying = false;
     let totalAudioPlayTime = 0;
     let audioPlayStartTime = 0;
     
     async function playNextAudio() {
         // Check if stop was requested
         if (stopAudioRequested) {
-            globalAudioPlaying = false;
-            globalAudioPlayQueue = [];
+            window.globalAudioPlaying = false;
+            window.globalAudioPlayQueue = [];
             return;
         }
         
         // If already playing or nothing in queue, just return
-        if (globalAudioPlaying || globalAudioPlayQueue.length === 0) return;
+        if (window.globalAudioPlaying || window.globalAudioPlayQueue.length === 0) return;
         
-        globalAudioPlaying = true;
+        window.globalAudioPlaying = true;
         audioPlayStartTime = performance.now();
         
         // Track FIRST audio playback start time for latency logging
@@ -1257,7 +1259,7 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
             }
         }
         
-        const { audioBase64, sampleRate } = globalAudioPlayQueue.shift();
+        const { audioBase64, sampleRate } = window.globalAudioPlayQueue.shift();
         try {
             await playTTS(audioBase64, sampleRate);
         } catch (e) {
@@ -1266,16 +1268,16 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
         
         // Check stop flag again after playback
         if (stopAudioRequested) {
-            globalAudioPlaying = false;
-            globalAudioPlayQueue = [];
+            window.globalAudioPlaying = false;
+            window.globalAudioPlayQueue = [];
             return;
         }
         
         totalAudioPlayTime += (performance.now() - audioPlayStartTime);
-        globalAudioPlaying = false;
+        window.globalAudioPlaying = false;
         
         // Immediately check for more in queue - recursive call without delay
-        if (globalAudioPlayQueue.length > 0 && !stopAudioRequested) {
+        if (window.globalAudioPlayQueue.length > 0 && !stopAudioRequested) {
             // Use setTimeout to allow event loop to process
             setTimeout(() => playNextAudio(), 0);
         }
@@ -1285,7 +1287,7 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
         // Don't queue more audio if stop requested
         if (stopAudioRequested) return;
         
-        globalAudioPlayQueue.push({ audioBase64, sampleRate });
+        window.globalAudioPlayQueue.push({ audioBase64, sampleRate });
         
         if (conversationMode) {
             updateConversationStatus('🔊 Speaking...', 'speaking');
@@ -1447,7 +1449,7 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
         }
         
         // Wait for all queued audio to finish playing (or stop requested)
-        while ((globalAudioPlaying || globalAudioPlayQueue.length > 0) && !stopAudioRequested) {
+        while ((window.globalAudioPlaying || window.globalAudioPlayQueue.length > 0) && !stopAudioRequested) {
             await new Promise(r => setTimeout(r, 100));
         }
         

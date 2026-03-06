@@ -1,6 +1,8 @@
 import json
 import re
+import base64
 from datetime import datetime
+import numpy as np
 from flask import Blueprint, request, jsonify, Response
 import app.shared as shared
 from app.providers import ChatMessage, ChatResponse
@@ -344,9 +346,13 @@ def chat_streaming_conversation():
         ai_message = ""
         thinking = ""
         
-        # Async queue for TTS processing
+        # Queue for TTS processing
         tts_queue = queue.Queue()
-        audio_queue = queue.Queue()
+        
+        # Use a lock for thread-safe audio queue access
+        import threading
+        audio_queue_lock = threading.Lock()
+        audio_chunks_list = []
         
         def tts_worker():
             """Background worker for TTS processing."""
@@ -361,25 +367,30 @@ def chat_streaming_conversation():
                         if hasattr(tts_provider, 'generate_audio_stream'):
                             # Use streaming TTS if available
                             audio_chunks = []
-                            for audio_chunk in tts_provider.generate_audio_stream(
+                            sample_rate = 24000
+                            for audio_chunk, sr, timing in tts_provider.generate_audio_stream(
                                 text=sentence,
                                 speaker=final_speaker,
                                 language="English"
                             ):
-                                audio_chunks.append(audio_chunk)
+                                if audio_chunk is not None and len(audio_chunk) > 0:
+                                    audio_chunks.append(audio_chunk)
+                                    sample_rate = sr
                             
                             # Combine audio chunks and convert to base64
-                            combined_audio = b''.join(audio_chunks)
-                            import base64
-                            audio_b64 = base64.b64encode(combined_audio).decode('utf-8')
-                            
-                            audio_queue.put({
-                                'type': 'audio_chunk',
-                                'audio': audio_b64,
-                                'sample_rate': 24000,
-                                'text': sentence,
-                                'index': sentence_idx
-                            })
+                            if audio_chunks:
+                                combined = np.concatenate(audio_chunks)
+                                pcm_int16 = (combined * 32767).astype(np.int16).tobytes()
+                                audio_b64 = base64.b64encode(pcm_int16).decode('utf-8')
+                                
+                                with audio_queue_lock:
+                                    audio_chunks_list.append({
+                                        'type': 'audio_chunk',
+                                        'audio': audio_b64,
+                                        'sample_rate': sample_rate,
+                                        'text': sentence,
+                                        'index': sentence_idx
+                                    })
                         else:
                             # Fallback to batch TTS
                             if hasattr(tts_provider, 'generate_tts'):
@@ -390,13 +401,14 @@ def chat_streaming_conversation():
                                 continue
                             
                             if result and result.get('success'):
-                                audio_queue.put({
-                                    'type': 'audio_chunk',
-                                    'audio': result.get('audio', ''),
-                                    'sample_rate': result.get('sample_rate', 24000),
-                                    'text': sentence,
-                                    'index': sentence_idx
-                                })
+                                with audio_queue_lock:
+                                    audio_chunks_list.append({
+                                        'type': 'audio_chunk',
+                                        'audio': result.get('audio', ''),
+                                        'sample_rate': result.get('sample_rate', 24000),
+                                        'text': sentence,
+                                        'index': sentence_idx
+                                    })
                     except Exception as e:
                         print(f"[STREAMING CONVERSATION TTS ERROR] {e}")
                     finally:
@@ -410,6 +422,8 @@ def chat_streaming_conversation():
         # Start TTS worker thread
         tts_thread = threading.Thread(target=tts_worker, daemon=True)
         tts_thread.start()
+        
+        last_audio_idx = -1
         
         try:
             for response_chunk in stream_generator:
@@ -435,6 +449,13 @@ def chat_streaming_conversation():
                 
                 if response_chunk.thinking or response_chunk.reasoning:
                     thinking += response_chunk.thinking or response_chunk.reasoning
+                
+                # Yield any new audio chunks that are ready
+                with audio_queue_lock:
+                    while len(audio_chunks_list) > last_audio_idx + 1:
+                        last_audio_idx += 1
+                        audio_data = audio_chunks_list[last_audio_idx]
+                        yield f"data: {json.dumps(audio_data)}\n\n"
             
             # Process any remaining sentence buffer
             if sentence_buffer.strip():
@@ -450,10 +471,12 @@ def chat_streaming_conversation():
             tts_queue.put(None)
             tts_thread.join(timeout=5)
             
-            # Yield all audio chunks
-            while not audio_queue.empty():
-                audio_data = audio_queue.get()
-                yield f"data: {json.dumps(audio_data)}\n\n"
+            # Yield any remaining audio chunks
+            with audio_queue_lock:
+                while len(audio_chunks_list) > last_audio_idx + 1:
+                    last_audio_idx += 1
+                    audio_data = audio_chunks_list[last_audio_idx]
+                    yield f"data: {json.dumps(audio_data)}\n\n"
             
             # Extract thinking from content if not already captured
             if not thinking:

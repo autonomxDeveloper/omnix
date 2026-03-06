@@ -156,7 +156,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.log('Setting up event listeners...');
     setupEventListeners();
     console.log('Loading sessions...');
-    loadSessions();
+    // Use SessionManager.loadSessions if available, otherwise create a fallback
+    if (typeof SessionManager?.loadSessions === 'function') {
+        SessionManager.loadSessions();
+    } else {
+        console.warn('[CORE] SessionManager.loadSessions not available, using fallback');
+        // Fallback: create a new session manually
+        if (typeof createNewSession === 'function') {
+            createNewSession();
+        }
+    }
     console.log('Loading TTS speakers...');
     loadTTSSpeakers();
     
@@ -209,7 +218,24 @@ function setupEventListeners() {
         sendBtn.disabled = !messageInput.value.trim() || isLoading;
     });
     
-    clearBtn.addEventListener('click', clearChat);
+    clearBtn.addEventListener('click', () => {
+        if (typeof ChatAPI?.clearChat === 'function') {
+            ChatAPI.clearChat();
+        } else {
+            console.warn('[CORE] ChatAPI.clearChat not available, using fallback');
+            // Fallback: clear messages and call API directly
+            messagesContainer.innerHTML = '';
+            welcomeMessage.classList.remove('hidden');
+            if (sessionId) {
+                fetch('/api/clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                }).catch(err => console.error('Error clearing session:', err));
+            }
+            messageInput.focus();
+        }
+    });
     modelSelect.addEventListener('change', () => {
         sessionStorage.setItem('selectedModel', modelSelect.value);
     });
@@ -2373,7 +2399,6 @@ if (llamacppServerStopDownloadBtn) {
 // Start llama.cpp server
 if (startLlamaCppServerBtn) {
     startLlamaCppServerBtn.addEventListener('click', async () => {
-        const modelSelect = document.getElementById('llamacppModel');
         const model = modelSelect ? modelSelect.value : '';
         
         if (!model) {
@@ -2616,6 +2641,29 @@ async function loadSystemPrompt() {
         }
     } catch (error) {
         console.error('Error loading system prompt:', error);
+    }
+}
+
+// Fallback create new session function for when SessionManager is not available
+async function createNewSession() {
+    try {
+        const response = await fetch('/api/sessions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            sessionId = data.session_id;
+            messagesContainer.innerHTML = '';
+            welcomeMessage.classList.remove('hidden');
+            // Try to reload sessions if SessionManager becomes available
+            if (typeof SessionManager?.loadSessions === 'function') {
+                SessionManager.loadSessions();
+            }
+        }
+    } catch (error) {
+        console.error('Error creating session:', error);
     }
 }
 

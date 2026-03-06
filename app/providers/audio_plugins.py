@@ -304,9 +304,19 @@ class ParakeetSTT(BaseSTTProvider):
             base_url = self.config.get("base_url", "http://localhost:8000")
             
             import tempfile
-            # Some local servers fail on memory buffers. Writing to a temporary file guarantees compatibility.
+            import numpy as np
+            import wave
+            
+            # Convert raw Float32 audio to proper WAV file
+            float32_data = np.frombuffer(audio_data, dtype=np.float32)
+            int16_data = (float32_data * 32767).astype(np.int16)
+            
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
-                temp_audio.write(audio_data)
+                with wave.open(temp_audio.name, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(int16_data.tobytes())
                 temp_audio_path = temp_audio.name
                 
             try:
@@ -317,14 +327,14 @@ class ParakeetSTT(BaseSTTProvider):
                         data['language'] = language
                     data.update(kwargs)
                     
-                    print(f"[PARAKEET-PLUGIN] Sending audio to {base_url}/transcribe. Size: {len(audio_data)} bytes")
+                    print(f"[PARAKEET-PLUGIN] Sending audio to {base_url}/transcribe. Size: {len(audio_data)} bytes, {len(int16_data)} samples, {sample_rate}Hz")
                     response = requests.post(f"{base_url}/transcribe", files=files, data=data, timeout=120)
                     
                 return self._parse_response(response)
             finally:
                 if os.path.exists(temp_audio_path):
                     os.unlink(temp_audio_path)
-            
+        
         except Exception as e:
             print(f"[PARAKEET-PLUGIN] Raw exception: {e}")
             import traceback
