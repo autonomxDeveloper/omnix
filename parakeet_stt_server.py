@@ -164,7 +164,44 @@ def process_audio_for_transcription(audio_path: str, session_dir: Path) -> tuple
     """Process audio file for transcription (resampling, mono conversion)"""
     try:
         print(f"[STT] Loading audio from: {audio_path}")
-        audio = AudioSegment.from_file(audio_path)
+        
+        # Try pydub first, fall back to soundfile/wave if ffprobe not available
+        audio = None
+        use_pydub = True
+        
+        try:
+            audio = AudioSegment.from_file(audio_path)
+        except (FileNotFoundError, OSError) as e:
+            # ffprobe not found (Windows Error 2 or similar), try soundfile fallback for WAV files
+            print(f"[STT] pydub failed (likely ffprobe missing: {e}), trying soundfile fallback...")
+            use_pydub = False
+            
+            import soundfile as sf
+            import numpy as np
+            
+            # Read audio with soundfile
+            data, samplerate = sf.read(audio_path, dtype='float32')
+            
+            # Convert to mono if stereo
+            if len(data.shape) > 1 and data.shape[1] > 1:
+                data = np.mean(data, axis=1)
+            
+            # Resample to 16kHz if needed
+            target_sr = 16000
+            if samplerate != target_sr:
+                from scipy import signal
+                num_samples = int(len(data) * target_sr / samplerate)
+                data = signal.resample(data, num_samples)
+                samplerate = target_sr
+            
+            # Save processed audio
+            audio_name = Path(audio_path).stem
+            processed_audio_path = session_dir / f"{audio_name}_processed.wav"
+            sf.write(processed_audio_path, data, samplerate, subtype='PCM_16')
+            
+            print(f"[STT] Audio processed via soundfile: {samplerate}Hz, mono")
+            return processed_audio_path.as_posix(), len(data) / samplerate
+        
         duration_sec = audio.duration_seconds
         
         print(f"[STT] Audio loaded: duration={duration_sec:.2f}s, channels={audio.channels}, frame_rate={audio.frame_rate}")

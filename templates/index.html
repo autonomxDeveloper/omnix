@@ -1023,15 +1023,167 @@ Morgan: Indeed, it reminds me of home."></textarea>
         </div>
     </div>
 
+    <!-- LLM Model Download Modal -->
+    <div class="modal" id="llmModelModal">
+        <div class="modal-content llm-model-modal-content">
+            <div class="modal-header">
+                <h3>🤖 LLM Model Manager</h3>
+                <button class="modal-close" id="closeLlmModel">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Download Section -->
+                <div class="llm-download-section">
+                    <h4>Download New Model</h4>
+                    <p style="font-size: 0.8rem; color: #888; margin-bottom: 12px;">Enter a HuggingFace model page URL to see available GGUF files, or paste a direct download link</p>
+                    
+                    <div class="setting-group">
+                        <label>HuggingFace Token (optional, for private models)</label>
+                        <input type="password" id="hfToken" class="system-prompt-input" placeholder="hf_...">
+                    </div>
+                    
+                    <!-- Option 1: Model page URL with dropdown -->
+                    <div class="setting-group">
+                        <label>HuggingFace Model Page URL</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="modelPageUrl" class="system-prompt-input" placeholder="https://huggingface.co/ggml-org/Devstral-Small-2-24B-Instruct-2512-GGUF" style="flex: 1;">
+                            <button id="fetchFilesBtn" class="btn-secondary" style="white-space: nowrap;">Fetch Files</button>
+                        </div>
+                    </div>
+                    
+                    <!-- GGUF Files Dropdown -->
+                    <div class="setting-group" id="ggufFilesGroup" style="display: none;">
+                        <label>Available GGUF Files</label>
+                        <select id="ggufFilesSelect" class="model-select">
+                            <option value="">-- Select a file to download --</option>
+                        </select>
+                        <button id="downloadSelectedBtn" class="btn-primary" style="width: 100%; margin-top: 8px;">Download Selected</button>
+                    </div>
+                    
+                    <div style="text-align: center; margin: 12px 0; color: #666; font-size: 0.8rem;">— or —</div>
+                    
+                    <!-- Option 2: Direct URL -->
+                    <div class="setting-group">
+                        <label>Direct Download URL</label>
+                        <input type="text" id="modelDownloadUrl" class="system-prompt-input" placeholder="https://huggingface.co/<org>/<model>/resolve/main/model.gguf">
+                    </div>
+                    
+                    <button id="startDownloadBtn" class="btn-primary" style="width: 100%;">Download Model</button>
+                    
+                    <!-- Download Progress -->
+                    <div id="downloadProgress" class="download-progress" style="display: none;">
+                        <div class="download-item">
+                            <div class="download-info">
+                                <span class="download-filename" id="downloadFilename">model.gguf</span>
+                                <span class="download-status" id="downloadStatus">Downloading...</span>
+                            </div>
+                            <div class="progress-bar-container">
+                                <div id="downloadProgressBar" class="progress-bar"></div>
+                            </div>
+                            <div class="download-stats">
+                                <span id="downloadSpeed">0 MB/s</span>
+                                <span id="downloadEta">--:--</span>
+                                <span id="downloadPercent">0%</span>
+                            </div>
+                            <div class="download-controls">
+                                <button id="pauseDownloadBtn" class="btn-secondary">Pause</button>
+                                <button id="resumeDownloadBtn" class="btn-secondary" style="display: none;">Resume</button>
+                                <button id="stopDownloadBtn" class="btn-danger">Stop</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Existing Models Section -->
+                <div class="llm-models-section">
+                    <h4 style="margin-top: 24px;">Installed Models</h4>
+                    <div id="llmModelsList" class="llm-models-list">
+                        <p style="color: var(--text-muted);">Loading models...</p>
+                    </div>
+                </div>
+                
+                <p style="margin-top: 16px; font-size: 0.75rem; color: #666;">
+                    💾 Models are stored in: <code>models/llm/</code>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- XTTS Control Modal -->
+    <div class="modal" id="xttsControlModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>XTTS Server Control</h3>
+                <button class="modal-close" id="closeXttSControl">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="xtts-control-panel">
+                    <div class="xtts-status-display">
+                        <span class="status-dot large" id="xttsModalStatusDot"></span>
+                        <span id="xttsModalStatusText">Checking...</span>
+                    </div>
+                    
+                    <div class="xtts-control-buttons">
+                        <button id="xttsStartBtn" class="btn-primary">Start</button>
+                        <button id="xttsStopBtn" class="btn-danger">Stop</button>
+                        <button id="xttsRestartBtn" class="btn-secondary">Restart</button>
+                    </div>
+                    
+                    <div class="xtts-logs-container">
+                        <h4>Server Output</h4>
+                        <div class="xtts-logs" id="xttsLogs">
+                            <pre id="xttsLogsContent">No logs yet...</pre>
+                        </div>
+                        <button id="xttsRefreshLogs" class="btn-secondary" style="margin-top: 8px;">Refresh Logs</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Parakeet STT Control Modal -->
+    <div class="modal" id="sttControlModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Parakeet STT Server Control</h3>
+                <button class="modal-close" id="closeSttControl">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="xtts-control-panel">
+                    <div class="xtts-status-display">
+                        <span class="status-dot large" id="sttModalStatusDot"></span>
+                        <span id="sttModalStatusText">Checking...</span>
+                    </div>
+                    
+                    <div class="xtts-control-buttons">
+                        <button id="sttStartBtn" class="btn-primary">Start</button>
+                        <button id="sttStopBtn" class="btn-danger">Stop</button>
+                        <button id="sttRestartBtn" class="btn-secondary">Restart</button>
+                    </div>
+                    
+                    <div class="xtts-logs-container">
+                        <h4>Server Output</h4>
+                        <div class="xtts-logs" id="sttLogs">
+                            <pre id="sttLogsContent">No logs yet...</pre>
+                        </div>
+                        <button id="sttRefreshLogs" class="btn-secondary" style="margin-top: 8px;">Refresh Logs</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
 <script src="{{ url_for('static', filename='core.js') }}"></script>
-    <script src="{{ url_for('static', filename='chat.js') }}"></script>
+    <script src="{{ url_for('static', filename='features.js') }}"></script>
     <script src="{{ url_for('static', filename='voice.js') }}"></script>
     <script src="{{ url_for('static', filename='websocket.js') }}"></script>
+    <script src="{{ url_for('static', filename='chat/chat-api.js') }}"></script>
+    <script src="{{ url_for('static', filename='chat/session-manager.js') }}"></script>
+    <script src="{{ url_for('static', filename='chat/message-renderer.js') }}"></script>
+    <script src="{{ url_for('static', filename='chat/audio-player.js') }}"></script>
+    <script src="{{ url_for('static', filename='chat/tts-queue.js') }}"></script>
+    <script src="{{ url_for('static', filename='chat/chat.js') }}"></script>
     <script src="{{ url_for('static', filename='audiobook.js') }}"></script>
     <script src="{{ url_for('static', filename='podcast.js') }}"></script>
     <script src="{{ url_for('static', filename='controls.js') }}"></script>
-    <script src="{{ url_for('static', filename='features.js') }}"></script>
 </body>
 </html>
-
-
