@@ -12,7 +12,6 @@ document.addEventListener('DOMContentLoaded', () => {
         // Check that all modules are loaded
         if (!window.SessionManager || !window.MessageRenderer || 
             !window.AudioPlayer || !window.TTSQueue || !window.ChatAPI) {
-            console.warn('[CHAT] Dependencies not ready, waiting...');
             setTimeout(initChat, 100);
             return;
         }

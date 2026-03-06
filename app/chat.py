@@ -346,51 +346,57 @@ def chat_streaming_conversation():
         ai_message = ""
         thinking = ""
         
-        # Queue for TTS processing
+        # Queue for TTS processing - each item is (sentence, is_first_for_sentence)
         tts_queue = queue.Queue()
         
         # Use a lock for thread-safe audio queue access
-        import threading
         audio_queue_lock = threading.Lock()
         audio_chunks_list = []
         
+        # Track streaming state per sentence
+        current_sentence_idx = -1
+        
         def tts_worker():
-            """Background worker for TTS processing."""
+            """Background worker for TTS processing - streams chunks immediately."""
             while True:
                 try:
-                    sentence = tts_queue.get(timeout=1)
-                    if sentence is None:
+                    item = tts_queue.get(timeout=1)
+                    if item is None:
                         break
                     
-                    # Generate TTS audio
+                    sentence, sentence_idx = item
+                    
+                    # Generate TTS audio - stream EACH chunk immediately like reference
                     try:
                         if hasattr(tts_provider, 'generate_audio_stream'):
-                            # Use streaming TTS if available
-                            audio_chunks = []
+                            # Use streaming TTS - yield each chunk as it arrives
                             sample_rate = 24000
+                            first_chunk = True
+                            
                             for audio_chunk, sr, timing in tts_provider.generate_audio_stream(
                                 text=sentence,
                                 speaker=final_speaker,
-                                language="English"
+                                language="English",
+                                chunk_size=8  # Small chunk for faster response
                             ):
                                 if audio_chunk is not None and len(audio_chunk) > 0:
-                                    audio_chunks.append(audio_chunk)
                                     sample_rate = sr
-                            
-                            # Combine audio chunks and convert to base64
-                            if audio_chunks:
-                                combined = np.concatenate(audio_chunks)
-                                pcm_int16 = (combined * 32767).astype(np.int16).tobytes()
-                                audio_b64 = base64.b64encode(pcm_int16).decode('utf-8')
-                                
-                                with audio_queue_lock:
-                                    audio_chunks_list.append({
-                                        'type': 'audio_chunk',
-                                        'audio': audio_b64,
-                                        'sample_rate': sample_rate,
-                                        'text': sentence,
-                                        'index': sentence_idx
-                                    })
+                                    
+                                    # Convert float32 to int16 PCM
+                                    pcm_int16 = (audio_chunk * 32767).astype(np.int16).tobytes()
+                                    audio_b64 = base64.b64encode(pcm_int16).decode('utf-8')
+                                    
+                                    # Stream each chunk immediately
+                                    with audio_queue_lock:
+                                        audio_chunks_list.append({
+                                            'type': 'audio_chunk',
+                                            'audio': audio_b64,
+                                            'sample_rate': sample_rate,
+                                            'text': sentence,
+                                            'index': sentence_idx,
+                                            'first_chunk': first_chunk
+                                        })
+                                    first_chunk = False
                         else:
                             # Fallback to batch TTS
                             if hasattr(tts_provider, 'generate_tts'):
@@ -407,7 +413,8 @@ def chat_streaming_conversation():
                                         'audio': result.get('audio', ''),
                                         'sample_rate': result.get('sample_rate', 24000),
                                         'text': sentence,
-                                        'index': sentence_idx
+                                        'index': sentence_idx,
+                                        'first_chunk': True
                                     })
                     except Exception as e:
                         print(f"[STREAMING CONVERSATION TTS ERROR] {e}")
@@ -440,11 +447,15 @@ def chat_streaming_conversation():
                         # Clean up the sentence
                         sentence = sentence_buffer.strip()
                         if len(sentence) >= 10:  # Minimum sentence length
-                            # Send to TTS worker
-                            tts_queue.put(sentence)
-                            sentence_buffer = ""
+                            # Send to TTS worker with sentence index
+                            tts_queue.put((sentence, sentence_idx))
                             sentence_idx += 1
                         
+                        # Yield the full accumulated text for display (not just current token)
+                        yield f"data: {json.dumps({'type': 'content', 'content': sentence_buffer})}\n\n"
+                        sentence_buffer = ""
+                    else:
+                        # No sentence complete yet, yield current token
                         yield f"data: {json.dumps({'type': 'content', 'content': token})}\n\n"
                 
                 if response_chunk.thinking or response_chunk.reasoning:
@@ -461,7 +472,7 @@ def chat_streaming_conversation():
             if sentence_buffer.strip():
                 sentence = sentence_buffer.strip()
                 if len(sentence) >= 10:
-                    tts_queue.put(sentence)
+                    tts_queue.put((sentence, sentence_idx))
                     sentence_idx += 1
             
             # Wait for all TTS tasks to complete
