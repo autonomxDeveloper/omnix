@@ -13,14 +13,14 @@
     "thinking_budget": 0
   },
   "cerebras": {
-    "api_key": "",
+    "api_key": "csk-ekcv4wyvntn43c56639cw2p8yreyj588wt59wmykfkkrvkeh",
     "model": "gpt-oss-120b"
   },
   "llamacpp": {
     "base_url": "http://localhost:8080",
-    "model": "",
-    "download_location": "server",
-    "auto_start": false
+    "model": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+    "download_location": "llm",
+    "auto_start": true
   },
   "faster-qwen3-tts": {
     "model_name": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",

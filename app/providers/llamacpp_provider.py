@@ -15,6 +15,9 @@ from pathlib import Path
 
 from .base import BaseProvider, ChatMessage, ChatResponse, ModelInfo, ProviderConfig, ProviderCapability, AuthenticationError, ConnectionError, ModelNotFoundError
 
+# Import the installer
+from app.llamacpp_installer import get_installer
+
 
 class LlamaCppProvider(BaseProvider):
     """
@@ -89,13 +92,32 @@ class LlamaCppProvider(BaseProvider):
         if not binary:
             raise ConnectionError("Llama.cpp server binary not found")
         
-        # Check if already running on port
+        # Extract port from base_url
         try:
             port = int(self.config.base_url.split(':')[-1])
+        except:
+            port = 8080  # Default port
+        
+        # Check if already running on port
+        try:
             # Try to kill existing process on the port (platform-specific)
             import platform
             if platform.system() == "Windows":
-                subprocess.run(f'netstat -ano | findstr :{port} | findstr LISTENING | awk \'{{print $5}}\' | xargs taskkill /F /PID 2>nul', shell=True)
+                # Windows: Use netstat and taskkill without awk
+                try:
+                    # Get process ID using netstat
+                    result = subprocess.run(f'netstat -ano | findstr :{port}', shell=True, capture_output=True, text=True)
+                    if result.stdout:
+                        # Extract PID from the output (last column)
+                        lines = result.stdout.strip().split('\n')
+                        for line in lines:
+                            parts = line.split()
+                            if len(parts) >= 5 and 'LISTENING' in line:
+                                pid = parts[-1]
+                                # Kill the process
+                                subprocess.run(f'taskkill /F /PID {pid} 2>nul', shell=True)
+                except:
+                    pass
             else:
                 subprocess.run(f"lsof -ti:{port} | xargs kill -9 2>/dev/null", shell=True)
             time.sleep(1)
@@ -103,9 +125,9 @@ class LlamaCppProvider(BaseProvider):
             pass
         
         try:
-            # Start the server
+            # Start the server with absolute paths to avoid Windows path issues
             proc = subprocess.Popen(
-                [str(binary), "-m", model_path, "-c", "4096", "-ngl", "999", "--host", "0.0.0.0", "--port", str(port)],
+                [str(binary), "-m", str(model_path.resolve()), "-c", "4096", "-ngl", "999", "--host", "0.0.0.0", "--port", str(port)],
                 cwd=binary.parent,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -168,10 +190,22 @@ class LlamaCppProvider(BaseProvider):
         model_dir = Path(self.config.extra_params.get('model_dir', ''))
         
         # Check possible locations for the model
-        possible_paths = [
-            model_dir / model_name,
-            Path(model_name) if os.path.isabs(model_name) else None
-        ]
+        possible_paths = []
+        
+        # If model_name is an absolute path, use it directly
+        if os.path.isabs(model_name):
+            possible_paths.append(Path(model_name))
+        else:
+            # Search in the model directory for files matching the name
+            # This handles cases where the model might be in subdirectories
+            for file_path in model_dir.rglob("*.gguf"):
+                if file_path.name == model_name:
+                    possible_paths.append(file_path)
+                    break
+            # Also check direct match in model_dir
+            direct_path = model_dir / model_name
+            if direct_path.exists():
+                possible_paths.append(direct_path)
         
         model_path = None
         for path in possible_paths:
@@ -311,7 +345,7 @@ class LlamaCppProvider(BaseProvider):
                     size = 0
                 
                 model_info = ModelInfo(
-                    id=str(gguf_file.relative_to(model_dir)),
+                    id=gguf_file.name,  # Use just the filename as ID
                     name=gguf_file.name,
                     provider=self.provider_name,
                     context_length=None,  # Unknown without loading the model

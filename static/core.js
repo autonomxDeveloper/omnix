@@ -1670,7 +1670,20 @@ async function loadLlmModelsForLlamaCpp() {
             const settingsResponse = await fetch('/api/settings');
             const settingsData = await settingsResponse.json();
             if (settingsData.success && settingsData.settings.llamacpp?.model) {
-                llamacppModelInput.value = settingsData.settings.llamacpp.model;
+                const savedModel = settingsData.settings.llamacpp.model;
+                // Check if the saved model exists in the dropdown
+                const optionExists = Array.from(llamacppModelInput.options).some(option => option.value === savedModel);
+                if (optionExists) {
+                    llamacppModelInput.value = savedModel;
+                } else {
+                    // If the option doesn't exist yet, add it temporarily
+                    // This can happen if models are still loading
+                    const tempOption = document.createElement('option');
+                    tempOption.value = savedModel;
+                    tempOption.textContent = `${savedModel} (saved)`;
+                    llamacppModelInput.appendChild(tempOption);
+                    llamacppModelInput.value = savedModel;
+                }
             }
         }
     } catch (error) {
@@ -1911,6 +1924,112 @@ window.XMLHttpRequest = function() {
     return xhr;
 };
 
+// Enhanced llama.cpp connection polling with longer wait times
+let llamaCppPollingAttempts = 0;
+let llamaCppPollingMaxAttempts = 120; // 2 minutes (120 * 1 second)
+let llamaCppPollingInterval = null;
+
+function pollLlamaCppServer() {
+    if (llamaCppPollingInterval) {
+        clearInterval(llamaCppPollingInterval);
+    }
+    
+    llamaCppPollingAttempts = 0;
+    
+    llamaCppPollingInterval = setInterval(async () => {
+        try {
+            const response = await fetch('/api/llamacpp/server/status');
+            const data = await response.json();
+            
+            if (data.success && data.running) {
+                console.log('[LLAMA.CPP] Server is ready, stopping polling');
+                clearInterval(llamacppPollingInterval);
+                llamaCppPollingInterval = null;
+                
+                // Update status indicator
+                if (statusDot) {
+                    statusDot.className = 'status-dot connected';
+                    statusText.textContent = 'llama.cpp';
+                }
+                
+                // Check health to update provider status
+                await checkHealth();
+                return;
+            }
+        } catch (error) {
+            console.log('[LLAMA.CPP] Server not ready yet, attempts:', llamaCppPollingAttempts + 1);
+        }
+        
+        llamaCppPollingAttempts++;
+        
+        if (llamaCppPollingAttempts >= llamaCppPollingMaxAttempts) {
+            console.log('[LLAMA.CPP] Max polling attempts reached, stopping');
+            clearInterval(llamacppPollingInterval);
+            llamaCppPollingInterval = null;
+            
+            // Update status to show server is starting
+            if (statusDot) {
+                statusDot.className = 'status-dot connecting';
+                statusText.textContent = 'llama.cpp (starting...)';
+            }
+        }
+    }, 1000); // Check every 1 second
+}
+
+// Enhanced auto-start llama.cpp server with better polling
+async function autoStartLlamaCppServer() {
+    try {
+        const response = await fetch('/api/settings');
+        const data = await response.json();
+        
+        if (data.success && data.settings) {
+            const settings = data.settings;
+            
+            // Check if provider is llama.cpp and auto_start is enabled
+            if (settings.provider === 'llamacpp' && settings.llamacpp?.auto_start && settings.llamacpp?.model) {
+                console.log('[LLAMA.CPP] Auto-start enabled, checking server status...');
+                
+                // Check if server is already running
+                const statusResponse = await fetch('/api/llamacpp/server/status');
+                const statusData = await statusResponse.json();
+                
+                if (statusData.success && !statusData.running) {
+                    console.log('[LLAMA.CPP] Server not running, starting with model:', settings.llamacpp.model);
+                    
+                    // Start the server
+                    const startResponse = await fetch('/api/llamacpp/server/start', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({model: settings.llamacpp.model})
+                    });
+                    
+                    const startData = await startResponse.json();
+                    
+                    if (startData.success) {
+                        console.log('[LLAMA.CPP] Server started successfully, PID:', startData.pid);
+                        
+                        // Update status to show server is starting
+                        if (statusDot) {
+                            statusDot.className = 'status-dot connecting';
+                            statusText.textContent = 'llama.cpp (starting...)';
+                        }
+                        
+                        // Start enhanced polling for server readiness
+                        console.log('[LLAMA.CPP] Starting enhanced polling for server readiness...');
+                        pollLlamaCppServer();
+                    } else {
+                        console.error('[LLAMA.CPP] Failed to start server:', startData.error);
+                    }
+                } else if (statusData.running) {
+                    console.log('[LLAMA.CPP] Server already running');
+                }
+            }
+        }
+    } catch (error) {
+        console.error('[LLAMA.CPP] Error during auto-start check:', error);
+    }
+}
+
 // ==================== LLAMA.CPP SERVER DOWNLOAD & CONTROL ====================
 
 // llama.cpp server download elements
@@ -1960,7 +2079,7 @@ if (downloadLlamaCppServerBtn) {
             const response = await fetch('/api/llamacpp/server/download', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({release_id: 'windows-cublas'})
+                body: JSON.stringify({release_id: 'windows-cpu'})
             });
             
             const data = await response.json();
@@ -1981,17 +2100,26 @@ if (downloadLlamaCppServerBtn) {
                             llamacppServerDownloadStatus.textContent = download.status;
                             llamacppServerDownloadProgressBar.style.width = download.progress + '%';
                             llamacppServerDownloadPercent.textContent = download.progress.toFixed(1) + '%';
-                            llamacppServerDownloadSpeed.textContent = (download.speed / 1024 / 1024).toFixed(2) + ' MB/s';
                             
-                            if (download.eta > 0) {
-                                const mins = Math.floor(download.eta / 60);
-                                const secs = Math.floor(download.eta % 60);
-                                llamacppServerDownloadEta.textContent = mins + ':' + secs.toString().padStart(2, '0');
+                            // Handle different status types
+                            if (download.status === 'installing') {
+                                // For wheel installation, hide speed/eta
+                                llamacppServerDownloadSpeed.textContent = '';
+                                llamacppServerDownloadEta.textContent = '';
+                            } else {
+                                // For downloads, show speed/eta
+                                llamacppServerDownloadSpeed.textContent = (download.speed / 1024 / 1024).toFixed(2) + ' MB/s';
+                                
+                                if (download.eta > 0) {
+                                    const mins = Math.floor(download.eta / 60);
+                                    const secs = Math.floor(download.eta % 60);
+                                    llamacppServerDownloadEta.textContent = mins + ':' + secs.toString().padStart(2, '0');
+                                }
                             }
                             
-                            if (download.status === 'completed' || download.status === 'completed_not_extracted') {
+                            if (download.status === 'completed') {
                                 clearInterval(llamacppServerDownloadInterval);
-                                llamacppServerDownloadStatus.textContent = download.status === 'completed' ? 'Download complete!' : 'Download complete (needs extraction)';
+                                llamacppServerDownloadStatus.textContent = 'Installation complete!';
                                 downloadLlamaCppServerBtn.disabled = false;
                                 downloadLlamaCppServerBtn.textContent = 'Download llama.cpp Server';
                                 checkLlamaCppServerStatus();
