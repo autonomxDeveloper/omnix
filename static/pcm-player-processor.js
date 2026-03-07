@@ -9,6 +9,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
         super();
         this.buffer = new Float32Array(0);
         this.isPlaying = true;
+        this.samplesPlayed = 0;
         
         // Handle messages from main thread
         this.port.onmessage = (event) => {
@@ -19,6 +20,9 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
                 newBuffer.set(this.buffer, 0);
                 newBuffer.set(newData, this.buffer.length);
                 this.buffer = newBuffer;
+                
+                // Debug logging
+                console.log('[WORKLET] Received audio, buffer now:', this.buffer.length, 'first sample:', this.buffer[0]?.toFixed(4));
             } else if (event.data.type === 'stop') {
                 this.isPlaying = false;
                 this.buffer = new Float32Array(0);
@@ -45,14 +49,16 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
         for (let i = 0; i < samplesToPlay; i++) {
             channel[i] = this.buffer[i];
         }
+        
+        // Debug: log occasionally
+        if (this.samplesPlayed === 0 || this.samplesPlayed % 48000 === 0) {
+            console.log('[WORKLET] Playing, buffer:', this.buffer.length, 'samplesToPlay:', samplesToPlay, 'first sample:', this.buffer[0]?.toFixed(4));
+        }
+        this.samplesPlayed += samplesToPlay;
+        
         // Fill remaining with silence
         for (let i = samplesToPlay; i < channel.length; i++) {
             channel[i] = 0;
-        }
-        
-        // Debug: log first sample occasionally
-        if (this.buffer.length > 0 && Math.random() < 0.001) {
-            console.log('[WORKLET] Playing, buffer:', this.buffer.length, 'first sample:', this.buffer[0].toFixed(4));
         }
         
         // Shift buffer (remove played samples)
