@@ -485,15 +485,17 @@ async function transcribeRawFloat32Audio() {
         
         console.log(`[VOICE] Sending ${totalLength} Float32 samples (${(totalLength / rawFloat32SampleRate).toFixed(2)}s) to STT. Rate: ${rawFloat32SampleRate}Hz`);
         
-        // Send via HTTP POST as binary
-        // Pass the ACTUAL sample rate in the header
+        // Send via HTTP POST as multipart/form-data
+        const blob = new Blob([concatenated.buffer], { type: "application/octet-stream" });
+        const formData = new FormData();
+        formData.append("file", blob);
+        
         const response = await fetch('/api/stt/float32', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/octet-stream',
                 'X-Sample-Rate': rawFloat32SampleRate.toString()
             },
-            body: concatenated.buffer
+            body: formData
         });
         
         console.log(`[VOICE] STT response status: ${response.status}`);
