@@ -11,7 +11,7 @@ let vadAnalyser = null;
 let vadAudioContext = null;
 let vadStream = null;
 let silenceTimer = null;
-let audioContext = null;
+let voiceAudioContext = null;
 let analyser = null;
 
 // VAD Settings - Optimized for low latency
@@ -566,7 +566,19 @@ async function processVADTranscript(text, sttDuration = null) {
     
     const totalStartTime = performance.now();
     
-    // Use WAV streaming REST API only
+    // Try WebSocket first (FastAPI mode), fall back to HTTP
+    if (window.wsConversationStart && window.wsConversationSend) {
+        try {
+            console.log('[VOICE] Using WebSocket for voice response');
+            await window.wsConversationStart(sessionId, ttsSpeaker.value);
+            window.wsConversationSend(text);
+            return;
+        } catch (e) {
+            console.log('[VOICE] WebSocket failed, falling back to HTTP:', e);
+        }
+    }
+    
+    // Use HTTP REST API
     conversationInput.value = '';
     await sendConversationMessageREST(text, totalStartTime, sttDuration);
 }
@@ -958,8 +970,40 @@ async function sendConversationMessage() {
     const totalStartTime = performance.now();
     const sttDuration = null; // No STT for typed messages
     
-    // Use WAV streaming REST API only
+    // Try WebSocket first (FastAPI mode), fall back to HTTP
+    if (window.wsConversationStart && window.wsConversationSend) {
+        console.log('[VOICE] WebSocket available, attempting FastAPI connection...');
+        try {
+            await window.wsConversationStart(sessionId, ttsSpeaker.value);
+            window.wsConversationSend(message);
+            return;
+        } catch (e) {
+            console.log('[VOICE] WebSocket failed, falling back to HTTP:', e);
+        }
+    } else {
+        console.log('[VOICE] WebSocket not available (ws-client.js may not have loaded)');
+    }
+    
+    // Use HTTP REST API
     await sendConversationMessageREST(message, totalStartTime, sttDuration);
+}
+
+// WebSocket conversation handler (FastAPI mode)
+async function startWebSocketConversation(message, sessionId, speaker, systemPrompt) {
+    const totalStartTime = performance.now();
+    
+    try {
+        // Start WebSocket connection
+        await window.wsConversationStart(sessionId, speaker);
+        
+        // Send the message
+        window.wsConversationSend(message);
+        
+    } catch (error) {
+        console.error('[VOICE] WebSocket conversation error:', error);
+        // Fall back to HTTP
+        await sendConversationMessageREST(message, totalStartTime, null);
+    }
 }
 
 // Start conversation recording
@@ -1040,6 +1084,20 @@ async function transcribeConversationAudio() {
             if (conversationMode && data.text.trim()) {
                 // Pass timing info
                 const totalStartTime = performance.now();
+                
+                // Try WebSocket first (FastAPI mode), fall back to HTTP
+                if (window.wsConversationStart && window.wsConversationSend) {
+                    try {
+                        console.log('[VOICE] Using WebSocket for voice response');
+                        await window.wsConversationStart(sessionId, ttsSpeaker.value);
+                        window.wsConversationSend(data.text);
+                        return;
+                    } catch (e) {
+                        console.log('[VOICE] WebSocket failed, falling back to HTTP:', e);
+                    }
+                }
+                
+                // Use HTTP REST API
                 await sendConversationMessageRESTFromMic(data.text, totalStartTime, sttDuration);
             }
         } else {
@@ -1315,6 +1373,14 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
         }
     }
     
+    // Try WebSocket client first (FastAPI mode), fall back to HTTP
+    if (window.wsConversationStart && window.wsConversationSend) {
+        console.log('[VOICE] Using FastAPI WebSocket for conversation');
+        await startWebSocketConversation(message, sessionId, speaker, systemPrompt);
+        return;
+    }
+    
+    // HTTP fallback
     try {
         // Get combined system prompt (global + voice personality)
         const speaker = ttsSpeaker.value;
