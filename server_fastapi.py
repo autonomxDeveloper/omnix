@@ -40,7 +40,7 @@ from app.providers.base import ChatMessage
 # ============== CONFIG ==============
 HOST = "0.0.0.0"
 PORT = 5000
-TTS_CHUNK_SIZE = 2  # Smallest for fastest first audio
+TTS_CHUNK_SIZE = 6  # ~0.5s (12000 samples at 24kHz) for stable streaming
 TTS_MIN_CHARS = 25  # Start TTS after this many chars
 TTS_MAX_CHARS = 80  # Max chars per TTS chunk
 LLM_MAX_TOKENS = 60  # Max tokens before forcing TTS
@@ -973,8 +973,18 @@ def resolve_speaker_tts(data: dict):
 async def stt_float32(request: Request):
     """STT endpoint for Float32 audio - proxies to STT service."""
     try:
-        audio_bytes = await request.body()
+        content_type = request.headers.get('content-type', '')
+        
+        audio_bytes = None
         sample_rate = request.headers.get('X-Sample-Rate', '24000')
+        
+        if 'multipart/form-data' in content_type:
+            form = await request.form()
+            file = form.get('file')
+            if file:
+                audio_bytes = await file.read()
+        else:
+            audio_bytes = await request.body()
         
         if not audio_bytes:
             return JSONResponse({"detail": "No audio data provided"}, status_code=400)

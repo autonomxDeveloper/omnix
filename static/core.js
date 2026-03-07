@@ -158,8 +158,12 @@ function getUseWebSocket() {
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('Page loaded, starting initialization...');
     
-    // Initialize audio context for WAV mode
-    initWavAudioContext();
+    // Only initialize WAV audio context for non-streaming modes
+    if (window.TTS_PLAYBACK_MODE !== "stream" && window.TTS_PLAYBACK_MODE !== "websocket") {
+        initWavAudioContext();
+    } else {
+        console.log('[CORE] Skipping WAV AudioContext init (streaming mode active)');
+    }
     
     // Load UI elements FIRST (no await - these are fast and make UI appear immediately)
     console.log('Setting up event listeners...');

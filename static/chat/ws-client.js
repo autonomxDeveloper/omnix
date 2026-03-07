@@ -4,15 +4,12 @@
  * Replaces HTTP streaming with binary WebSocket for sub-500ms latency
  */
 
-import { RingBuffer } from '/static/js/audio/ring-buffer.js';
-
 console.log('[WS-CLIENT] Starting to load...');
 
 // ============== CONFIG ==============
 const WS_URL = `ws://${window.location.host}/ws/conversation`;
 const SAMPLE_RATE = 24000;
 const START_BUFFER_SAMPLES = 24000;
-const RING_BUFFER_SIZE = 24000 * 10;
 
 // ============== STATE ==============
 let ws = null;
@@ -24,14 +21,9 @@ let isSpeaking = false;
 let wsSessionId = null;
 let currentSpeaker = 'default';
 
-let ringBuffer = null;
 let startupBuffer = [];
 let bufferedSamples = 0;
 let playbackStarted = false;
-
-let underrunCount = 0;
-let firstAudioLatency = 0;
-let bufferFillLevel = 0;
 
 // Timing
 let totalStartTime = 0;
@@ -76,24 +68,19 @@ function addWSSystemMessage(role, content) {
 
 // ============== AUDIOWORKLET SETUP ==============
 /**
- * Initialize AudioWorklet for low-latency playback with ring buffer
+ * Initialize AudioWorklet for low-latency playback with queue
  */
 async function initAudioWorklet() {
     if (wsAudioContext) return;
     
     console.log('[WS-AUDIO] Initializing AudioWorklet...');
     
-    ringBuffer = new RingBuffer(RING_BUFFER_SIZE);
-    
     const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
     await audioContext.audioWorklet.addModule("/static/js/audio/pcm-player-worklet.js");
     
     pcmNode = new AudioWorkletNode(audioContext, "pcm-player");
-    pcmNode.port.postMessage({ type: "setBuffer", buffer: ringBuffer });
-    
     pcmNode.connect(audioContext.destination);
     console.log("[WS-AUDIO] Initialized AudioContext:", audioContext.sampleRate + "Hz");
-    console.log("[WS-AUDIO] Worklet connected to destination");
     
     if (audioContext.state === "suspended") {
         await audioContext.resume();
@@ -109,9 +96,8 @@ async function initAudioWorklet() {
     pcmNode.connect(wsGainNode);
     wsGainNode.connect(wsAudioContext.destination);
     
-    console.log('[WS-CLIENT] AudioWorklet connected to destination');
-    console.log('[WS-CLIENT] Ring buffer size:', RING_BUFFER_SIZE, 'samples');
-    console.log('[AUDIO] Using streaming playback with ring buffer');
+    console.log('[WS-CLIENT] AudioWorklet connected');
+    console.log('[AUDIO] Using queue-based streaming playback');
     
     document.addEventListener('click', async () => {
         if (wsAudioContext && wsAudioContext.state === 'suspended') {
@@ -148,32 +134,35 @@ function testSpeaker() {
 
 
 /**
- * Push raw PCM bytes to ring buffer via AudioWorklet
+ * Push raw PCM samples to AudioWorklet queue
  */
-function pushAudioData(pcmBytes) {
-    console.log('[WS-AUDIO] pushAudioData called, ringBuffer:', !!ringBuffer, 'wsAudioContext:', !!wsAudioContext, 'wsAudioContext.state:', wsAudioContext?.state);
-    
-    if (!ringBuffer || !wsAudioContext) {
+function pushAudioData(samples) {
+    if (!pcmNode || !wsAudioContext) {
         console.warn('[WS-CLIENT] AudioWorklet not ready');
         return;
     }
     
     if (wsAudioContext.state === 'suspended') {
         wsAudioContext.resume();
-        console.log('[WS-AUDIO] Resumed suspended AudioContext in pushAudioData');
     }
     
-    let float32Array;
-    if (pcmBytes instanceof Float32Array) {
-        float32Array = pcmBytes;
-    } else {
-        float32Array = new Float32Array(pcmBytes);
+    if (!playbackStarted) {
+        startupBuffer.push(samples);
+        bufferedSamples += samples.length;
+        
+        console.log(`[WS-AUDIO] Startup buffer: ${bufferedSamples}/${START_BUFFER_SAMPLES} samples`);
+        
+        if (bufferedSamples >= START_BUFFER_SAMPLES) {
+            const merged = mergeFloat32Arrays(startupBuffer);
+            pcmNode.port.postMessage({ type: "push", samples: merged });
+            playbackStarted = true;
+            startupBuffer = [];
+            console.log('[WS-AUDIO] Startup buffer complete, starting playback');
+        }
+        return;
     }
     
-    console.log('[WS-AUDIO] PCM data length:', float32Array.length, 'first sample:', float32Array[0]?.toFixed(4));
-    
-    handleIncomingPCM(float32Array);
-    console.log('[WS-AUDIO] Written to ring buffer, buffer level:', ringBuffer.availableRead());
+    pcmNode.port.postMessage({ type: "push", samples: samples });
 }
 
 
@@ -186,36 +175,6 @@ function mergeFloat32Arrays(arrays) {
         offset += arr.length;
     }
     return result;
-}
-
-
-function handleIncomingPCM(samples) {
-    if (!playbackStarted) {
-        startupBuffer.push(samples);
-        bufferedSamples += samples.length;
-        
-        if (bufferedSamples >= START_BUFFER_SAMPLES) {
-            const merged = mergeFloat32Arrays(startupBuffer);
-            ringBuffer.write(merged);
-            playbackStarted = true;
-            startupBuffer = [];
-            console.log('[WS-AUDIO] Startup buffer complete, starting playback');
-        }
-        return;
-    }
-    
-    if (ringBuffer.availableWrite() < samples.length) {
-        console.warn('[WS-AUDIO] Ring buffer full, dropping samples');
-        return;
-    }
-    
-    ringBuffer.write(samples);
-    
-    bufferFillLevel = ringBuffer.availableRead();
-    
-    if (ringBuffer.availableRead() < 1024) {
-        underrunCount++;
-    }
 }
 
 
@@ -491,11 +450,10 @@ async function handleMessage(msg) {
  * Handle incoming binary PCM audio data (Float32)
  */
 function handleAudioData(pcmBytes) {
-    const float32Array = new Float32Array(pcmBytes);
+    const samples = new Float32Array(pcmBytes);
     
     if (firstAudioTime === 0) {
         firstAudioTime = performance.now() - totalStartTime;
-        firstAudioLatency = firstAudioTime;
         console.log(`🕐 [WS] First audio: ${firstAudioTime.toFixed(0)}ms`);
     }
     
@@ -509,7 +467,7 @@ function handleAudioData(pcmBytes) {
         }
     }
     
-    pushAudioData(float32Array);
+    pushAudioData(samples);
 }
 
 
