@@ -70,31 +70,42 @@ async function initAudioWorklet() {
     
     console.log('[WS-AUDIO] Initializing AudioWorklet...');
     
+    // FIX #2: Resume AudioContext BEFORE any audio operations - critical for autoplay protection
     wsAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
     console.log('[WS-AUDIO] AudioContext created, state:', wsAudioContext.state, 'sampleRate:', SAMPLE_RATE);
     
+    // Resume immediately - browsers suspend contexts until user interaction
+    if (wsAudioContext.state === 'suspended') {
+        await wsAudioContext.resume();
+        console.log('[WS-AUDIO] AudioContext resumed immediately, state:', wsAudioContext.state);
+    }
+    
     try {
-        // Load the processor
+        // Load the processor AFTER resume
         await wsAudioContext.audioWorklet.addModule('/static/pcm-player-processor.js');
         
         // Create the node
         pcmNode = new AudioWorkletNode(wsAudioContext, 'pcm-player');
+        console.log('[WS-AUDIO] AudioWorkletNode created');
+        
+        // FIX #1: Connect immediately after node creation - THIS IS CRITICAL
+        pcmNode.connect(wsAudioContext.destination);
+        console.log('[WS-AUDIO] Worklet connected to destination');
         
         // Add gain node to boost volume
         wsGainNode = wsAudioContext.createGain();
-        wsGainNode.gain.value = 2.0;  // Boost volume
+        wsGainNode.gain.value = 2.0;
         
-        // Connect: pcmNode -> gainNode -> destination
+        // Reconnect with gain node
+        pcmNode.disconnect();
         pcmNode.connect(wsGainNode);
         wsGainNode.connect(wsAudioContext.destination);
         
-        // Resume AudioContext immediately - critical for playback
-        if (wsAudioContext.state === 'suspended') {
-            await wsAudioContext.resume();
-            console.log('[WS-AUDIO] AudioContext resumed, state:', wsAudioContext.state);
-        }
+        console.log('[WS-CLIENT] AudioWorklet connected to destination');
+        console.log('[WS-CLIENT] AudioWorklet initialized, node:', !!pcmNode);
+        console.log('[AUDIO] Using streaming playback');
         
-        // Ensure audio context is resumed on user interaction
+        // FIX #2: Also ensure audio context is resumed on user interaction
         document.addEventListener('click', async () => {
             if (wsAudioContext && wsAudioContext.state === 'suspended') {
                 await wsAudioContext.resume();
@@ -105,9 +116,6 @@ async function initAudioWorklet() {
         // Speaker test - verify audio pipeline works
         testSpeaker();
         
-        console.log('[WS-CLIENT] AudioWorklet connected to destination');
-        console.log('[WS-CLIENT] AudioWorklet initialized, node:', !!pcmNode);
-        console.log('[AUDIO] Using streaming playback');
     } catch (e) {
         console.error('[WS-CLIENT] AudioWorklet error:', e);
     }
@@ -148,18 +156,18 @@ function pushAudioData(pcmBytes) {
         return;
     }
     
-    // Ensure context is running before sending audio
+    // FIX #2: Ensure context is running before sending audio - check on every call
     if (wsAudioContext.state === 'suspended') {
         wsAudioContext.resume();
-        console.log('[WS-AUDIO] Resumed suspended AudioContext');
+        console.log('[WS-AUDIO] Resumed suspended AudioContext in pushAudioData');
     }
     
-    // Handle both Float32Array and ArrayBuffer
+    // FIX #3: Ensure Float32Array is sent to worklet
     let float32Array;
     if (pcmBytes instanceof Float32Array) {
         float32Array = pcmBytes;
     } else {
-        // Convert ArrayBuffer/Int16Array to Float32
+        // Convert ArrayBuffer/Int32 -16Array to Float WebAudio API expects Float32
         const int16Array = new Int16Array(pcmBytes);
         float32Array = new Float32Array(int16Array.length);
         for (let i = 0; i < int16Array.length; i++) {
@@ -214,11 +222,8 @@ async function connectWebSocket(sessionIdVal, speakerVal) {
             console.log('[WS-CLIENT] Connected');
             isConnected = true;
             
-            // Initialize audio
+            // Initialize audio - this now handles resume internally
             await initAudioWorklet();
-            if (wsAudioContext.state === 'suspended') {
-                await wsAudioContext.resume();
-            }
             
             // Send config
             ws.send(JSON.stringify({
