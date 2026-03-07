@@ -88,6 +88,12 @@ async function initAudioWorklet() {
         pcmNode.connect(wsGainNode);
         wsGainNode.connect(wsAudioContext.destination);
         
+        // Resume AudioContext immediately - critical for playback
+        if (wsAudioContext.state === 'suspended') {
+            await wsAudioContext.resume();
+            console.log('[WS-AUDIO] AudioContext resumed, state:', wsAudioContext.state);
+        }
+        
         // Ensure audio context is resumed on user interaction
         document.addEventListener('click', async () => {
             if (wsAudioContext && wsAudioContext.state === 'suspended') {
@@ -96,10 +102,36 @@ async function initAudioWorklet() {
             }
         }, { once: true });
         
+        // Speaker test - verify audio pipeline works
+        testSpeaker();
+        
         console.log('[WS-CLIENT] AudioWorklet connected to destination');
         console.log('[WS-CLIENT] AudioWorklet initialized, node:', !!pcmNode);
     } catch (e) {
         console.error('[WS-CLIENT] AudioWorklet error:', e);
+    }
+}
+
+
+/**
+ * Test speaker output - play a test tone to verify audio pipeline
+ */
+function testSpeaker() {
+    try {
+        const osc = wsAudioContext.createOscillator();
+        const gain = wsAudioContext.createGain();
+        gain.gain.value = 0.3;
+        osc.connect(gain);
+        gain.connect(wsAudioContext.destination);
+        osc.frequency.value = 880;
+        osc.start();
+        setTimeout(() => {
+            osc.stop();
+            console.log('[WS-AUDIO] Speaker test completed');
+        }, 200);
+        console.log('[WS-AUDIO] Speaker test started');
+    } catch (e) {
+        console.error('[WS-AUDIO] Speaker test failed:', e);
     }
 }
 
@@ -115,21 +147,26 @@ function pushAudioData(pcmBytes) {
         return;
     }
     
-    // Ensure context is running
+    // Ensure context is running before sending audio
     if (wsAudioContext.state === 'suspended') {
         wsAudioContext.resume();
         console.log('[WS-AUDIO] Resumed suspended AudioContext');
     }
     
-    // Convert ArrayBuffer to Float32
-    const int16Array = new Int16Array(pcmBytes);
-    console.log('[WS-AUDIO] PCM data length:', int16Array.length);
-    
-    const float32Array = new Float32Array(int16Array.length);
-    
-    for (let i = 0; i < int16Array.length; i++) {
-        float32Array[i] = int16Array[i] / 32768.0;
+    // Handle both Float32Array and ArrayBuffer
+    let float32Array;
+    if (pcmBytes instanceof Float32Array) {
+        float32Array = pcmBytes;
+    } else {
+        // Convert ArrayBuffer/Int16Array to Float32
+        const int16Array = new Int16Array(pcmBytes);
+        float32Array = new Float32Array(int16Array.length);
+        for (let i = 0; i < int16Array.length; i++) {
+            float32Array[i] = int16Array[i] / 32768.0;
+        }
     }
+    
+    console.log('[WS-AUDIO] PCM data length:', float32Array.length, 'first sample:', float32Array[0]?.toFixed(4));
     
     // Send to AudioWorklet
     pcmNode.port.postMessage({
@@ -328,7 +365,7 @@ async function handleMessage(msg) {
                     }
                 }
                 
-                // Push decoded PCM to AudioWorklet
+                // Push decoded PCM to AudioWorklet (converts Int16 -> Float32 internally)
                 pushAudioData(int16Array.buffer);
             } catch (e) {
                 console.error('[WS-CLIENT] Failed to decode audio:', e);
