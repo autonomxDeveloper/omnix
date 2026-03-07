@@ -70,12 +70,14 @@ async function initAudioWorklet() {
     
     console.log('[WS-AUDIO] Initializing AudioWorklet...');
     
-    const audioContext = new AudioContext({ sampleRate: 48000 });
+    const TTS_SAMPLE_RATE = 24000;
+    const audioContext = new AudioContext({ sampleRate: TTS_SAMPLE_RATE });
     await audioContext.audioWorklet.addModule("/static/pcm-player-processor.js");
     
     pcmNode = new AudioWorkletNode(audioContext, "pcm-player");
     
     pcmNode.connect(audioContext.destination);
+    console.log("[WS-AUDIO] Initialized AudioContext:", audioContext.sampleRate + "Hz");
     console.log("[WS-AUDIO] Worklet connected to destination");
     
     if (audioContext.state === "suspended") {

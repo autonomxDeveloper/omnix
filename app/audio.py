@@ -61,7 +61,7 @@ def stt_float32():
         if not audio_data:
             return jsonify({"success": False, "error": "No audio data provided"}), 400
         
-        sample_rate = int(request.headers.get('X-Sample-Rate', 48000))
+        sample_rate = int(request.headers.get('X-Sample-Rate', 24000))
         
         stt_provider = shared.get_stt_provider()
         if not stt_provider:

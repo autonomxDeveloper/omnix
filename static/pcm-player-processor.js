@@ -30,10 +30,6 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
             }
         }
 
-        if (Math.abs(output[0]) > 0.001) {
-            console.log("[WORKLET] Audio output active at sample:", output[0])
-        }
-
         return true
     }
 

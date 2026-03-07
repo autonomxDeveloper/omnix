@@ -12,8 +12,10 @@ let isPlayingAudio = false;
 let previousChunkEndSamples = null;
 let isFirstAudioChunk = true;
 
-// Crossfade configuration - 480 samples = ~10ms at 48kHz for smooth transitions
-const CROSSFADE_SAMPLES = 480;
+const TTS_SAMPLE_RATE = 24000;
+
+// Crossfade configuration - 240 samples = ~10ms at 24kHz for smooth transitions
+const CROSSFADE_SAMPLES = 240;
 
 // Global AudioContext for Web Audio API playback
 let webAudioContext = null;
@@ -42,8 +44,8 @@ let ttsCurrentAudio = null;
 function getWebAudioContext() {
     if (!webAudioContext) {
         webAudioContext = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: 48000,  // Match server output
-            latencyHint: 'interactive'  // Lowest latency
+            sampleRate: TTS_SAMPLE_RATE,
+            latencyHint: 'interactive'
         });
         console.log('[WEB_AUDIO] Initialized AudioContext:', webAudioContext.sampleRate + 'Hz');
     }

@@ -976,13 +976,16 @@ async def stt_float32(request: Request):
     """STT endpoint for Float32 audio - proxies to STT service."""
     try:
         audio_bytes = await request.body()
-        sample_rate = request.headers.get('X-Sample-Rate', '48000')
+        sample_rate = request.headers.get('X-Sample-Rate', '24000')
+        
+        if not audio_bytes:
+            return JSONResponse({"detail": "No audio data provided"}, status_code=400)
         
         # Forward to STT service
         stt_url = f"{shared.STT_BASE_URL}/transcribe"
         response = requests.post(
             stt_url,
-            headers={'X-Sample-Rate': sample_rate},
+            headers={'X-Sample-Rate': sample_rate, 'Content-Type': 'application/octet-stream'},
             data=audio_bytes,
             timeout=30
         )
@@ -990,7 +993,12 @@ async def stt_float32(request: Request):
         if response.status_code == 200:
             return response.json()
         else:
-            return JSONResponse({"detail": f"STT service error: {response.status_code}"}, status_code=response.status_code)
+            return JSONResponse({
+                "detail": f"STT service error: {response.status_code}",
+                "stt_response": response.text[:500] if response.text else "Empty response"
+            }, status_code=response.status_code)
+    except requests.exceptions.ConnectionError as e:
+        return JSONResponse({"detail": f"STT service unavailable at {shared.STT_BASE_URL}: {str(e)}"}, status_code=503)
     except Exception as e:
         return JSONResponse({"detail": str(e)}, status_code=500)
 
