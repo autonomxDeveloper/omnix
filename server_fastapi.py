@@ -211,12 +211,10 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                     break
                     
                 if audio_chunk is not None and len(audio_chunk) > 0:
-                    # Convert float32 to int16 PCM
-                    pcm_int16 = (audio_chunk * 32767).astype(np.int16).tobytes()
+                    pcm_float32 = audio_chunk.astype(np.float32).tobytes()
                     
-                    # Send RAW binary PCM (no base64!)
                     try:
-                        asyncio.run(session.websocket.send_bytes(pcm_int16))
+                        asyncio.run(session.websocket.send_bytes(pcm_float32))
                         
                         if not first_sent:
                             elapsed = (time.time() - start_time) * 1000
