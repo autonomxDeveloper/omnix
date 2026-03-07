@@ -130,7 +130,7 @@ const llamacppAutoStart = document.getElementById('llamacppAutoStart');
 const llamacppDownloadLocation = document.getElementById('llamacppDownloadLocation');
 
 // State
-let sessionId = null;
+var sessionId = null;
 let isLoading = false;
 let sessions = [];
 

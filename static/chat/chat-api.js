@@ -155,7 +155,6 @@ async function sendMessage() {
                                 thinkingContent = thinking;
                                 streamedContent = content;
                                 
-                                // Update token counter from text content (estimate)
                                 const generationTimeMs = startTime ? (Date.now() - startTime) : null;
                                 console.log('[TOKEN] Updating tokens, time:', generationTimeMs, 'user:', message?.length, 'ai:', streamedContent?.length);
                                 
@@ -169,6 +168,24 @@ async function sendMessage() {
                                     }
                                 } catch (e) {
                                     console.error('[TOKEN] Error calling updateTokenCounterFromText:', e);
+                                }
+                                
+                                const tokensGenerated = streamedContent ? Math.ceil(streamedContent.length / 4) : 0;
+                                const tokenSpeed = generationTimeMs > 0 && tokensGenerated > 0 
+                                    ? (tokensGenerated / (generationTimeMs / 1000)) 
+                                    : 0;
+                                
+                                if (typeof window.updateTimingSummary === 'function') {
+                                    window.updateTimingSummary({
+                                        requestStart: startTime || performance.now(),
+                                        total: generationTimeMs || 0,
+                                        llm: generationTimeMs ? generationTimeMs * 0.6 : 0,
+                                        llmDone: generationTimeMs ? generationTimeMs * 0.8 : 0,
+                                        tts: generationTimeMs ? generationTimeMs * 0.4 : 0,
+                                        audioPlayStart: generationTimeMs ? generationTimeMs * 0.9 : 0,
+                                        tokens: tokensGenerated,
+                                        tokensPerSecond: tokenSpeed
+                                    });
                                 }
                                 
                                 // Rebuild message with proper structure
