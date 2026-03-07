@@ -1,81 +1,47 @@
-/**
- * LM Studio Chatbot - PCM Player AudioWorklet
- * Low-latency audio playback using AudioWorklet
- * Replaces ScriptProcessorNode for better performance
- */
-
 class PCMPlayerProcessor extends AudioWorkletProcessor {
+
     constructor() {
-        super();
-        this.buffer = new Float32Array(0);
-        this.isPlaying = true;
-        this.samplesPlayed = 0;
-        
-        // Handle messages from main thread
+        super()
+
+        this.bufferSize = 96000
+        this.buffer = new Float32Array(this.bufferSize)
+
+        this.readIndex = 0
+        this.writeIndex = 0
+
         this.port.onmessage = (event) => {
-            if (event.data.type === 'audio') {
-                // Append new audio data to buffer
-                const newData = new Float32Array(event.data.data);
-                const newBuffer = new Float32Array(this.buffer.length + newData.length);
-                newBuffer.set(this.buffer, 0);
-                newBuffer.set(newData, this.buffer.length);
-                this.buffer = newBuffer;
-                
-                // Debug logging
-                console.log('[WORKLET] Received audio, buffer now:', this.buffer.length, 'first sample:', this.buffer[0]?.toFixed(4));
-            } else if (event.data.type === 'stop') {
-                this.isPlaying = false;
-                this.buffer = new Float32Array(0);
-            } else if (event.data.type === 'clear') {
-                this.buffer = new Float32Array(0);
+            const data = event.data
+            if (!data) return
+            
+            if (data instanceof Float32Array) {
+                for (let i = 0; i < data.length; i++) {
+                    this.buffer[this.writeIndex] = data[i]
+                    this.writeIndex = (this.writeIndex + 1) % this.bufferSize
+                }
+            } else if (Array.isArray(data)) {
+                for (let sample of data) {
+                    this.buffer[this.writeIndex] = sample
+                    this.writeIndex = (this.writeIndex + 1) % this.bufferSize
+                }
             }
-        };
+        }
     }
 
-    process(inputs, outputs, parameters) {
-        const output = outputs[0];
-        const channel = output[0];
-        
-        // FIX #4: Debug - check if audio output is active
-        let hasAudio = this.buffer.length > 0;
-        
-        if (!this.isPlaying || this.buffer.length === 0) {
-            // Fill with silence
-            for (let i = 0; i < channel.length; i++) {
-                channel[i] = 0;
-            }
-            return true;
-        }
-        
-        // Copy buffer to output
-        const samplesToPlay = Math.min(channel.length, this.buffer.length);
-        for (let i = 0; i < samplesToPlay; i++) {
-            channel[i] = this.buffer[i];
-        }
-        
-        // FIX #4: Debug output - log when audio is actually being written
-        if (hasAudio && Math.abs(this.buffer[0]) > 0.0001) {
-            if (this.samplesPlayed === 0) {
-                console.log('[WORKLET] audio output active - first sample:', this.buffer[0].toFixed(4));
+    process(inputs, outputs) {
+
+        const output = outputs[0][0]
+
+        for (let i = 0; i < output.length; i++) {
+            if (this.readIndex !== this.writeIndex) {
+                output[i] = this.buffer[this.readIndex]
+                this.readIndex = (this.readIndex + 1) % this.bufferSize
+            } else {
+                output[i] = 0
             }
         }
-        this.samplesPlayed += samplesToPlay;
-        
-        // Fill remaining with silence
-        for (let i = samplesToPlay; i < channel.length; i++) {
-            channel[i] = 0;
-        }
-        
-        // Shift buffer (remove played samples)
-        if (samplesToPlay < this.buffer.length) {
-            this.buffer = this.buffer.slice(samplesToPlay);
-        } else {
-            this.buffer = new Float32Array(0);
-        }
-        
-        return true;
+
+        return true
     }
 }
 
-// Register the processor
-registerProcessor('pcm-player', PCMPlayerProcessor);
+registerProcessor("pcm-player", PCMPlayerProcessor)

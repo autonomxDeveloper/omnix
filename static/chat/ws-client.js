@@ -178,11 +178,8 @@ function pushAudioData(pcmBytes) {
     console.log('[WS-AUDIO] PCM data length:', float32Array.length, 'first sample:', float32Array[0]?.toFixed(4));
     console.log('[WS-AUDIO] Sent Float32 samples:', float32Array.length);
     
-    // Send to AudioWorklet
-    pcmNode.port.postMessage({
-        type: 'audio',
-        data: float32Array
-    });
+    // Send to AudioWorklet - send Float32Array directly for ring buffer processor
+    pcmNode.port.postMessage(float32Array);
     console.log('[WS-AUDIO] Sent to AudioWorklet, buffer size:', float32Array.length);
     console.log('[AUDIO] Playing streamed audio');
 }

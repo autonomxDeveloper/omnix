@@ -804,10 +804,9 @@ function addConversationMessageAI(content) {
 
 // Switch to conversation view
 async function switchToConversationView() {
-    // In WAV mode: Use REST API for conversation (audio via <audio> elements)
+    // In stream mode: Use AudioContext for streaming
     // In WebSocket mode: Use WebSocket pipeline for conversation (streaming audio)
-    // Default is WAV mode - which uses REST API + <audio> playback
-    console.log('[VOICE] TTS_PLAYBACK_MODE:', window.TTS_PLAYBACK_MODE || 'wav');
+    console.log('[VOICE] TTS_PLAYBACK_MODE:', window.TTS_PLAYBACK_MODE || 'stream');
     
     // Reset the stop flag when entering conversation mode
     stopAudioRequested = false;
