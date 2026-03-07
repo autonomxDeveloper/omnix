@@ -3,26 +3,16 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
     constructor() {
         super()
 
-        this.bufferSize = 96000
+        this.bufferSize = 24000 * 6
         this.buffer = new Float32Array(this.bufferSize)
-
         this.readIndex = 0
         this.writeIndex = 0
 
         this.port.onmessage = (event) => {
             const data = event.data
-            if (!data) return
-            
-            if (data instanceof Float32Array) {
-                for (let i = 0; i < data.length; i++) {
-                    this.buffer[this.writeIndex] = data[i]
-                    this.writeIndex = (this.writeIndex + 1) % this.bufferSize
-                }
-            } else if (Array.isArray(data)) {
-                for (let sample of data) {
-                    this.buffer[this.writeIndex] = sample
-                    this.writeIndex = (this.writeIndex + 1) % this.bufferSize
-                }
+            for (let i = 0; i < data.length; i++) {
+                this.buffer[this.writeIndex] = data[i]
+                this.writeIndex = (this.writeIndex + 1) % this.bufferSize
             }
         }
     }
@@ -40,8 +30,13 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
             }
         }
 
+        if (Math.abs(output[0]) > 0.001) {
+            console.log("[WORKLET] Audio output active at sample:", output[0])
+        }
+
         return true
     }
+
 }
 
 registerProcessor("pcm-player", PCMPlayerProcessor)

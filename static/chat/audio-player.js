@@ -282,11 +282,16 @@ function playTTS(audioBase64, sampleRate = null) {
             // Track first playback start time for latency logging
             const playbackStartTime = performance.now();
             
-            // PHASE 3: GUARD - Only use <audio> playback in WAV mode
-            if (window.TTS_PLAYBACK_MODE !== "wav") {
-                console.log("[TTS-PLAY] Skipping WAV playback (WebSocket mode active)");
+            // PHASE 3: GUARD - Skip WAV playback for stream/websocket modes
+            if (window.TTS_PLAYBACK_MODE === "stream" || window.TTS_PLAYBACK_MODE === "websocket") {
+                console.log("[TTS-PLAY] Skipping WAV playback (streaming mode active)");
                 resolve();
                 return;
+            }
+            
+            // Unexpected mode warning
+            if (window.TTS_PLAYBACK_MODE !== "wav") {
+                console.warn("Unexpected TTS_PLAYBACK_MODE:", window.TTS_PLAYBACK_MODE);
             }
             
             // Initialize WAV AudioContext if not already done
