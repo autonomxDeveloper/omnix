@@ -36,6 +36,9 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
         const output = outputs[0];
         const channel = output[0];
         
+        // FIX #4: Debug - check if audio output is active
+        let hasAudio = this.buffer.length > 0;
+        
         if (!this.isPlaying || this.buffer.length === 0) {
             // Fill with silence
             for (let i = 0; i < channel.length; i++) {
@@ -50,9 +53,11 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
             channel[i] = this.buffer[i];
         }
         
-        // Debug: log occasionally
-        if (this.samplesPlayed === 0 || this.samplesPlayed % 48000 === 0) {
-            console.log('[WORKLET] Playing, buffer:', this.buffer.length, 'samplesToPlay:', samplesToPlay, 'first sample:', this.buffer[0]?.toFixed(4));
+        // FIX #4: Debug output - log when audio is actually being written
+        if (hasAudio && Math.abs(this.buffer[0]) > 0.0001) {
+            if (this.samplesPlayed === 0) {
+                console.log('[WORKLET] audio output active - first sample:', this.buffer[0].toFixed(4));
+            }
         }
         this.samplesPlayed += samplesToPlay;
         
