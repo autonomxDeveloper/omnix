@@ -6,10 +6,11 @@
 // ============================================================
 // GLOBAL TTS PLAYBACK MODE - ONLY ONE CAN BE ACTIVE
 // ============================================================
-window.TTS_PLAYBACK_MODE = "websocket"; 
-// Allowed values: "wav", "websocket"
-// "wav" = Use <audio> elements with WAV files (clean, no streaming)
-// "websocket" = Use AudioContext for streaming PCM chunks
+window.TTS_PLAYBACK_MODE = "stream"; 
+console.log('[CORE] TTS_PLAYBACK_MODE initialized to:', window.TTS_PLAYBACK_MODE);
+// Allowed values: "stream", "websocket"
+// "stream" = Use AudioContext for streaming PCM chunks (AudioWorklet)
+// "websocket" = Use WebSocket + AudioContext streaming
 
 // Initialize audio context for WAV mode to ensure audio works
 let wavAudioContext = null;
@@ -38,7 +39,8 @@ setInterval(() => {
     const audioElements = document.querySelectorAll("audio");
     const audioContexts = window.streamingAudioContext ? 1 : 0;
     const wavContextActive = wavAudioContext && wavAudioContext.state === 'running' ? 1 : 0;
-    console.log("[AUDIO-DIAG] Mode:", window.TTS_PLAYBACK_MODE,
+    const mode = window.TTS_PLAYBACK_MODE || 'UNDEFINED';
+    console.log("[AUDIO-DIAG] Mode:", mode,
         "| Audio elements:", audioElements.length,
         "| AudioContext:", audioContexts ? "active" : "none",
         "| WAV Context:", wavContextActive ? "active" : "none");
@@ -142,7 +144,7 @@ const ENABLE_STREAMING_TTS = true; // Set to true for streaming TTS
 
 // Dynamic getter for USE_WEBSOCKET based on playback mode
 function getUseWebSocket() {
-    return window.TTS_PLAYBACK_MODE === "websocket";
+    return window.TTS_PLAYBACK_MODE === "stream" || window.TTS_PLAYBACK_MODE === "websocket";
 }
 
 // Initialize
