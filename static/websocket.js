@@ -262,6 +262,8 @@ async function scheduleAudioChunk(audioBase64, sampleRate) {
         return;
     }
     
+    console.log('[WS-AUDIO] Streaming playback active');
+    
     // Track if this is the first chunk
     const isFirstChunk = (previousChunkEnd === null);
     
