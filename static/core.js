@@ -6,7 +6,7 @@
 // ============================================================
 // GLOBAL TTS PLAYBACK MODE - ONLY ONE CAN BE ACTIVE
 // ============================================================
-window.TTS_PLAYBACK_MODE = "wav"; 
+window.TTS_PLAYBACK_MODE = "websocket"; 
 // Allowed values: "wav", "websocket"
 // "wav" = Use <audio> elements with WAV files (clean, no streaming)
 // "websocket" = Use AudioContext for streaming PCM chunks

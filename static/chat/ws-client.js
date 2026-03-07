@@ -107,6 +107,7 @@ async function initAudioWorklet() {
         
         console.log('[WS-CLIENT] AudioWorklet connected to destination');
         console.log('[WS-CLIENT] AudioWorklet initialized, node:', !!pcmNode);
+        console.log('[AUDIO] Using streaming playback');
     } catch (e) {
         console.error('[WS-CLIENT] AudioWorklet error:', e);
     }
@@ -167,6 +168,7 @@ function pushAudioData(pcmBytes) {
     }
     
     console.log('[WS-AUDIO] PCM data length:', float32Array.length, 'first sample:', float32Array[0]?.toFixed(4));
+    console.log('[WS-AUDIO] Sent Float32 samples:', float32Array.length);
     
     // Send to AudioWorklet
     pcmNode.port.postMessage({
@@ -174,6 +176,7 @@ function pushAudioData(pcmBytes) {
         data: float32Array
     });
     console.log('[WS-AUDIO] Sent to AudioWorklet, buffer size:', float32Array.length);
+    console.log('[AUDIO] Playing streamed audio');
 }
 
 
