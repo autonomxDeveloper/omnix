@@ -138,13 +138,20 @@ let sessions = [];
 
 // WebSocket Configuration - removed realtime server references
 // USE_WEBSOCKET is now controlled by TTS_PLAYBACK_MODE
-// In "wav" mode: USE_WEBSOCKET = false (use REST API + <audio> elements)
+// In "stream" mode: USE_WEBSOCKET = true (use AudioContext + AudioWorklet)
 // In "websocket" mode: USE_WEBSOCKET = true (use WebSocket + AudioContext streaming)
 const ENABLE_STREAMING_TTS = true; // Set to true for streaming TTS
 
 // Dynamic getter for USE_WEBSOCKET based on playback mode
 function getUseWebSocket() {
-    return window.TTS_PLAYBACK_MODE === "stream" || window.TTS_PLAYBACK_MODE === "websocket";
+    if (window.TTS_PLAYBACK_MODE === "stream") {
+        return true;
+    } else if (window.TTS_PLAYBACK_MODE === "websocket") {
+        return true;
+    } else {
+        console.warn("Unexpected TTS_PLAYBACK_MODE:", window.TTS_PLAYBACK_MODE);
+        return false;
+    }
 }
 
 // Initialize
