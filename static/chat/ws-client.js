@@ -288,6 +288,29 @@ async function handleMessage(msg) {
             }
             break;
             
+        case 'tts_start':
+            firstAudioTime = msg.time;
+            console.log(`🕐 [WS] TTS first chunk: ${firstAudioTime}ms`);
+            
+            const tokensGeneratedTts = streamedContent ? Math.ceil(streamedContent.length / 4) : 0;
+            const tokenSpeedTts = (llmFirstTokenTime > 0 && tokensGeneratedTts > 0) 
+                ? (tokensGeneratedTts / (firstAudioTime / 1000)) 
+                : 0;
+            
+            if (typeof window.updateTimingSummary === 'function') {
+                window.updateTimingSummary({
+                    requestStart: totalStartTime,
+                    total: firstAudioTime,
+                    llm: llmFirstTokenTime > 0 ? llmFirstTokenTime : 0,
+                    llmDone: firstAudioTime,
+                    tts: firstAudioTime,
+                    audioPlayStart: firstAudioTime,
+                    tokens: tokensGeneratedTts,
+                    tokensPerSecond: tokenSpeedTts
+                });
+            }
+            break;
+            
         case 'content':
             streamedContent += msg.content;
             if (currentAssistantDiv) {
@@ -323,29 +346,6 @@ async function handleMessage(msg) {
             try {
                 const audioBuffer = await window.wsWavAudioContext.decodeAudioData(wavBuffer.slice(0));
                 const channelData = audioBuffer.getChannelData(0);
-                
-                if (firstAudioTime === 0) {
-                    firstAudioTime = performance.now() - totalStartTime;
-                    console.log(`🕐 [WS] First audio: ${firstAudioTime.toFixed(0)}ms`);
-                    
-                    const tokensGenerated = streamedContent ? Math.ceil(streamedContent.length / 4) : 0;
-                    const tokenSpeed = (llmFirstTokenTime > 0 && tokensGenerated > 0) 
-                        ? (tokensGenerated / (firstAudioTime / 1000)) 
-                        : 0;
-                    
-                    if (typeof window.updateTimingSummary === 'function') {
-                        window.updateTimingSummary({
-                            requestStart: totalStartTime,
-                            total: firstAudioTime,
-                            llm: llmFirstTokenTime > 0 ? llmFirstTokenTime : 0,
-                            llmDone: firstAudioTime,
-                            tts: firstAudioTime,
-                            audioPlayStart: firstAudioTime,
-                            tokens: tokensGenerated,
-                            tokensPerSecond: tokenSpeed
-                        });
-                    }
-                }
                 
                 if (!responseComplete && !isSpeaking) {
                     isSpeaking = true;
