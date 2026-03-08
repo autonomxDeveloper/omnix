@@ -16,6 +16,10 @@ console.log('[CORE] TTS_PLAYBACK_MODE initialized to:', window.TTS_PLAYBACK_MODE
 let wavAudioContext = null;
 
 function initWavAudioContext() {
+    if (window.TTS_PLAYBACK_MODE === "stream" || window.TTS_PLAYBACK_MODE === "websocket") {
+        console.log("[AUDIO] Skipping initWavAudioContext - streaming mode active");
+        return;
+    }
     try {
         if (!wavAudioContext) {
             wavAudioContext = new (window.AudioContext || window.webkitAudioContext)({
