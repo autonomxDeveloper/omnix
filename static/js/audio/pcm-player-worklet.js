@@ -1,48 +1,51 @@
 class PCMPlayerProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
-        console.log("[WORKLET] Constructor called");
-
-        this.buffer = new Float32Array(0);
-        this.readIndex = 0;
+        this.buffer = [];
+        this.bufferSamples = 0;
+        this.chunkOffset = 0;
 
         this.port.onmessage = (event) => {
             const data = event.data;
             if (!data) return;
 
             if (data.type === 'stop' || data.type === 'reset') {
-                this.buffer = new Float32Array(0);
-                this.readIndex = 0;
-                console.log('[WORKLET] Reset');
+                this.buffer = [];
+                this.bufferSamples = 0;
+                this.chunkOffset = 0;
                 return;
             }
 
-            if (data.length) {
-                const newBuffer = new Float32Array(this.buffer.length + data.length);
-                newBuffer.set(this.buffer, 0);
-                newBuffer.set(data, this.buffer.length);
-                this.buffer = newBuffer;
+            if (data instanceof Float32Array && data.length > 0) {
+                this.buffer.push(data);
+                this.bufferSamples += data.length;
             }
         };
     }
 
     process(inputs, outputs) {
         const output = outputs[0][0];
-        const remaining = this.buffer.length - this.readIndex;
-        
-        if (remaining >= output.length) {
-            for (let i = 0; i < output.length; i++) {
-                output[i] = this.buffer[this.readIndex++];
+        const needed = output.length;
+        let written = 0;
+
+        while (written < needed && this.buffer.length > 0) {
+            const chunk = this.buffer[0];
+            const available = chunk.length - this.chunkOffset;
+            const toCopy = Math.min(available, needed - written);
+
+            output.set(chunk.subarray(this.chunkOffset, this.chunkOffset + toCopy), written);
+            written += toCopy;
+            this.chunkOffset += toCopy;
+            this.bufferSamples -= toCopy;
+
+            if (this.chunkOffset >= chunk.length) {
+                this.buffer.shift();
+                this.chunkOffset = 0;
             }
-        } else {
-            for (let i = 0; i < remaining; i++) {
-                output[i] = this.buffer[this.readIndex++];
-            }
-            for (let i = remaining; i < output.length; i++) {
-                output[i] = 0;
-            }
-            this.buffer = new Float32Array(0);
-            this.readIndex = 0;
+        }
+
+        for (let i = written; i < needed; i++) {
+            output[i] = 0;
         }
 
         return true;

@@ -10,7 +10,7 @@ console.log('[WS-CLIENT] Starting to load...');
 const WS_URL = `ws://${window.location.host}/ws/conversation`;
 const SAMPLE_RATE = 24000;
 let FRAME_SIZE = 960;
-const START_BUFFER_SAMPLES = 2400;
+const START_BUFFER_SAMPLES = 9600;
 
 let pendingMessages = [];
 
@@ -57,16 +57,17 @@ function appendSamples(samples) {
 }
 
 function upsample24toNative(pcm24) {
+    if (nativeSampleRate === SAMPLE_RATE) return pcm24;
     const factor = nativeSampleRate / SAMPLE_RATE;
-    if (factor === 1) return pcm24;
-
-    const out = new Float32Array(Math.floor(pcm24.length * factor));
-    for (let i = 0; i < pcm24.length - 1; i++) {
-        const start = pcm24[i];
-        const end = pcm24[i + 1];
-        for (let j = 0; j < factor; j++) {
-            out[i * factor + j] = start + (end - start) * (j / factor);
-        }
+    const outLen = Math.round(pcm24.length * factor);
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+        const srcPos = i / factor;
+        const srcIdx = Math.floor(srcPos);
+        const frac = srcPos - srcIdx;
+        const s0 = pcm24[srcIdx] ?? 0;
+        const s1 = pcm24[srcIdx + 1] ?? s0;
+        out[i] = s0 + (s1 - s0) * frac;
     }
     return out;
 }
@@ -164,21 +165,24 @@ function pushAudioData(samples) {
 
 // ============== HANDLE INCOMING PCM ==============
 function handleAudioData(pcmBytes) {
-    let samples = new Float32Array(pcmBytes);
-
-    const expected = 4800;
-    if (samples.length !== expected) {
-        const fixed = new Float32Array(expected);
-        fixed.set(samples.subarray(0, Math.min(samples.length, expected)));
-        samples = fixed;
-    }
-
+    const samples = new Float32Array(pcmBytes);
     pushAudioData(samples);
 }
 
 // ============== STOP AUDIO ==============
 function stopAudio() {
-    if (pcmNode && pcmNode.port) pcmNode.port.postMessage({ type: "stop" });
+    if (pcmNode && pcmNode.port) {
+        if (startupBuffer.length > 0) {
+            const merged = mergeFloat32Arrays(startupBuffer);
+            if (merged.length > 0) {
+                pcmNode.port.postMessage(merged);
+            }
+        }
+        if (pendingBuffer.length > 0) {
+            pcmNode.port.postMessage(pendingBuffer);
+        }
+        pcmNode.port.postMessage({ type: "stop" });
+    }
     pendingBuffer = new Float32Array(0);
     playbackStarted = false;
     startupBuffer = [];
@@ -314,11 +318,6 @@ async function handleMessage(msg) {
                 const audioBuffer = await window.wsWavAudioContext.decodeAudioData(wavBuffer.slice(0));
                 const channelData = audioBuffer.getChannelData(0);
                 
-                const int16Array = new Int16Array(channelData.length);
-                for (let i = 0; i < channelData.length; i++) {
-                    int16Array[i] = Math.max(-32768, Math.min(32767, channelData[i] * 32768));
-                }
-                
                 if (firstAudioTime === 0) {
                     firstAudioTime = performance.now() - totalStartTime;
                     console.log(`🕐 [WS] First audio: ${firstAudioTime.toFixed(0)}ms`);
@@ -352,7 +351,7 @@ async function handleMessage(msg) {
                     }
                 }
                 
-                pushAudioData(int16Array.buffer);
+                pushAudioData(channelData);
             } catch (e) {
                 console.error('[WS-CLIENT] Failed to decode audio:', e);
             }
