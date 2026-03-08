@@ -1,50 +1,60 @@
 class PCMPlayerProcessor extends AudioWorkletProcessor {
 
     constructor() {
-        super()
-        this.queue = []
-        this.index = 0
-        this.loggedOnce = false;
-
-        this.port.onmessage = (e) => {
-            if (!this.loggedOnce) {
-                console.log("[WORKLET] Received:", e.data.length, "samples");
-                this.loggedOnce = true;
-                setTimeout(() => this.loggedOnce = false, 1000);
+        super();
+        this.buffer = new Float32Array(0);
+        console.log('[WORKLET] Constructor called');
+        
+        this.port.onmessage = (event) => {
+            const data = event.data;
+            if (!data) return;
+            
+            let newData = data;
+            if (data instanceof ArrayBuffer) {
+                newData = new Float32Array(data);
             }
-            this.queue.push(e.data)
-        }
+            
+            if (newData.length > 0) {
+                const oldLen = this.buffer.length;
+                const newBuf = new Float32Array(oldLen + newData.length);
+                newBuf.set(this.buffer, 0);
+                newBuf.set(newData, oldLen);
+                this.buffer = newBuf;
+                console.log('[WORKLET] Buffer now has', this.buffer.length, 'samples');
+            }
+        };
+        
+        this.port.onmessageerror = (e) => console.error('[WORKLET] Error:', e);
     }
 
-    process(inputs, outputs) {
-        const output = outputs[0][0]
+    process(inputs, outputs, parameters) {
+        const channel = outputs[0][0];
         
-        let played = 0;
-
-        for (let i = 0; i < output.length; i++) {
-
-            if (this.queue.length === 0) {
-                output[i] = 0
-                continue
+        if (this.buffer.length === 0) {
+            for (let i = 0; i < channel.length; i++) {
+                channel[i] = 0;
             }
-
-            const buffer = this.queue[0]
-            
-            if (this.index >= buffer.length) {
-                this.queue.shift()
-                this.index = 0
-                if (this.queue.length === 0) {
-                    output[i] = 0
-                    continue
-                }
-            }
-
-            output[i] = buffer[this.index++]
-            played++;
+            return true;
         }
         
-        return true
+        const toCopy = Math.min(channel.length, this.buffer.length);
+        
+        for (let i = 0; i < toCopy; i++) {
+            channel[i] = this.buffer[i];
+        }
+        
+        for (let i = toCopy; i < channel.length; i++) {
+            channel[i] = 0;
+        }
+        
+        if (toCopy < this.buffer.length) {
+            this.buffer = this.buffer.slice(toCopy);
+        } else {
+            this.buffer = new Float32Array(0);
+        }
+        
+        return true;
     }
 }
 
-registerProcessor("pcm-player", PCMPlayerProcessor)
+registerProcessor('pcm-player', PCMPlayerProcessor);
