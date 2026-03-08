@@ -291,14 +291,11 @@ function playTTS(audioBase64, sampleRate = null) {
                 return;
             }
             
-            // Unexpected mode warning
-            if (window.TTS_PLAYBACK_MODE !== "wav") {
-                console.warn("Unexpected TTS_PLAYBACK_MODE:", window.TTS_PLAYBACK_MODE);
-            }
-            
-            // Initialize WAV AudioContext if not already done
-            if (typeof initWavAudioContext === 'function') {
+            // Only initialize WAV AudioContext for wav mode
+            if (window.TTS_PLAYBACK_MODE === "wav" && typeof initWavAudioContext === 'function') {
                 initWavAudioContext();
+            } else if (window.TTS_PLAYBACK_MODE !== "wav") {
+                console.log("[TTS-PLAY] Skipping WAV AudioContext init, mode:", window.TTS_PLAYBACK_MODE);
             }
             
             // Check if stop was requested (from voice.js)

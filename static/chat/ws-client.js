@@ -9,7 +9,7 @@ console.log('[WS-CLIENT] Starting to load...');
 // ============== CONFIG ==============
 const WS_URL = `ws://${window.location.host}/ws/conversation`;
 const SAMPLE_RATE = 24000;
-const START_BUFFER_SAMPLES = 24000;
+const START_BUFFER_SAMPLES = 4800;
 
 // ============== STATE ==============
 let ws = null;
@@ -75,38 +75,44 @@ async function initAudioWorklet() {
     
     console.log('[WS-AUDIO] Initializing AudioWorklet...');
     
-    const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
-    await audioContext.audioWorklet.addModule("/static/js/audio/pcm-player-worklet.js");
-    
-    pcmNode = new AudioWorkletNode(audioContext, "pcm-player");
-    pcmNode.connect(audioContext.destination);
-    console.log("[WS-AUDIO] Initialized AudioContext:", audioContext.sampleRate + "Hz");
-    
-    if (audioContext.state === "suspended") {
-        await audioContext.resume();
-        console.log("[WS-AUDIO] AudioContext resumed");
-    }
-    
-    wsAudioContext = audioContext;
-    
-    wsGainNode = wsAudioContext.createGain();
-    wsGainNode.gain.value = 2.0;
-    
-    pcmNode.disconnect();
-    pcmNode.connect(wsGainNode);
-    wsGainNode.connect(wsAudioContext.destination);
-    
-    console.log('[WS-CLIENT] AudioWorklet connected');
-    console.log('[AUDIO] Using queue-based streaming playback');
-    
-    document.addEventListener('click', async () => {
-        if (wsAudioContext && wsAudioContext.state === 'suspended') {
-            await wsAudioContext.resume();
-            console.log('[WS-AUDIO] AudioContext resumed on click');
+    try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+        await audioContext.audioWorklet.addModule("/static/js/audio/pcm-player-worklet.js");
+        
+        pcmNode = new AudioWorkletNode(audioContext, "pcm-player");
+        pcmNode.connect(audioContext.destination);
+        console.log("[WS-AUDIO] Initialized AudioContext:", audioContext.sampleRate + "Hz");
+        
+        if (audioContext.state === "suspended") {
+            await audioContext.resume();
+            console.log("[WS-AUDIO] AudioContext resumed");
         }
-    }, { once: true });
-    
-    testSpeaker();
+        
+        wsAudioContext = audioContext;
+        
+        wsGainNode = wsAudioContext.createGain();
+        wsGainNode.gain.value = 1.0;
+        
+        pcmNode.disconnect();
+        pcmNode.connect(wsGainNode);
+        wsGainNode.connect(wsAudioContext.destination);
+        
+        window.streamingAudioContext = wsAudioContext;
+        
+        console.log('[WS-CLIENT] AudioWorklet connected');
+        console.log('[AUDIO] Using queue-based streaming playback');
+        
+        document.addEventListener('click', async () => {
+            if (wsAudioContext && wsAudioContext.state === 'suspended') {
+                await wsAudioContext.resume();
+                console.log('[WS-AUDIO] AudioContext resumed on click');
+            }
+        }, { once: true });
+        
+        testSpeaker();
+    } catch (e) {
+        console.error('[WS-AUDIO] Failed to initialize AudioWorklet:', e);
+    }
 }
 
 
@@ -154,7 +160,7 @@ function pushAudioData(samples) {
         
         if (bufferedSamples >= START_BUFFER_SAMPLES) {
             const merged = mergeFloat32Arrays(startupBuffer);
-            pcmNode.port.postMessage({ type: "push", samples: merged });
+            pcmNode.port.postMessage(merged);
             playbackStarted = true;
             startupBuffer = [];
             console.log('[WS-AUDIO] Startup buffer complete, starting playback');
@@ -162,7 +168,7 @@ function pushAudioData(samples) {
         return;
     }
     
-    pcmNode.port.postMessage({ type: "push", samples: samples });
+    pcmNode.port.postMessage(samples);
 }
 
 
@@ -226,6 +232,8 @@ async function connectWebSocket(sessionIdVal, speakerVal) {
         };
         
         ws.onmessage = (event) => {
+            console.log("[WS] Received message, type:", event.data.constructor.name, "size:", event.data instanceof ArrayBuffer ? event.data.byteLength : "N/A");
+            
             if (event.data instanceof ArrayBuffer) {
                 handleAudioData(event.data);
                 return;
@@ -451,6 +459,12 @@ async function handleMessage(msg) {
  */
 function handleAudioData(pcmBytes) {
     const samples = new Float32Array(pcmBytes);
+    
+    console.log("PCM length:", samples.length);
+    console.log(
+        "min:", Math.min(...samples),
+        "max:", Math.max(...samples)
+    );
     
     if (firstAudioTime === 0) {
         firstAudioTime = performance.now() - totalStartTime;

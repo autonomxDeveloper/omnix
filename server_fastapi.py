@@ -183,10 +183,25 @@ def start_tts_worker():
     print("[FASTAPI] TTS worker started")
 
 
+FRAME_SIZE = 2400
+
 def _generate_tts_stream(session: ConversationSession, text: str):
-    """Generate TTS and send directly via WebSocket"""
-    if not tts_provider or session.stop_requested:
+    """Generate TTS and send directly via WebSocket with proper chunking"""
+    print(f"[TTS] _generate_tts_stream called with text: '{text[:30]}...'")
+    
+    if not tts_provider:
+        print("[TTS] ERROR: No tts_provider available")
         return
+    
+    if session.stop_requested:
+        print("[TTS] Stop requested, skipping")
+        return
+    
+    if not hasattr(tts_provider, 'generate_audio_stream'):
+        print(f"[TTS] ERROR: tts_provider doesn't have generate_audio_stream. Has: {[x for x in dir(tts_provider) if not x.startswith('_')]}")
+        return
+    
+    buffer = np.array([], dtype=np.float32)
     
     try:
         start_time = time.time()
@@ -194,35 +209,69 @@ def _generate_tts_stream(session: ConversationSession, text: str):
         if hasattr(tts_provider, 'generate_audio_stream'):
             first_sent = False
             
-            for audio_chunk, sr, timing in tts_provider.generate_audio_stream(
-                text=text,
-                speaker=session.speaker,
-                language="English",
-                chunk_size=TTS_CHUNK_SIZE,
-                non_streaming_mode=False,
-                temperature=0.6,
-                top_k=20,
-                top_p=0.85,
-                repetition_penalty=1.0,
-                append_silence=False,
-                max_new_tokens=180
-            ):
-                if session.stop_requested:
-                    break
-                    
-                if audio_chunk is not None and len(audio_chunk) > 0:
-                    pcm_float32 = audio_chunk.astype(np.float32).tobytes()
-                    
-                    try:
-                        asyncio.run(session.websocket.send_bytes(pcm_float32))
-                        
-                        if not first_sent:
-                            elapsed = (time.time() - start_time) * 1000
-                            print(f"[TTS] First chunk for '{text[:20]}...' in {elapsed:.0f}ms")
-                            first_sent = True
-                    except Exception as e:
-                        print(f"[TTS] Send error: {e}")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            async def generate_and_send():
+                nonlocal first_sent
+                nonlocal buffer
+                
+                # generate_audio_stream is a regular generator, not async
+                for audio_chunk, sr, timing in tts_provider.generate_audio_stream(
+                    text=text,
+                    speaker=session.speaker,
+                    language="English",
+                    chunk_size=TTS_CHUNK_SIZE,
+                    non_streaming_mode=False,
+                    temperature=0.6,
+                    top_k=20,
+                    top_p=0.85,
+                    repetition_penalty=1.0,
+                    append_silence=False,
+                    max_new_tokens=180
+                ):
+                    if session.stop_requested:
                         break
+                        
+                    if audio_chunk is not None and len(audio_chunk) > 0:
+                        audio = np.asarray(audio_chunk, dtype=np.float32)
+                        
+                        if audio.ndim > 1:
+                            audio = audio.mean(axis=1)
+                        
+                        audio_max = np.abs(audio).max()
+                        if audio_max > 0:
+                            audio = audio * (1.0 / audio_max) * 0.9
+                        
+                        audio = np.clip(audio, -1.0, 1.0)
+                        
+                        buffer = np.concatenate([buffer, audio])
+                        
+                        while len(buffer) >= FRAME_SIZE:
+                            frame = buffer[:FRAME_SIZE]
+                            buffer = buffer[FRAME_SIZE:]
+                            
+                            try:
+                                await session.websocket.send_bytes(frame.tobytes())
+                                
+                                if not first_sent:
+                                    elapsed = (time.time() - start_time) * 1000
+                                    print(f"[TTS] First chunk for '{text[:20]}...' in {elapsed:.0f}ms, sent {len(frame)} samples")
+                                    first_sent = True
+                            except Exception as e:
+                                print(f"[TTS] Send error: {e}")
+                                break
+                
+                if len(buffer) > 0:
+                    try:
+                        await session.websocket.send_bytes(buffer.tobytes())
+                    except Exception as e:
+                        print(f"[TTS] Final send error: {e}")
+            
+            try:
+                loop.run_until_complete(generate_and_send())
+            finally:
+                loop.close()
                         
     except Exception as e:
         print(f"[TTS] Generation error: {e}")
