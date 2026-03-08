@@ -253,12 +253,16 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                             buffer = buffer[FRAME_SIZE:]
                             
                             try:
-                                await session.websocket.send_bytes(frame.tobytes())
-                                
                                 if not first_sent:
                                     elapsed = (time.time() - start_time) * 1000
                                     print(f"[TTS] First chunk for '{text[:20]}...' in {elapsed:.0f}ms, sent {len(frame)} samples")
+                                    await session.websocket.send_json({
+                                        "type": "tts_start",
+                                        "time": elapsed
+                                    })
                                     first_sent = True
+                                
+                                await session.websocket.send_bytes(frame.tobytes())
                             except Exception as e:
                                 print(f"[TTS] Send error: {e}")
                                 break

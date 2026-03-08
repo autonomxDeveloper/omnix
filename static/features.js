@@ -337,74 +337,18 @@ function resetSessionTokens() {
 }
 
 // ============================================================
-// TIMING METRICS - will be initialized when called
+// TIMING METRICS - logs to console
 // ============================================================
 
 window.updateTimingSummary = function(metrics) {
-    if (typeof timingMetrics === 'undefined') {
-        timingMetrics = {
-            requestStart: 0,
-            llmFirstToken: 0,
-            llmDone: 0,
-            ttsFirstChunk: 0,
-            audioPlayStart: 0,
-            totalResponse: 0,
-            tokensGenerated: 0,
-            tokensPerSecond: 0
-        };
-    }
-    timingMetrics = {
-        requestStart: metrics.requestStart || performance.now(),
-        llmFirstToken: metrics.llm || 0,
-        llmDone: metrics.llmDone || 0,
-        ttsFirstChunk: metrics.tts || 0,
-        audioPlayStart: metrics.audioPlayStart || 0,
-        totalResponse: metrics.total || 0,
-        tokensGenerated: metrics.tokens || 0,
-        tokensPerSecond: metrics.tokensPerSecond || 0
-    };
-    renderTimingDisplay();
+    const ttft = metrics.llm > 0 ? metrics.llm.toFixed(0) : '--';
+    const ttfa = metrics.tts > 0 ? metrics.tts.toFixed(0) : '--';
+    const total = metrics.total > 0 ? metrics.total.toFixed(0) : '--';
+    const tokens = metrics.tokens > 0 ? metrics.tokens : '--';
+    const speed = metrics.tokensPerSecond > 0 ? metrics.tokensPerSecond.toFixed(1) : '--';
+    
+    console.log(`=== TIMING METRICS === Total: ${total}ms | TTFT: ${ttft}ms | TTFA: ${ttfa}ms | Tokens: ${tokens} | Speed: ${speed}/s`);
 };
-
-// Create metrics element immediately
-(function() {
-    const timingEl = document.createElement('div');
-    timingEl.id = 'timingMetrics';
-    timingEl.style.cssText = 'position: fixed; bottom: 20px; right: 20px; background: rgba(15, 23, 42, 0.95); border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; font-size: 11px; color: #e2e8f0; z-index: 99999; cursor: pointer; min-width: 200px; font-family: monospace; display: none;';
-    timingEl.innerHTML = '<div style=\"color: #64748b;\">Waiting for metrics...</div>';
-    timingEl.title = 'Click for detailed metrics (F12 console)';
-    timingEl.addEventListener('click', function() {
-        const m = typeof timingMetrics !== 'undefined' ? timingMetrics : {llmFirstToken:0,ttsFirstChunk:0,totalResponse:0,tokensGenerated:0,tokensPerSecond:0};
-        console.log('=== TIMING METRICS ===', m);
-        alert('Metrics logged to console (F12)');
-    });
-    document.body.appendChild(timingEl);
-})();
-
-function renderTimingDisplay() {
-    const timingEl = document.getElementById('timingMetrics');
-    if (!timingEl) return;
-    if (typeof timingMetrics === 'undefined') return;
-    
-    const hasMetrics = timingMetrics.totalResponse > 0 || timingMetrics.ttsFirstChunk > 0;
-    timingEl.style.display = hasMetrics ? 'block' : 'none';
-    if (!hasMetrics) return;
-    
-    const ttft = timingMetrics.llmFirstToken > 0 ? timingMetrics.llmFirstToken.toFixed(0) : '--';
-    const ttfa = timingMetrics.ttsFirstChunk > 0 ? timingMetrics.ttsFirstChunk.toFixed(0) : '--';
-    const totalLatency = timingMetrics.totalResponse > 0 ? timingMetrics.totalResponse.toFixed(0) : '--';
-    const tokenCount = timingMetrics.tokensGenerated > 0 ? timingMetrics.tokensGenerated : '--';
-    const tokenSpeed = timingMetrics.tokensPerSecond > 0 ? timingMetrics.tokensPerSecond.toFixed(1) : '--';
-    
-    timingEl.innerHTML = '<div style=\"margin-bottom: 8px; font-weight: bold; color: #94a3b8; border-bottom: 1px solid #334155; padding-bottom: 6px;\">⚡ Performance Metrics</div>' +
-        '<table style=\"width: 100%; border-collapse: collapse;\">' +
-        '<tr><td style=\"color: #64748b;\">Total</td><td style=\"text-align: right; color: #4ade80;\">' + totalLatency + ' ms</td></tr>' +
-        '<tr><td style=\"color: #64748b;\">TTFT (LLM)</td><td style=\"text-align: right; color: #60a5fa;\">' + ttft + ' ms</td></tr>' +
-        '<tr><td style=\"color: #64748b;\">TTFA (Audio)</td><td style=\"text-align: right; color: #f472b6;\">' + ttfa + ' ms</td></tr>' +
-        '<tr><td style=\"color: #64748b;\">Tokens</td><td style=\"text-align: right; color: #fbbf24;\">' + tokenCount + '</td></tr>' +
-        '<tr><td style=\"color: #64748b;\">Speed</td><td style=\"text-align: right; color: #fbbf24;\">' + tokenSpeed + '/s</td></tr>' +
-        '</table>';
-}
 
 // ============================================================
 // STREAMING CANCELLATION
