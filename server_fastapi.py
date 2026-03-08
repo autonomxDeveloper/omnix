@@ -183,7 +183,7 @@ def start_tts_worker():
     print("[FASTAPI] TTS worker started")
 
 
-FRAME_SIZE = 2400
+FRAME_SIZE = 4800
 
 def _generate_tts_stream(session: ConversationSession, text: str):
     """Generate TTS and send directly via WebSocket with proper chunking"""
@@ -243,7 +243,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                         if audio_max > 0:
                             audio = audio * (1.0 / audio_max) * 0.9
                         
-                        audio = np.clip(audio, -1.0, 1.0)
+                        audio = np.clip(audio, -0.7, 0.7)
                         
                         buffer = np.concatenate([buffer, audio])
                         

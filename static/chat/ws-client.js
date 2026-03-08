@@ -9,7 +9,7 @@ console.log('[WS-CLIENT] Starting to load...');
 // ============== CONFIG ==============
 const WS_URL = `ws://${window.location.host}/ws/conversation`;
 const SAMPLE_RATE = 24000;
-const START_BUFFER_SAMPLES = 4800;
+const START_BUFFER_SAMPLES = 12000;
 
 // ============== STATE ==============
 let ws = null;
@@ -77,7 +77,7 @@ async function initAudioWorklet() {
     
     try {
         const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-        await audioContext.audioWorklet.addModule("/static/js/audio/pcm-player-worklet.js");
+        await audioContext.audioWorklet.addModule("/static/js/audio/pcm-player-worklet.js?v=" + Date.now());
         
         pcmNode = new AudioWorkletNode(audioContext, "pcm-player");
         pcmNode.connect(audioContext.destination);
@@ -149,8 +149,11 @@ function pushAudioData(samples) {
     }
     
     if (wsAudioContext.state === 'suspended') {
+        console.log('[WS-AUDIO] Context suspended, resuming...');
         wsAudioContext.resume();
     }
+    
+    console.log('[WS-AUDIO] Context state:', wsAudioContext.state);
     
     if (!playbackStarted) {
         startupBuffer.push(samples);
@@ -160,7 +163,10 @@ function pushAudioData(samples) {
         
         if (bufferedSamples >= START_BUFFER_SAMPLES) {
             const merged = mergeFloat32Arrays(startupBuffer);
-            pcmNode.port.postMessage(merged);
+            console.log('[WS-AUDIO] Sending merged buffer:', merged.length, 'samples');
+            if (merged && merged.length > 0) {
+                pcmNode.port.postMessage(merged);
+            }
             playbackStarted = true;
             startupBuffer = [];
             console.log('[WS-AUDIO] Startup buffer complete, starting playback');
@@ -168,7 +174,10 @@ function pushAudioData(samples) {
         return;
     }
     
-    pcmNode.port.postMessage(samples);
+    if (samples && samples.length > 0) {
+        console.log('[WS-AUDIO] Sending streaming chunk:', samples.length, 'samples');
+        pcmNode.port.postMessage(samples);
+    }
 }
 
 
@@ -460,11 +469,9 @@ async function handleMessage(msg) {
 function handleAudioData(pcmBytes) {
     const samples = new Float32Array(pcmBytes);
     
-    console.log("PCM length:", samples.length);
-    console.log(
-        "min:", Math.min(...samples),
-        "max:", Math.max(...samples)
-    );
+    if (window.DEBUG_AUDIO) {
+        console.log("PCM length:", samples.length);
+    }
     
     if (firstAudioTime === 0) {
         firstAudioTime = performance.now() - totalStartTime;
