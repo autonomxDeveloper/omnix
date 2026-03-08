@@ -1,53 +1,47 @@
 class PCMPlayerProcessor extends AudioWorkletProcessor {
-
     constructor() {
         super();
-
         console.log("[WORKLET] Constructor called");
 
         this.buffer = new Float32Array(0);
         this.readIndex = 0;
 
         this.port.onmessage = (event) => {
-            if (event.data && event.data.type) {
-                if (event.data.type === 'stop' || event.data.type === 'reset') {
-                    this.buffer = new Float32Array(0);
-                    this.readIndex = 0;
-                    console.log('[WORKLET] Reset');
-                    return;
-                }
+            const data = event.data;
+            if (!data) return;
+
+            if (data.type === 'stop' || data.type === 'reset') {
+                this.buffer = new Float32Array(0);
+                this.readIndex = 0;
+                console.log('[WORKLET] Reset');
                 return;
             }
-            
-            const newData = event.data;
-            if (!newData || newData.length === 0) return;
 
-            const merged = new Float32Array(this.buffer.length + newData.length);
-            merged.set(this.buffer, 0);
-            merged.set(newData, this.buffer.length);
-            this.buffer = merged;
+            if (data.length) {
+                const newBuffer = new Float32Array(this.buffer.length + data.length);
+                newBuffer.set(this.buffer, 0);
+                newBuffer.set(data, this.buffer.length);
+                this.buffer = newBuffer;
+            }
         };
     }
 
-    process(inputs, outputs, parameters) {
+    process(inputs, outputs) {
         const output = outputs[0][0];
-
-        for (let i = 0; i < output.length; i++) {
-            if (this.readIndex < this.buffer.length) {
+        const remaining = this.buffer.length - this.readIndex;
+        
+        if (remaining >= output.length) {
+            for (let i = 0; i < output.length; i++) {
                 output[i] = this.buffer[this.readIndex++];
-            } else {
+            }
+        } else {
+            for (let i = 0; i < remaining; i++) {
+                output[i] = this.buffer[this.readIndex++];
+            }
+            for (let i = remaining; i < output.length; i++) {
                 output[i] = 0;
             }
-        }
-
-        if (this.readIndex > 8192) {
-            this.buffer = this.buffer.slice(this.readIndex);
-            this.readIndex = 0;
-        }
-
-        // Prevent memory growth - keep buffer under 1 second
-        if (this.buffer.length > 48000) {
-            this.buffer = this.buffer.slice(this.readIndex);
+            this.buffer = new Float32Array(0);
             this.readIndex = 0;
         }
 
