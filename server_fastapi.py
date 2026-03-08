@@ -57,6 +57,8 @@ class ConversationSession:
     tts_queue: queue.Queue = field(default_factory=queue.Queue)
     last_tts_time: float = 0
     stop_requested: bool = False
+    tts_active: bool = False
+    tts_chunks_pending: int = 0
 
 
 # Global session management
@@ -183,7 +185,7 @@ def start_tts_worker():
     print("[FASTAPI] TTS worker started")
 
 
-FRAME_SIZE = 4800
+FRAME_SIZE = 2400  # 100ms at 24kHz — smaller frames for smoother streaming
 
 def _generate_tts_stream(session: ConversationSession, text: str):
     """Generate TTS and send directly via WebSocket with proper chunking"""
@@ -201,6 +203,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
         print(f"[TTS] ERROR: tts_provider doesn't have generate_audio_stream. Has: {[x for x in dir(tts_provider) if not x.startswith('_')]}")
         return
     
+    session.tts_active = True
     buffer = np.array([], dtype=np.float32)
     
     try:
@@ -239,11 +242,9 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                         if audio.ndim > 1:
                             audio = audio.mean(axis=1)
                         
-                        audio_max = np.abs(audio).max()
-                        if audio_max > 0:
-                            audio = audio * (1.0 / audio_max) * 0.9
-                        
-                        audio = np.clip(audio, -0.7, 0.7)
+                        # Fixed gain only — per-chunk normalization destroys
+                        # volume envelope and causes distortion when clipped
+                        audio = np.clip(audio * 0.85, -1.0, 1.0)
                         
                         buffer = np.concatenate([buffer, audio])
                         
@@ -277,6 +278,10 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                         
     except Exception as e:
         print(f"[TTS] Generation error: {e}")
+    finally:
+        session.tts_active = False
+        if session.tts_chunks_pending > 0:
+            session.tts_chunks_pending -= 1
 
 
 # ============== FASTAPI APP ==============
@@ -496,9 +501,9 @@ async def _process_conversation(session: ConversationSession, user_text: str):
                         # Send this chunk to TTS worker
                         text_to_speak = sentence_buffer.strip()
                         if text_to_speak:
-                            # Send text to TTS queue
                             try:
                                 session.tts_queue.put_nowait(text_to_speak)
+                                session.tts_chunks_pending += 1
                             except:
                                 pass
                         
@@ -518,10 +523,33 @@ async def _process_conversation(session: ConversationSession, user_text: str):
         if sentence_buffer.strip() and not session.stop_requested:
             try:
                 session.tts_queue.put_nowait(sentence_buffer.strip())
+                session.tts_chunks_pending += 1
             except:
                 pass
         
-        # Send done signal
+        # Wait until both conditions are true:
+        # 1. tts_queue is empty (no more text items waiting to be picked up)
+        # 2. tts_active is False (the TTS worker has finished sending all audio frames)
+        # 3. tts_chunks_pending is 0 (all queued chunks have been processed)
+        # Checking only tts_queue.empty() is insufficient because the worker
+        # dequeues the text item before it starts generating/sending audio.
+        drain_timeout = time.time() + 60.0  # max 60s wait for long responses
+        while not session.stop_requested:
+            if time.time() > drain_timeout:
+                print("[CONV] TTS drain timeout — sending done anyway")
+                break
+            queue_empty = session.tts_queue.empty()
+            tts_done = not session.tts_active
+            chunks_done = session.tts_chunks_pending <= 0
+            if queue_empty and tts_done and chunks_done:
+                break
+            await asyncio.sleep(0.05)
+        
+        # One additional render-cycle wait to ensure the final send_bytes
+        # call has been flushed through the WebSocket send buffer
+        if not session.stop_requested:
+            await asyncio.sleep(0.1)
+        
         await session.websocket.send_json({
             "type": "done",
             "total_time": (time.time() - start_time) * 1000
@@ -1040,12 +1068,12 @@ async def stt_float32(request: Request):
         if not audio_bytes:
             return JSONResponse({"detail": "No audio data provided"}, status_code=400)
         
-        # Forward to STT service
+        # Forward to STT service as multipart — the STT service requires a 'file' field
         stt_url = f"{shared.STT_BASE_URL}/transcribe"
         response = requests.post(
             stt_url,
-            headers={'X-Sample-Rate': sample_rate, 'Content-Type': 'application/octet-stream'},
-            data=audio_bytes,
+            files={'file': ('audio.raw', audio_bytes, 'application/octet-stream')},
+            data={'sample_rate': sample_rate},
             timeout=30
         )
         

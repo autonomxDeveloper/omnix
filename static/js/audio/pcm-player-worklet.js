@@ -4,19 +4,28 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
         this.buffer = [];
         this.bufferSamples = 0;
         this.chunkOffset = 0;
+        this.draining = false;
 
         this.port.onmessage = (event) => {
             const data = event.data;
             if (!data) return;
 
-            if (data.type === 'stop' || data.type === 'reset') {
+            if (data.type === 'reset') {
                 this.buffer = [];
                 this.bufferSamples = 0;
                 this.chunkOffset = 0;
+                this.draining = false;
                 return;
             }
 
-            if (data instanceof Float32Array && data.length > 0) {
+            if (data.type === 'stop') {
+                // Soft stop: finish playing queued audio, then go silent.
+                // Do NOT clear the buffer — frames already queued must play out.
+                this.draining = true;
+                return;
+            }
+
+            if (!this.draining && data instanceof Float32Array && data.length > 0) {
                 this.buffer.push(data);
                 this.bufferSamples += data.length;
             }
@@ -42,6 +51,10 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
                 this.buffer.shift();
                 this.chunkOffset = 0;
             }
+        }
+
+        if (this.draining && this.buffer.length === 0) {
+            this.draining = false;
         }
 
         for (let i = written; i < needed; i++) {

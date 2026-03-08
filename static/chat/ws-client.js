@@ -171,16 +171,12 @@ function handleAudioData(pcmBytes) {
 
 // ============== STOP AUDIO ==============
 function stopAudio() {
+    // Do NOT flush startupBuffer or pendingBuffer here.
+    // If 'done' arrives before all binary WebSocket frames have been received
+    // (race condition), those buffers contain only partial audio and flushing
+    // them causes replayed or corrupted audio. The worklet drains itself
+    // naturally from whatever was already posted to it.
     if (pcmNode && pcmNode.port) {
-        if (startupBuffer.length > 0) {
-            const merged = mergeFloat32Arrays(startupBuffer);
-            if (merged.length > 0) {
-                pcmNode.port.postMessage(merged);
-            }
-        }
-        if (pendingBuffer.length > 0) {
-            pcmNode.port.postMessage(pendingBuffer);
-        }
         pcmNode.port.postMessage({ type: "stop" });
     }
     pendingBuffer = new Float32Array(0);
@@ -204,6 +200,16 @@ async function connectWebSocket(sessionIdVal, speakerVal) {
 
     if (ws && isConnected) {
         console.log('[WS-CLIENT] Already connected, reusing connection');
+        // Reset worklet and all playback state for the new turn.
+        // Without this, playbackStarted stays true from the prior turn,
+        // causing the pre-buffer to be skipped and audio to underrun immediately.
+        if (pcmNode && pcmNode.port) {
+            pcmNode.port.postMessage({ type: 'reset' });
+        }
+        playbackStarted = false;
+        startupBuffer = [];
+        bufferedSamples = 0;
+        pendingBuffer = new Float32Array(0);
         ws.send(JSON.stringify({
             type: 'config',
             session_id: wsSessionId,
@@ -363,11 +369,13 @@ async function handleMessage(msg) {
             
             responseComplete = true;
             
-            // Flush remaining audio before stopping
-            if (pendingBuffer.length > 0 && pcmNode && pcmNode.port) {
-                pcmNode.port.postMessage(pendingBuffer);
-                pendingBuffer = new Float32Array(0);
-            }
+            // Do NOT manually flush pendingBuffer here. Binary WebSocket frames
+            // and JSON control messages share the same socket but are processed
+            // in order — however stopAudio() resets state immediately, so any
+            // binary frames that arrive after 'done' (due to OS socket buffering)
+            // would be pushed into a reset worklet and replayed. Let the server-side
+            // TTS drain wait (asyncio.sleep + queue drain) guarantee all audio
+            // has been sent before this message arrives.
             
             const tokensGeneratedDone = streamedContent ? Math.ceil(streamedContent.length / 4) : 0;
             const tokenSpeedDone = (llmFirstTokenTime > 0 && tokensGeneratedDone > 0) 
@@ -445,9 +453,21 @@ window.wsConversationSend = function(text) {
     try {
         addWSSystemMessage('user', text);
         
+        // Reset all per-turn state so each new response starts clean.
+        // If playbackStarted is left true from the prior turn, incoming
+        // audio skips the pre-buffer and hits the worklet before it has
+        // enough data queued, causing an immediate underrun and cutoff.
         streamedContent = '';
         currentAssistantDiv = null;
         responseComplete = false;
+        llmFirstTokenTime = 0;
+        firstAudioTime = 0;
+        totalStartTime = performance.now();
+        playbackStarted = false;
+        startupBuffer = [];
+        bufferedSamples = 0;
+        pendingBuffer = new Float32Array(0);
+        isSpeaking = false;
         
         ws.send(JSON.stringify({
             type: 'text',
