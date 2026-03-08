@@ -13,7 +13,7 @@ def index():
 
 @core_bp.route('/favicon.ico')
 def favicon():
-    return '', 204
+    return send_from_directory(os.path.join(shared.BASE_DIR, 'static'), 'favicon.ico', mimetype='image/x-icon')
 
 @core_bp.route('/logo/<path:filename>')
 def serve_logo(filename):
