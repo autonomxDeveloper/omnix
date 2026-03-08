@@ -38,17 +38,6 @@ function initWavAudioContext() {
     }
 }
 
-// Debug: Log mode periodically
-setInterval(() => {
-    const audioElements = document.querySelectorAll("audio");
-    const audioContexts = window.streamingAudioContext ? 1 : 0;
-    const wavContextActive = wavAudioContext && wavAudioContext.state === 'running' ? 1 : 0;
-    const mode = window.TTS_PLAYBACK_MODE || 'UNDEFINED';
-    console.log("[AUDIO-DIAG] Mode:", mode,
-        "| Audio elements:", audioElements.length,
-        "| AudioContext:", audioContexts ? "active" : "none",
-        "| WAV Context:", wavContextActive ? "active" : "none");
-}, 2000);
 
 // ============================================================
 // HARD AUDIOCONTEXT CLEANUP - Call when switching to WAV mode
