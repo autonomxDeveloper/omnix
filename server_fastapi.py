@@ -1016,12 +1016,14 @@ async def chat_stream(request: Request):
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 @app.post("/api/conversation/greeting")
-async def greeting(speaker: str = "default"):
+async def greeting(request: Request):
     """HTTP fallback for greeting"""
     if not tts_provider:
         return JSONResponse({"success": False, "error": "No TTS"})
     
     try:
+        data = await request.json()
+        speaker = data.get('speaker', 'default')
         greeting_text = "Hello! I'm listening. How can I help you today?"
         
         if hasattr(tts_provider, 'generate_tts'):
