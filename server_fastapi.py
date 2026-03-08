@@ -498,26 +498,30 @@ async def _process_conversation(session: ConversationSession, user_text: str):
                             break
                     
                     if should_send or len(sentence_buffer) >= TTS_MAX_CHARS:
-                        # Send this chunk to TTS worker
-                        text_to_speak = sentence_buffer.strip()
+                        # Find the split point FIRST, then queue only up to it.
+                        # The old order (queue full buffer, then split) caused the
+                        # tail of the sentence to appear in both the queued chunk
+                        # AND the next sentence_buffer, making it spoken twice.
+                        last_punct = -1
+                        for i, c in enumerate(sentence_buffer):
+                            if c in '.!?,':
+                                last_punct = i
+                        
+                        if last_punct >= 0:
+                            # Queue only up to and including the punctuation mark
+                            text_to_speak = sentence_buffer[:last_punct + 1].strip()
+                            sentence_buffer = sentence_buffer[last_punct + 1:]
+                        else:
+                            # No punctuation found — queue the entire buffer
+                            text_to_speak = sentence_buffer.strip()
+                            sentence_buffer = ""
+                        
                         if text_to_speak:
                             try:
                                 session.tts_queue.put_nowait(text_to_speak)
                                 session.tts_chunks_pending += 1
                             except:
                                 pass
-                        
-                        # Keep any remaining text
-                        # Find the last punctuation
-                        last_punct = -1
-                        for i, c in enumerate(sentence_buffer):
-                            if c in '.!?,':
-                                last_punct = i
-                        
-                        if last_punct >= 0 and last_punct < len(sentence_buffer) - 1:
-                            sentence_buffer = sentence_buffer[last_punct + 1:]
-                        else:
-                            sentence_buffer = ""
         
         # Process remaining buffer
         if sentence_buffer.strip() and not session.stop_requested:
