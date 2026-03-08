@@ -264,6 +264,8 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                 
                 if len(buffer) > 0:
                     try:
+                        if len(buffer) < FRAME_SIZE:
+                            buffer = np.pad(buffer, (0, FRAME_SIZE - len(buffer)))
                         await session.websocket.send_bytes(buffer.tobytes())
                     except Exception as e:
                         print(f"[TTS] Final send error: {e}")

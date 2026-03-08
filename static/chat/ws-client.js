@@ -8,8 +8,19 @@ console.log('[WS-CLIENT] Starting to load...');
 
 // ============== CONFIG ==============
 const WS_URL = `ws://${window.location.host}/ws/conversation`;
-const SAMPLE_RATE = 24000;
-const START_BUFFER_SAMPLES = 12000;
+const SAMPLE_RATE = 24000; // Server sends 24kHz
+const START_BUFFER_SAMPLES = 6000;
+let FRAME_SIZE = 3840; // Will be updated based on native rate
+
+let pendingBuffer = new Float32Array(0);
+let nativeSampleRate = 48000; // Will be updated from AudioContext
+
+function appendSamples(newSamples) {
+    const merged = new Float32Array(pendingBuffer.length + newSamples.length);
+    merged.set(pendingBuffer, 0);
+    merged.set(newSamples, pendingBuffer.length);
+    pendingBuffer = merged;
+}
 
 // ============== STATE ==============
 let ws = null;
@@ -76,7 +87,14 @@ async function initAudioWorklet() {
     console.log('[WS-AUDIO] Initializing AudioWorklet...');
     
     try {
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+        // Use native sample rate - don't force it
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const actualRate = audioContext.sampleRate;
+        window.nativeSampleRate = actualRate;
+        nativeSampleRate = actualRate;
+        FRAME_SIZE = Math.round(3840 * (actualRate / 48000)); // Scale frame size
+        console.log("[WS-AUDIO] Native sample rate:", actualRate + "Hz, FRAME_SIZE:", FRAME_SIZE);
+        
         await audioContext.audioWorklet.addModule("/static/js/audio/pcm-player-worklet.js?v=" + Date.now());
         
         pcmNode = new AudioWorkletNode(audioContext, "pcm-player");
@@ -141,42 +159,107 @@ function testSpeaker() {
 
 /**
  * Push raw PCM samples to AudioWorklet queue
+ * @param {ArrayBuffer|Float32Array} samples - Audio data
+ * @param {string} format - Optional: 'int16' or 'float32' (default: 'int16' for backward compat)
  */
-function pushAudioData(samples) {
+function pushAudioData(samples, format = 'int16') {
     if (!pcmNode || !wsAudioContext) {
         console.warn('[WS-CLIENT] AudioWorklet not ready');
         return;
     }
     
     if (wsAudioContext.state === 'suspended') {
-        console.log('[WS-AUDIO] Context suspended, resuming...');
         wsAudioContext.resume();
     }
     
-    console.log('[WS-AUDIO] Context state:', wsAudioContext.state);
+    // Handle both ArrayBuffer and Float32Array inputs
+    if (samples instanceof ArrayBuffer) {
+        if (format === 'int16') {
+            // Convert Int16 -> Float32 (WAV path)
+            const int16View = new Int16Array(samples);
+            samples = new Float32Array(int16View.length);
+            for (let i = 0; i < int16View.length; i++) {
+                samples[i] = int16View[i] / 32768;
+            }
+        } else {
+            // Already Float32 (binary PCM path)
+            samples = new Float32Array(samples);
+        }
+    }
+    
+    // upsample 24k → native rate (e.g., 48kHz)
+    const upsampleFactor = (window.nativeSampleRate || 48000) / 24000;
+    if (samples instanceof Float32Array && upsampleFactor > 1) {
+        const pcm24 = samples;
+        const pcm48 = new Float32Array(Math.ceil(pcm24.length * upsampleFactor));
+        for (let i = 0; i < pcm24.length; i++) {
+            for (let j = 0; j < upsampleFactor; j++) {
+                pcm48[i * upsampleFactor + j] = pcm24[i];
+            }
+        }
+        samples = pcm48;
+    }
+    
+    if (!samples || !(samples.length > 0)) {
+        return;
+    }
     
     if (!playbackStarted) {
         startupBuffer.push(samples);
         bufferedSamples += samples.length;
         
-        console.log(`[WS-AUDIO] Startup buffer: ${bufferedSamples}/${START_BUFFER_SAMPLES} samples`);
-        
         if (bufferedSamples >= START_BUFFER_SAMPLES) {
-            const merged = mergeFloat32Arrays(startupBuffer);
-            console.log('[WS-AUDIO] Sending merged buffer:', merged.length, 'samples');
-            if (merged && merged.length > 0) {
-                pcmNode.port.postMessage(merged);
+            let merged = mergeFloat32Arrays(startupBuffer);
+            
+            // upsample 24k → native rate
+            const upsampleFactor = (window.nativeSampleRate || 48000) / 24000;
+            if (upsampleFactor > 1 && merged.length > 0) {
+                const pcm24 = merged;
+                const pcm48 = new Float32Array(Math.ceil(pcm24.length * upsampleFactor));
+                for (let i = 0; i < pcm24.length; i++) {
+                    for (let j = 0; j < upsampleFactor; j++) {
+                        pcm48[i * upsampleFactor + j] = pcm24[i];
+                    }
+                }
+                merged = pcm48;
             }
-            playbackStarted = true;
-            startupBuffer = [];
-            console.log('[WS-AUDIO] Startup buffer complete, starting playback');
+            
+            const numChunks = Math.floor(merged.length / FRAME_SIZE) * FRAME_SIZE;
+            const toSend = merged.subarray(0, numChunks);
+            const remainder = merged.subarray(numChunks);
+            
+            // Append to pending buffer
+            appendSamples(toSend);
+            
+            // Flush accumulated frames
+            while (pendingBuffer.length >= FRAME_SIZE) {
+                const frame = pendingBuffer.slice(0, FRAME_SIZE);
+                pcmNode.port.postMessage(frame);
+                pendingBuffer = pendingBuffer.slice(FRAME_SIZE);
+            }
+            
+            if (remainder.length > 0) {
+                startupBuffer = [remainder];
+                bufferedSamples = remainder.length;
+            } else {
+                playbackStarted = true;
+                startupBuffer = [];
+                bufferedSamples = 0;
+            }
         }
         return;
     }
     
-    if (samples && samples.length > 0) {
-        console.log('[WS-AUDIO] Sending streaming chunk:', samples.length, 'samples');
-        pcmNode.port.postMessage(samples);
+    // Accumulate samples before sending to worklet for stable timing
+    if (samples instanceof Float32Array) {
+        appendSamples(samples);
+    }
+    
+    // Send in fixed-size frames
+    while (pendingBuffer.length >= FRAME_SIZE) {
+        const frame = pendingBuffer.slice(0, FRAME_SIZE);
+        pcmNode.port.postMessage(frame);
+        pendingBuffer = pendingBuffer.slice(FRAME_SIZE);
     }
 }
 
@@ -197,10 +280,17 @@ function mergeFloat32Arrays(arrays) {
  * Stop audio playback
  */
 function stopAudio() {
+    // Flush any pending samples before stopping
+    if (pcmNode && pcmNode.port && pendingBuffer.length > 0) {
+        pcmNode.port.postMessage(pendingBuffer);
+        pendingBuffer = new Float32Array(0);
+    }
+    
     if (pcmNode && pcmNode.port) {
         pcmNode.port.postMessage({ type: 'stop' });
     }
     isSpeaking = false;
+    pendingBuffer = new Float32Array(0);
     
     if (typeof updateConversationStatus === 'function') {
         updateConversationStatus('Ready to chat');
@@ -218,6 +308,26 @@ function stopAudio() {
 async function connectWebSocket(sessionIdVal, speakerVal) {
     wsSessionId = sessionIdVal;
     currentSpeaker = speakerVal;
+    
+    // If already connected, just send config and return
+    if (ws && isConnected) {
+        console.log('[WS-CLIENT] Already connected, reusing connection');
+        ws.send(JSON.stringify({
+            type: 'config',
+            session_id: wsSessionId,
+            speaker: currentSpeaker
+        }));
+        return Promise.resolve();
+    }
+    
+    // Reset audio pipeline before new connection
+    if (pcmNode && pcmNode.port) {
+        pcmNode.port.postMessage({ type: 'reset' });
+    }
+    playbackStarted = false;
+    startupBuffer = [];
+    bufferedSamples = 0;
+    pendingBuffer = new Float32Array(0);
     
     return new Promise((resolve, reject) => {
         ws = new WebSocket(WS_URL);
@@ -467,7 +577,19 @@ async function handleMessage(msg) {
  * Handle incoming binary PCM audio data (Float32)
  */
 function handleAudioData(pcmBytes) {
-    const samples = new Float32Array(pcmBytes);
+    let samples = new Float32Array(pcmBytes);
+    
+    // Server always sends 4800 samples (200ms at 24kHz)
+    const expectedSamples = 4800;
+    if (samples.length !== expectedSamples) {
+        const fixed = new Float32Array(expectedSamples);
+        if (samples.length > expectedSamples) {
+            fixed.set(samples.subarray(0, expectedSamples));
+        } else {
+            fixed.set(samples);
+        }
+        samples = fixed;
+    }
     
     if (window.DEBUG_AUDIO) {
         console.log("PCM length:", samples.length);
@@ -488,7 +610,7 @@ function handleAudioData(pcmBytes) {
         }
     }
     
-    pushAudioData(samples);
+    pushAudioData(samples, 'float32');
 }
 
 
@@ -501,6 +623,10 @@ window.wsConversationStart = async function(sessionIdVal, speakerVal) {
         totalStartTime = performance.now();
         llmFirstTokenTime = 0;
         firstAudioTime = 0;
+        
+        playbackStarted = false;
+        startupBuffer = [];
+        bufferedSamples = 0;
         
         await connectWebSocket(sessionIdVal, speakerVal);
         

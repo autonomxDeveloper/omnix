@@ -2,59 +2,57 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
 
     constructor() {
         super();
+
+        console.log("[WORKLET] Constructor called");
+
         this.buffer = new Float32Array(0);
-        console.log('[WORKLET] Constructor called');
-        
+        this.readIndex = 0;
+
         this.port.onmessage = (event) => {
-            const data = event.data;
-            if (!data) return;
-            
-            let newData = data;
-            if (data instanceof ArrayBuffer) {
-                newData = new Float32Array(data);
+            if (event.data && event.data.type) {
+                if (event.data.type === 'stop' || event.data.type === 'reset') {
+                    this.buffer = new Float32Array(0);
+                    this.readIndex = 0;
+                    console.log('[WORKLET] Reset');
+                    return;
+                }
+                return;
             }
             
-            if (newData.length > 0) {
-                const oldLen = this.buffer.length;
-                const newBuf = new Float32Array(oldLen + newData.length);
-                newBuf.set(this.buffer, 0);
-                newBuf.set(newData, oldLen);
-                this.buffer = newBuf;
-                console.log('[WORKLET] Buffer now has', this.buffer.length, 'samples');
-            }
+            const newData = event.data;
+            if (!newData || newData.length === 0) return;
+
+            const merged = new Float32Array(this.buffer.length + newData.length);
+            merged.set(this.buffer, 0);
+            merged.set(newData, this.buffer.length);
+            this.buffer = merged;
         };
-        
-        this.port.onmessageerror = (e) => console.error('[WORKLET] Error:', e);
     }
 
     process(inputs, outputs, parameters) {
-        const channel = outputs[0][0];
-        
-        if (this.buffer.length === 0) {
-            for (let i = 0; i < channel.length; i++) {
-                channel[i] = 0;
+        const output = outputs[0][0];
+
+        for (let i = 0; i < output.length; i++) {
+            if (this.readIndex < this.buffer.length) {
+                output[i] = this.buffer[this.readIndex++];
+            } else {
+                output[i] = 0;
             }
-            return true;
         }
-        
-        const toCopy = Math.min(channel.length, this.buffer.length);
-        
-        for (let i = 0; i < toCopy; i++) {
-            channel[i] = this.buffer[i];
+
+        if (this.readIndex > 8192) {
+            this.buffer = this.buffer.slice(this.readIndex);
+            this.readIndex = 0;
         }
-        
-        for (let i = toCopy; i < channel.length; i++) {
-            channel[i] = 0;
+
+        // Prevent memory growth - keep buffer under 1 second
+        if (this.buffer.length > 48000) {
+            this.buffer = this.buffer.slice(this.readIndex);
+            this.readIndex = 0;
         }
-        
-        if (toCopy < this.buffer.length) {
-            this.buffer = this.buffer.slice(toCopy);
-        } else {
-            this.buffer = new Float32Array(0);
-        }
-        
+
         return true;
     }
 }
 
-registerProcessor('pcm-player', PCMPlayerProcessor);
+registerProcessor("pcm-player", PCMPlayerProcessor);
