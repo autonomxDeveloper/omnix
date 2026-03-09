@@ -138,6 +138,17 @@ async function loadSession(id) {
                         addMessage(msg.role, msg.content, msg.thinking || null);
                     }
                 });
+                
+                // Ensure input area is visible when session has messages
+                const inputArea = document.querySelector('.input-area');
+                if (inputArea) {
+                    inputArea.style.display = '';
+                }
+                
+                // Focus on message input for immediate typing
+                if (messageInput) {
+                    messageInput.focus();
+                }
             }
             
             if (session.system_prompt) {

@@ -7,10 +7,12 @@
 
 // Add message to chat
 function addMessage(role, content, thinking = null, tokens = null, tokensPerSec = '') {
+    if (role === 'assistant') role = 'ai';
+
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
     
-    if (role === 'ai') {
+    if (role === 'ai' || role === 'assistant') {
         if (thinking) {
             const thinkingContainer = document.createElement('div');
             thinkingContainer.className = 'thinking-container collapsed';
