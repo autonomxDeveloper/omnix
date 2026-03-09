@@ -44,6 +44,19 @@
                     </svg>
                     <span>Search</span>
                 </button>
+                <button id="historyBtnOption" class="sidebar-option-btn" title="View chat history" onclick="var m=document.getElementById('historyModal'),l=document.getElementById('historyList');m.style.display='flex';l.innerHTML='<div class=history-loading><div class=history-loading-spinner></div><div class=history-loading-text>Loading your chats...</div></div>';fetch('/api/sessions').then(r=>r.json()).then(d=>{if(d.success){var s=d.sessions||[];s.sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0));if(!s.length){l.innerHTML='<div class=history-empty><div class=history-empty-icon>&#128172;</div><p>No chat history yet</p></div>';return;}l.innerHTML=s.map(x=>{var preview='';if(x.messages&&x.messages.length){var msgs=[...x.messages].reverse();var lastUser=msgs.find(m=>m.role==='user');if(lastUser)preview=lastUser.content.substring(0,60)+(lastUser.content.length>60?'...':'');}var title=x.title||'New Chat';var date=x.updated_at?new Date(x.updated_at).toLocaleDateString():'';return '<div class=history-item id=hist-'+x.id+'><div class=history-item-header><span class=history-item-title>'+title+'</span><span class=history-item-date>'+date+'</span></div>'+(preview?'<div class=history-item-preview>'+preview+'</div>':'')+'<div class=history-item-actions><button class=history-item-delete onclick=&quot;event.stopPropagation();deleteHistoryItem(\''+x.id+'\');&quot;>&#128465;</button></div></div>'}).join('');document.querySelectorAll('.history-item').forEach(function(el){el.onclick=function(){window.sessionId=el.id.replace('hist-','');document.getElementById('historyModal').style.display='none';loadSession(window.sessionId);};});}}).catch(e=>l.innerHTML='<div class=history-empty>Error loading history</div>');">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                        <path d="M12 8V12L15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                    <span>History</span>
+                </button>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                        <path d="M12 8V12L15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                    <span>History</span>
+                </button>
             </div>
             
             <!-- Sidebar Tools Section - visible when expanded -->
@@ -96,6 +109,12 @@
                         <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                     </svg>
                 </button>
+                <button id="historyBtnCollapsed" class="sidebar-collapsed-btn" title="Chat History" onclick="var m=document.getElementById('historyModal'),l=document.getElementById('historyList');m.style.display='flex';l.innerHTML='<div class=history-loading><div class=history-loading-spinner></div><div class=history-loading-text>Loading your chats...</div></div>';fetch('/api/sessions').then(r=>r.json()).then(d=>{if(d.success){var s=d.sessions||[];s.sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0));if(!s.length){l.innerHTML='<div class=history-empty><div class=history-empty-icon>&#128172;</div><p>No chat history yet</p></div>';return;}l.innerHTML=s.map(x=>{var preview='';if(x.messages&&x.messages.length){var msgs=[...x.messages].reverse();var lastUser=msgs.find(m=>m.role==='user');if(lastUser)preview=lastUser.content.substring(0,60)+(lastUser.content.length>60?'...':'');}var title=x.title||'New Chat';var date=x.updated_at?new Date(x.updated_at).toLocaleDateString():'';return '<div class=history-item id=hist-'+x.id+'><div class=history-item-header><span class=history-item-title>'+title+'</span><span class=history-item-date>'+date+'</span></div>'+(preview?'<div class=history-item-preview>'+preview+'</div>':'')+'<div class=history-item-actions><button class=history-item-delete onclick=&quot;event.stopPropagation();deleteHistoryItem(\''+x.id+'\');&quot;>&#128465;</button></div></div>'}).join('');document.querySelectorAll('.history-item').forEach(function(el){el.onclick=function(){window.sessionId=el.id.replace('hist-','');document.getElementById('historyModal').style.display='none';loadSession(window.sessionId);};});}}).catch(e=>l.innerHTML='<div class=history-empty>Error loading history</div>');">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <path d="M12 8V12L15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                </button>
                 <button id="searchChatBtnCollapsed" class="sidebar-collapsed-btn" title="Search all messages">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
                         <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
@@ -127,11 +146,11 @@
             </div>
             
             <!-- Collapsed Session List - visible when collapsed, shows sessions as icons with tooltips -->
-            <div class="sidebar-collapsed-session-list" id="sidebarCollapsedSessionList">
+            <div class="sidebar-collapsed-session-list" id="sidebarCollapsedSessionList" style="display: none;">
                 <!-- Sessions will be rendered here as small icons with tooltips -->
             </div>
             
-            <div class="session-list" id="sessionList"></div>
+            <div class="session-list" id="sessionList" style="display: none;"></div>
         </aside>
         
         <!-- Expand sidebar button (floating when collapsed) -->
@@ -153,6 +172,19 @@
                         <input type="text" id="searchChatInput" class="search-input" placeholder="Search all messages...">
                     </div>
                     <div id="searchChatResults" class="search-chat-results"></div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- History Dialog -->
+        <div class="modal" id="historyModal">
+            <div class="modal-content history-modal-content">
+                <div class="modal-header">
+                    <h3>Chat History</h3>
+                    <button class="modal-close" id="closeHistory" onclick="document.getElementById('historyModal').style.display='none'">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="historyList" class="history-list"></div>
                 </div>
             </div>
         </div>

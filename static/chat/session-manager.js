@@ -3,6 +3,48 @@
  * Handles session CRUD operations
  */
 
+// Make functions globally accessible
+window.loadSessions = loadSessions;
+window.renderSessionList = renderSessionList;
+window.createNewSession = createNewSession;
+window.switchSession = switchSession;
+window.loadSession = loadSession;
+window.deleteSession = deleteSession;
+window.renderHistory = renderHistory;
+window.updateSessionTitle = updateSessionTitle;
+
+// Delete history item from history modal
+function deleteHistoryItem(id) {
+    if (confirm('Delete this chat?')) {
+        deleteSession(id);
+        document.getElementById('hist-' + id)?.remove();
+    }
+}
+window.deleteHistoryItem = deleteHistoryItem;
+
+// Generate title from first user message
+function generateSessionTitle(userMessage) {
+    if (!userMessage) return 'New Chat';
+    
+    // Get first line or first 50 chars
+    const firstLine = userMessage.split('\n')[0].trim();
+    const title = firstLine.length > 50 ? firstLine.substring(0, 47) + '...' : firstLine;
+    
+    return title || 'New Chat';
+}
+
+// Update session title
+async function updateSessionTitle(sessionId, title) {
+    try {
+        await fetch(`/api/sessions/${sessionId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title })
+        });
+    } catch (error) {
+        console.error('Error updating session title:', error);
+    }
+}
 
 // Load sessions
 async function loadSessions() {
@@ -89,6 +131,104 @@ function renderSessionList() {
     });
 }
 
+// Render history dialog
+function renderHistory() {
+    const historyList = document.getElementById('historyList');
+    if (!historyList) return;
+    
+    historyList.innerHTML = '';
+    
+    if (window.sessions.length === 0) {
+        historyList.innerHTML = '<p style="text-align: center; color: var(--text-muted);">No chat history</p>';
+        return;
+    }
+    
+    // Sort sessions by updated_at (newest first)
+    const sortedSessions = [...window.sessions].sort((a, b) => {
+        const dateA = new Date(a.updated_at || 0);
+        const dateB = new Date(b.updated_at || 0);
+        return dateB - dateA;
+    });
+    
+    sortedSessions.forEach(s => {
+        const item = document.createElement('div');
+        item.className = `history-item ${s.id === window.sessionId ? 'active' : ''}`;
+        
+        const date = s.updated_at ? new Date(s.updated_at).toLocaleDateString() : '';
+        
+        item.innerHTML = `
+            <span class="history-item-title">${s.title || 'New Chat'}</span>
+            <span class="history-item-date">${date}</span>
+            <button class="history-item-delete" title="Delete">×</button>
+        `;
+        
+        item.addEventListener('click', (e) => {
+            if (!e.target.classList.contains('history-item-delete')) {
+                switchSession(s.id);
+                closeHistoryModal();
+            }
+        });
+        
+        item.querySelector('.history-item-delete').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (confirm('Delete this chat?')) {
+                deleteSession(s.id);
+            }
+        });
+        
+        historyList.appendChild(item);
+    });
+}
+
+// Open history modal
+function openHistoryModal() {
+    const modal = document.getElementById('historyModal');
+    if (modal) {
+        renderHistory();
+        modal.style.display = 'flex';
+    }
+}
+
+// Close history modal
+function closeHistoryModal() {
+    const modal = document.getElementById('historyModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Make functions globally accessible for onclick handlers
+window.openHistoryModal = openHistoryModal;
+window.closeHistoryModal = closeHistoryModal;
+
+// Setup history modal events
+function setupHistoryModal() {
+    const historyBtn = document.getElementById('historyBtnOption');
+    const historyBtnCollapsed = document.getElementById('historyBtnCollapsed');
+    const closeBtn = document.getElementById('closeHistory');
+    const modal = document.getElementById('historyModal');
+    
+    if (historyBtn) {
+        historyBtn.addEventListener('click', openHistoryModal);
+    }
+    
+    if (historyBtnCollapsed) {
+        historyBtnCollapsed.addEventListener('click', openHistoryModal);
+    }
+    
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closeHistoryModal);
+    }
+    
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                closeHistoryModal();
+            }
+        });
+    }
+}
+
 // Create new session
 async function createNewSession() {
     try {
@@ -165,6 +305,7 @@ async function deleteSession(id) {
     try {
         await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
         await loadSessions();
+        renderHistory();
     } catch (error) {
         console.error('Error deleting session:', error);
     }
@@ -178,8 +319,20 @@ window.SessionManager = {
     loadSession,
     deleteSession,
     renderSessionList,
+    renderHistory,
+    openHistoryModal,
+    closeHistoryModal,
+    generateSessionTitle,
+    updateSessionTitle,
     get sessionId() { return window.sessionId; },
     set sessionId(val) { window.sessionId = val; },
     get sessions() { return window.sessions || []; },
     set sessions(val) { window.sessions = val; }
 };
+
+// Initialize history modal on DOM ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupHistoryModal);
+} else {
+    setupHistoryModal();
+}
