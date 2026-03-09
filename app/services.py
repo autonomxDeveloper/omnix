@@ -27,7 +27,18 @@ def read_logs(process, q, name):
         import codecs
         for line in codecs.getreader('latin-1')(process.stdout):
             if line.strip(): q.put(f"[{name}] {line.strip()}")
-    except Exception as e: q.put(f"[{name}] Log error: {e}")
+    except Exception as e: 
+        q.put(f"[{name}] Log error: {e}")
+
+def check_service_and_add_log(name, base_url, log_queue):
+    """Check if service is running and add a log entry"""
+    try:
+        import requests
+        resp = requests.get(f"{base_url}/health", timeout=2)
+        if resp.status_code == 200:
+            log_queue.put(f"[{name}] Service running on {base_url}")
+    except Exception as e:
+        pass
 
 def kill_port(port):
     try:
@@ -91,6 +102,38 @@ def get_status():
     
     tts_status['running'], stt_status['running'] = tts_r, stt_r
     return jsonify({"success": True, "tts": {"running": tts_r, "status": tts_status}, "stt": {"running": stt_r, "status": stt_status}})
+
+@services_bp.route('/api/services/xtts/logs', methods=['GET'])
+def get_xtts_logs():
+    global tts_log_queue
+    logs = []
+    try:
+        while not tts_log_queue.empty():
+            logs.append(tts_log_queue.get_nowait())
+        
+        # If no logs, check if service is running and add info
+        if len(logs) == 0:
+            check_service_and_add_log("TTS", shared.TTS_BASE_URL, tts_log_queue)
+            while not tts_log_queue.empty():
+                logs.append(tts_log_queue.get_nowait())
+    except: pass
+    return jsonify({"success": True, "logs": logs})
+
+@services_bp.route('/api/services/stt/logs', methods=['GET'])
+def get_stt_logs():
+    global stt_log_queue
+    logs = []
+    try:
+        while not stt_log_queue.empty():
+            logs.append(stt_log_queue.get_nowait())
+        
+        # If no logs, check if service is running and add info
+        if len(logs) == 0:
+            check_service_and_add_log("STT", shared.STT_BASE_URL, stt_log_queue)
+            while not stt_log_queue.empty():
+                logs.append(stt_log_queue.get_nowait())
+    except: pass
+    return jsonify({"success": True, "logs": logs})
 
 def pregen_audio(speaker="default"):
     voice_id = shared.custom_voices.get(speaker.replace(" (Custom)", ""), {}).get("voice_clone_id")
