@@ -700,6 +700,58 @@ async def update_session(session_id: str, request: Request):
     return {"success": True}
 
 
+@app.post("/api/sessions/generate-title")
+async def generate_session_title(request: Request):
+    """Generate a smart title for a session based on the conversation"""
+    data = await request.json()
+    user_message = data.get('user_message', '')
+    ai_response = data.get('ai_response', '')
+    
+    if not llm_provider:
+        return JSONResponse({"success": False, "error": "No LLM provider"}, status_code=500)
+    
+    try:
+        # Create a prompt to generate a short title
+        title_prompt = f"""Given this conversation:
+User: {user_message[:200]}
+AI: {ai_response[:300]}
+
+Generate a short, descriptive title (max 5 words) for this conversation. 
+The title should capture the main topic or question. 
+Just return the title, nothing else."""
+
+        messages = [ChatMessage(role="user", content=title_prompt)]
+        
+        response = await llm_provider.chat_completion(
+            messages=messages,
+            model=llm_provider.config.model,
+            stream=False
+        )
+        
+        title = ""
+        if hasattr(response, 'content'):
+            title = response.content.strip()
+        elif isinstance(response, dict):
+            title = response.get('content', '').strip()
+        
+        # Clean up the title - remove quotes if present
+        title = title.strip('"\'')
+        
+        # Fallback to first message if title is empty or too long
+        if not title or len(title) > 50:
+            # Use first line of user message as fallback
+            first_line = user_message.split('\n')[0].strip()
+            title = first_line[:50] if first_line else "New Chat"
+        
+        return {"success": True, "title": title}
+        
+    except Exception as e:
+        print(f"[TITLE] Error generating title: {e}")
+        # Fallback
+        first_line = user_message.split('\n')[0].strip() if user_message else "New Chat"
+        return {"success": True, "title": first_line[:50]}
+
+
 @app.get("/api/tts/speakers")
 async def get_tts_speakers():
     """Get available TTS speakers/voices"""

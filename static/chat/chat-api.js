@@ -3,6 +3,27 @@
  * Handles sending messages and conversation REST API
  */
 
+// Generate a smart title from conversation using LLM
+async function generateSmartTitle(userMessage, aiResponse) {
+    try {
+        const response = await fetch('/api/sessions/generate-title', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_message: userMessage,
+                ai_response: aiResponse
+            })
+        });
+        const data = await response.json();
+        if (data.success && data.title) {
+            return data.title;
+        }
+    } catch (e) {
+        console.error('Error generating title:', e);
+    }
+    return null;
+}
+
 // Send message with streaming support - includes streaming TTS
 async function sendMessage() {
     const message = messageInput.value.trim();
@@ -278,6 +299,18 @@ async function sendMessage() {
         isLoading = false;
         typingIndicator.style.display = 'none';
         checkHealth();
+        
+        // Generate smart title if this is a new session
+        if (window.SessionManager && message && streamedContent) {
+            const currentSession = window.sessions?.find(s => s.id === window.sessionId);
+            if (currentSession && (currentSession.title === 'New Chat' || !currentSession.title)) {
+                const smartTitle = await generateSmartTitle(message, streamedContent);
+                if (smartTitle) {
+                    SessionManager.updateSessionTitle(window.sessionId, smartTitle);
+                }
+            }
+        }
+        
         SessionManager.renderSessionList();
     }
 }
