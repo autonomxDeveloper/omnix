@@ -565,6 +565,12 @@ async def _process_conversation(session: ConversationSession, user_text: str):
         
         # Save to history
         if session.session_id in shared.sessions_data:
+            # Save user message
+            shared.sessions_data[session.session_id]['messages'].append({
+                "role": "user", 
+                "content": user_text
+            })
+            # Save assistant message
             shared.sessions_data[session.session_id]['messages'].append({
                 "role": "assistant", 
                 "content": buffer
@@ -1003,6 +1009,12 @@ async def chat_stream(request: Request):
                         thinking += response_chunk.thinking or response_chunk.reasoning
                 
                 if session_id in shared.sessions_data:
+                    # Save user message
+                    shared.sessions_data[session_id]['messages'].append({
+                        "role": "user",
+                        "content": user_message
+                    })
+                    # Save assistant message
                     shared.sessions_data[session_id]['messages'].append({
                         "role": "assistant",
                         "content": ai_message,
