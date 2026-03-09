@@ -172,9 +172,14 @@ async function sendMessage() {
                                 }
                             } else if (data.type === 'done') {
                                 console.log('[TOKEN] Done event received. streamedContent length:', streamedContent?.length);
-                                const { thinking, content } = extractThinkingFromContent(streamedContent);
-                                thinkingContent = thinking;
-                                streamedContent = content;
+                                // Use thinking from server if available, otherwise extract from content
+                                if (data.thinking) {
+                                    thinkingContent = data.thinking;
+                                } else {
+                                    const { thinking, content } = extractThinkingFromContent(streamedContent);
+                                    thinkingContent = thinking;
+                                    streamedContent = content;
+                                }
                                 
                                 const generationTimeMs = startTime ? (Date.now() - startTime) : null;
                                 console.log('[TOKEN] Updating tokens, time:', generationTimeMs, 'user:', message?.length, 'ai:', streamedContent?.length);
