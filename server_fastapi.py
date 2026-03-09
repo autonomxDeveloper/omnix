@@ -983,6 +983,56 @@ async def services_status():
     
     return {"success": True, "tts": {"running": tts_r}, "stt": {"running": stt_r}}
 
+@app.get("/api/services/xtts/logs")
+async def get_xtts_logs():
+    """Get XTTS service logs"""
+    import requests
+    logs = []
+    try:
+        # Try Flask first
+        response = requests.get(f"http://127.0.0.1:5001/api/services/xtts/logs", timeout=5)
+        if response.ok:
+            data = response.json()
+            if data.get("logs"):
+                return data
+    except:
+        pass
+    
+    # Check service directly
+    try:
+        resp = requests.get(f"{shared.TTS_BASE_URL}/health", timeout=2)
+        if resp.status_code == 200:
+            logs.append(f"[TTS] Service running on {shared.TTS_BASE_URL}")
+    except Exception as e:
+        logs.append(f"[TTS] Service not running: {e}")
+    
+    return {"success": True, "logs": logs}
+
+@app.get("/api/services/stt/logs")
+async def get_stt_logs():
+    """Get STT service logs"""
+    import requests
+    logs = []
+    try:
+        # Try Flask first
+        response = requests.get(f"http://127.0.0.1:5001/api/services/stt/logs", timeout=5)
+        if response.ok:
+            data = response.json()
+            if data.get("logs"):
+                return data
+    except:
+        pass
+    
+    # Check service directly
+    try:
+        resp = requests.get(f"{shared.STT_BASE_URL}/health", timeout=2)
+        if resp.status_code == 200:
+            logs.append(f"[STT] Service running on {shared.STT_BASE_URL}")
+    except Exception as e:
+        logs.append(f"[STT] Service not running: {e}")
+    
+    return {"success": True, "logs": logs}
+
 
 # ============== MODELS ENDPOINTS ==============
 @app.get("/api/models")
@@ -1142,17 +1192,43 @@ async def stt_float32(request: Request):
         if not audio_bytes:
             return JSONResponse({"detail": "No audio data provided"}, status_code=400)
         
+        # Convert raw Float32 PCM bytes to WAV so the STT service accepts it
+        import io, wave
+        float32_data = np.frombuffer(audio_bytes, dtype=np.float32)
+        int16_data = (np.clip(float32_data, -1.0, 1.0) * 32767).astype(np.int16)
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(int(sample_rate))
+            wf.writeframes(int16_data.tobytes())
+        wav_bytes = wav_buf.getvalue()
+
         # Forward to STT service as multipart — the STT service requires a 'file' field
         stt_url = f"{shared.STT_BASE_URL}/transcribe"
         response = requests.post(
             stt_url,
-            files={'file': ('audio.raw', audio_bytes, 'application/octet-stream')},
+            files={'file': ('audio.wav', wav_bytes, 'audio/wav')},
             data={'sample_rate': sample_rate},
             timeout=30
         )
         
         if response.status_code == 200:
-            return response.json()
+            stt_data = response.json()
+            # Normalize response: ensure top-level 'text' field exists
+            if 'text' not in stt_data or not stt_data.get('text'):
+                segments = stt_data.get('segments', [])
+                if segments:
+                    # segments may be dicts with 'text' or Hypothesis-like objects
+                    texts = []
+                    for seg in segments:
+                        if isinstance(seg, dict):
+                            texts.append(seg.get('text', ''))
+                        elif isinstance(seg, str):
+                            texts.append(seg)
+                    combined = ' '.join(t for t in texts if t).strip()
+                    stt_data['text'] = combined
+            return JSONResponse(stt_data)
         else:
             return JSONResponse({
                 "detail": f"STT service error: {response.status_code}",

@@ -173,15 +173,22 @@ async function restartXTTS() {
 }
 
 async function refreshXTTSLogs() {
+    if (!xttsLogsContent) return;
     try {
         const response = await fetch('/api/services/xtts/logs');
         const data = await response.json();
         
         if (data.success && data.logs) {
-            xttsLogsContent.textContent = data.logs.length === 0 ? 'No logs yet...' : data.logs.join('\n');
+            if (data.logs.length === 0) {
+                xttsLogsContent.textContent = 'No logs available. Make sure TTS service is running.';
+            } else {
+                xttsLogsContent.textContent = data.logs.join('\n');
+            }
+        } else {
+            xttsLogsContent.textContent = 'Unable to fetch logs. Service may not be running.';
         }
     } catch (e) {
-        xttsLogsContent.textContent = 'Error fetching logs';
+        xttsLogsContent.textContent = 'Error connecting to log service: ' + e.message;
     }
 }
 
@@ -346,15 +353,22 @@ async function restartSTT() {
 }
 
 async function refreshSTTLogs() {
+    if (!sttLogsContent) return;
     try {
         const response = await fetch('/api/services/stt/logs');
         const data = await response.json();
         
         if (data.success && data.logs) {
-            sttLogsContent.textContent = data.logs.length === 0 ? 'No logs yet...' : data.logs.join('\n');
+            if (data.logs.length === 0) {
+                sttLogsContent.textContent = 'No logs available. Make sure STT service is running.';
+            } else {
+                sttLogsContent.textContent = data.logs.join('\n');
+            }
+        } else {
+            sttLogsContent.textContent = 'Unable to fetch logs. Service may not be running.';
         }
     } catch (e) {
-        sttLogsContent.textContent = 'Error fetching logs';
+        sttLogsContent.textContent = 'Error connecting to log service: ' + e.message;
     }
 }
 
