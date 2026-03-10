@@ -16,9 +16,462 @@ let analyser = null;
 
 // VAD Settings - Optimized for low latency
 const VAD_SILENCE_THRESHOLD = 0.008;
-const VAD_SILENCE_TIMEOUT = 800;
+const VAD_SILENCE_TIMEOUT = 400;
 const VAD_MIN_AUDIO_LENGTH = 200;
 const VAD_CHECK_INTERVAL = 50;
+const VAD_SPEECH_START_DELAY = 150;
+const MIN_SPEECH_DURATION = 2.0;
+const MIN_TRANSCRIPT_LENGTH = 10;
+const LLM_COOLDOWN_MS = 3000; // Wait 3 seconds after error before accepting new speech
+const TTS_COOLDOWN_MS = 2000; // Wait 2 seconds after TTS finishes before listening
+
+let lastLLMRequestTime = 0;
+let llmCooldownUntil = 0;
+let ttsFinishedTime = 0;
+
+window.triggerLLMCooldown = function() {
+    llmCooldownUntil = Date.now() + LLM_COOLDOWN_MS;
+    console.log('[VOICE] LLM rate limit triggered, cooldown until:', new Date(llmCooldownUntil).toLocaleTimeString());
+};
+
+window.triggerTTSCooldown = function() {
+    ttsFinishedTime = Date.now() + TTS_COOLDOWN_MS;
+    console.log('[VOICE] TTS finished, cooldown until:', new Date(ttsFinishedTime).toLocaleTimeString());
+};
+
+const STT_FRAME_SAMPLES = 1024;
+const STT_SEND_INTERVAL = 100;
+
+let streamingSttWs = null;
+let audioFrameInterval = null;
+let audioSendInterval = null;
+let accumulatedAudio = [];
+let audioContext = null;
+let sttAnalyser = null;
+let mediaStream = null;
+let speechStartTimer = null;
+let silenceEndTime = null;
+let confirmedSpeech = false;
+let processor = null;
+let source = null;
+
+function checkVAD() {
+    // Stop VAD when processing final transcript
+    if (window.VoiceState.sttFinalizing) {
+        return;
+    }
+    
+    if (!window.VoiceState.recording || !sttAnalyser) {
+        if (alwaysListening && !window.VoiceState.sttFinalizing) {
+            requestAnimationFrame(checkVAD);
+        }
+        return;
+    }
+    
+    const dataArray = new Uint8Array(sttAnalyser.frequencyBinCount);
+    sttAnalyser.getByteFrequencyData(dataArray);
+    
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+        sum += dataArray[i];
+    }
+    const average = sum / dataArray.length / 255;
+    
+    if (average > VAD_SILENCE_THRESHOLD) {
+        if (!window.VoiceState.recording) {
+            const duration = (performance.now() - window.VoiceState.speechStartTime) / 1000;
+            if (duration >= MIN_SPEECH_DURATION || !confirmedSpeech) {
+                startStreamingStt();
+            }
+        }
+        
+        if (silenceTimer) {
+            clearTimeout(silenceTimer);
+            silenceTimer = null;
+        }
+        
+        silenceEndTime = null;
+    } else if (window.VoiceState.recording) {
+        if (!silenceTimer) {
+            silenceTimer = setTimeout(() => {
+                handleSilenceDetected();
+            }, VAD_SILENCE_TIMEOUT);
+            silenceEndTime = performance.now();
+        }
+    }
+    
+    if (alwaysListening) {
+        requestAnimationFrame(checkVAD);
+    }
+}
+
+function float32ToInt16(float32Array) {
+    const buffer = new Int16Array(float32Array.length);
+    for (let i = 0; i < float32Array.length; i++) {
+        buffer[i] = Math.max(-1, Math.min(1, float32Array[i])) * 32767;
+    }
+    return buffer;
+}
+
+function int16ToBase64(int16Array) {
+    const uint8Array = new Uint8Array(int16Array.buffer);
+    let binary = '';
+    for (let i = 0; i < uint8Array.length; i++) {
+        binary += String.fromCharCode(uint8Array[i]);
+    }
+    return btoa(binary);
+}
+
+let sttWsConnecting = false;
+
+async function ensureWebSocketConnection() {
+    // Already connected
+    if (streamingSttWs && streamingSttWs.readyState === WebSocket.OPEN) {
+        return streamingSttWs;
+    }
+    
+    // Already connecting
+    if (sttWsConnecting) {
+        // Wait for existing connection attempt
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (streamingSttWs && streamingSttWs.readyState === WebSocket.OPEN) {
+            return streamingSttWs;
+        }
+        sttWsConnecting = false;
+    }
+    
+    // Prevent multiple concurrent connections
+    if (sttWsConnecting) {
+        return null;
+    }
+    
+    sttWsConnecting = true;
+    
+    return new Promise((resolve, reject) => {
+        const wsUrl = `ws://localhost:8000/ws/transcribe`;
+        streamingSttWs = new WebSocket(wsUrl);
+        
+        const timeout = setTimeout(() => {
+            streamingSttWs.close();
+            sttWsConnecting = false;
+            reject(new Error('WebSocket connection timeout'));
+        }, 5000);
+        
+        streamingSttWs.onopen = () => {
+            clearTimeout(timeout);
+            console.log('[STT-WS] Connected');
+            window.VoiceState.websocketReady = true;
+            sttWsConnecting = false;
+            resolve(streamingSttWs);
+        };
+        
+        streamingSttWs.onerror = (error) => {
+            clearTimeout(timeout);
+            console.error('[STT-WS] Error');
+            window.VoiceState.websocketReady = false;
+            sttWsConnecting = false;
+        };
+        
+        streamingSttWs.onclose = () => {
+            clearTimeout(timeout);
+            console.log('[STT-WS] Disconnected');
+            window.VoiceState.websocketReady = false;
+            streamingSttWs = null;
+            sttWsConnecting = false;
+        };
+        
+        streamingSttWs.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                handleSttMessage(data);
+            } catch (e) {
+                console.error('[STT-WS] Parse error:', e);
+            }
+        };
+    });
+}
+
+function handleSttMessage(data) {
+    switch (data.type) {
+        case 'ready':
+            console.log('[STT-WS] Server ready');
+            break;
+            
+        case 'text':
+            window.VoiceState.partialTranscript = data.text;
+            if (conversationInput) {
+                conversationInput.value = data.text;
+            }
+            break;
+            
+        case 'done':
+            window.VoiceState.sttFinalizing = false;
+            const finalText = data.text;
+            // Require at least 10 characters (about 2 words) before sending to LLM
+            if (finalText && finalText.trim() && finalText.trim().length >= MIN_TRANSCRIPT_LENGTH) {
+                conversationInput.value = finalText;
+                console.log('[STT] Final transcript:', finalText, '- sending to LLM');
+                lastLLMRequestTime = Date.now();
+                processVADTranscript(finalText, null);
+            } else if (finalText && finalText.trim()) {
+                console.log('[STT] Transcript too short ("' + finalText + '"), ignoring');
+                resetToListening();
+            } else {
+                resetToListening();
+            }
+            break;
+            
+        case 'error':
+            console.error('[STT-WS] Server error:', data.error);
+            resetToListening();
+            break;
+    }
+}
+
+async function sendSttAudioChunk(audioData) {
+    if (!window.VoiceState.sttStreaming) return;
+    
+    // Skip if not connected - don't try to reconnect in the interval
+    if (!streamingSttWs || streamingSttWs.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    
+    try {
+        // Downsample from 48kHz to 16kHz for Parakeet
+        const audio16k = downsampleTo16kHz(audioData, 48000, 16000);
+        
+        const int16Data = float32ToInt16(audio16k);
+        const base64Chunk = int16ToBase64(int16Data);
+        
+        streamingSttWs.send(JSON.stringify({
+            type: 'audio',
+            data: base64Chunk
+        }));
+    } catch (e) {
+        console.error('[STT] Error sending audio chunk:', e);
+    }
+}
+
+function processAudioFrame(event) {
+    if (!window.VoiceState.recording) return;
+    
+    const inputBuffer = event.inputBuffer.getChannelData(0);
+    accumulatedAudio.push(new Float32Array(inputBuffer));
+    window.VoiceState.lastAudioFrameTime = performance.now();
+    
+    // Debug: log first frame
+    if (accumulatedAudio.length === 1) {
+        console.log('[STT] First audio frame captured, samples:', inputBuffer.length, 'sampleRate:', event.inputBuffer.sampleRate);
+    }
+}
+
+// Downsample from 48kHz to 16kHz
+function downsampleTo16kHz(float32Array, fromRate = 48000, toRate = 16000) {
+    const ratio = fromRate / toRate;
+    const newLength = Math.round(float32Array.length / ratio);
+    const result = new Float32Array(newLength);
+    
+    for (let i = 0; i < newLength; i++) {
+        const srcIdx = i * ratio;
+        const idx0 = Math.floor(srcIdx);
+        const idx1 = Math.min(idx0 + 1, float32Array.length - 1);
+        const frac = srcIdx - idx0;
+        result[i] = float32Array[idx0] * (1 - frac) + float32Array[idx1] * frac;
+    }
+    
+    return result;
+}
+
+async function startStreamingStt() {
+    if (window.VoiceState.assistantSpeaking) {
+        window.VoiceState.interruptRequested = true;
+        if (typeof stopTTSPlayback === 'function') {
+            stopTTSPlayback();
+        }
+        if (typeof cancelLLMStream === 'function') {
+            cancelLLMStream();
+        }
+    }
+    
+    window.VoiceState.recording = true;
+    window.VoiceState.sttStreaming = true;
+    window.VoiceState.speechStartTime = performance.now();
+    confirmedSpeech = false;
+    accumulatedAudio = [];
+    
+    // Close existing connection if any
+    if (streamingSttWs) {
+        streamingSttWs.close();
+        streamingSttWs = null;
+    }
+    
+    try {
+        // Connect to WebSocket
+        await ensureWebSocketConnection();
+        
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
+        
+        mediaStream = stream;
+        
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            latencyHint: 'interactive'
+        });
+        
+        const audioSource = audioContext.createMediaStreamSource(stream);
+        sttAnalyser = audioContext.createAnalyser();
+        sttAnalyser.fftSize = 256;
+        audioSource.connect(sttAnalyser);
+        
+        processor = audioContext.createScriptProcessor(STT_FRAME_SAMPLES, 1, 1);
+        processor.onaudioprocess = processAudioFrame;
+        
+        audioSource.connect(processor);
+        processor.connect(audioContext.destination);
+        
+        console.log('[STT] Audio pipeline setup complete, starting send interval');
+        
+        audioSendInterval = setInterval(async () => {
+            if (accumulatedAudio.length > 0 && window.VoiceState.sttStreaming) {
+                console.log('[STT] Sending audio chunk, samples:', accumulatedAudio.reduce((s, c) => s + c.length, 0));
+                const totalLength = accumulatedAudio.reduce((sum, chunk) => sum + chunk.length, 0);
+                const combined = new Float32Array(totalLength);
+                let offset = 0;
+                for (const chunk of accumulatedAudio) {
+                    combined.set(chunk, offset);
+                    offset += chunk.length;
+                }
+                
+                await sendSttAudioChunk(combined);
+                accumulatedAudio = [];
+            }
+        }, STT_SEND_INTERVAL);
+        
+        speechStartTimer = setTimeout(() => {
+            confirmedSpeech = true;
+        }, VAD_SPEECH_START_DELAY);
+        
+        conversationMicBtn.classList.add('recording');
+        micBtn.classList.add('recording');
+        updateConversationStatus('🎤 Listening...', 'listening');
+        
+        // Start VAD loop for silence detection
+        checkVAD();
+        
+    } catch (e) {
+        console.error('[STT] Streaming STT error:', e);
+        stopStreamingStt();
+        // Fall back to VAD recording
+        startVADRecording();
+    }
+}
+
+function stopStreamingStt() {
+    window.VoiceState.recording = false;
+    window.VoiceState.sttStreaming = false;
+    
+    if (audioSendInterval) {
+        clearInterval(audioSendInterval);
+        audioSendInterval = null;
+    }
+    
+    if (speechStartTimer) {
+        clearTimeout(speechStartTimer);
+        speechStartTimer = null;
+    }
+    
+    if (processor) {
+        processor.disconnect();
+        processor = null;
+    }
+    
+    if (source) {
+        source.disconnect();
+        source = null;
+    }
+    
+    if (audioContext) {
+        audioContext.close().catch(console.error);
+        audioContext = null;
+    }
+    
+    // Close WebSocket connection
+    if (streamingSttWs) {
+        streamingSttWs.close();
+        streamingSttWs = null;
+    }
+    window.VoiceState.websocketReady = false;
+    
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream = null;
+    }
+    
+    sttAnalyser = null;
+    accumulatedAudio = [];
+    
+    conversationMicBtn.classList.remove('recording');
+    micBtn.classList.remove('recording');
+}
+
+function handleSilenceDetected() {
+    // Don't process if already finalizing
+    if (window.VoiceState.sttFinalizing) {
+        return;
+    }
+    
+    // Clear silence timer to prevent multiple triggers
+    if (silenceTimer) {
+        clearTimeout(silenceTimer);
+        silenceTimer = null;
+    }
+    
+    const duration = (performance.now() - window.VoiceState.speechStartTime) / 1000;
+    
+    if (duration < MIN_SPEECH_DURATION) {
+        console.log(`[VAD] Speech too short (${duration.toFixed(1)}s), cancelling`);
+        if (streamingSttWs) {
+            streamingSttWs.close();
+            streamingSttWs = null;
+        }
+        stopStreamingStt();
+        resetToListening();
+        return;
+    }
+    
+    console.log('[VAD] Sending final, duration:', duration.toFixed(1), 's');
+    
+    if (streamingSttWs && streamingSttWs.readyState === WebSocket.OPEN) {
+        streamingSttWs.send(JSON.stringify({ type: 'final' }));
+    }
+    window.VoiceState.sttStreaming = false;
+    window.VoiceState.sttFinalizing = true;
+    updateConversationStatus('🔄 Processing...', 'speaking');
+}
+
+function resetToListening() {
+    window.VoiceState.partialTranscript = '';
+    window.VoiceState.recording = false;
+    window.VoiceState.sttStreaming = false;
+    window.VoiceState.sttFinalizing = false;
+    
+    if (alwaysListening) {
+        updateConversationStatus('🎤 Auto-listening - Speak now!', 'listening');
+        showCircleIndicator('listening');
+        // Restart VAD loop
+        checkVAD();
+    } else {
+        updateConversationStatus('Tap to speak');
+        if (tapToTalkBtn) {
+            tapToTalkBtn.classList.add('visible');
+        }
+    }
+}
 
 // Audio processing optimization
 const AUDIO_CHUNK_SIZE = 80;
@@ -322,6 +775,22 @@ async function startAlwaysListening() {
 
 // Detect voice activity
 function detectVoiceActivity() {
+    // Check for rate limit cooldown
+    if (Date.now() < llmCooldownUntil) {
+        if (alwaysListening) {
+            requestAnimationFrame(detectVoiceActivity);
+        }
+        return;
+    }
+    
+    // Check for TTS cooldown (only after TTS finishes, not during playback - allow interrupt)
+    if (!window.VoiceState.assistantSpeaking && Date.now() < ttsFinishedTime) {
+        if (alwaysListening) {
+            requestAnimationFrame(detectVoiceActivity);
+        }
+        return;
+    }
+    
     if (!alwaysListening || !analyser) return;
     
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -334,9 +803,10 @@ function detectVoiceActivity() {
     const average = sum / dataArray.length / 255;
     
     if (average > VAD_SILENCE_THRESHOLD) {
-        if (!isRecording && !isProcessing) {
-            console.log('Voice detected, starting recording');
-            startVADRecording();
+        // Check both legacy isRecording and new VoiceState.recording
+        if (!isRecording && !isProcessing && !window.VoiceState.recording) {
+            console.log('Voice detected, starting streaming STT');
+            startStreamingStt();
         }
         
         if (silenceTimer) {

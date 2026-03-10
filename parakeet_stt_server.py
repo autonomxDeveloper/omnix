@@ -524,23 +524,38 @@ async def websocket_transcribe(websocket: WebSocket):
                     session_dir.mkdir(parents=True, exist_ok=True)
                     
                     try:
-                        # Write audio to temp file as webm
-                        webm_path = session_dir / "audio.webm"
-                        with open(webm_path, "wb") as f:
-                            f.write(combined_audio)
-                        
-                        # Convert webm to wav using pydub for proper processing
-                        # MediaRecorder produces webm/opus which may need conversion
-                        try:
-                            audio = AudioSegment.from_file(webm_path, format="webm")
+                        # Detect audio format and convert if needed
+                        # Check for WAV header (RIFF)
+                        if len(combined_audio) > 44 and combined_audio[:4] == b'RIFF':
+                            # Already WAV format
                             wav_path = session_dir / "audio.wav"
-                            audio.export(wav_path, format="wav")
+                            with open(wav_path, "wb") as f:
+                                f.write(combined_audio)
                             audio_path = wav_path
-                        except Exception as conv_err:
-                            # Try as raw webm if pydub fails
-                            print(f"Webm conversion failed, trying direct: {conv_err}")
-                            # Try alternative: use webm directly
-                            audio_path = webm_path
+                        # Check for webm/mp4 header
+                        elif len(combined_audio) > 4 and combined_audio[:4] in [b'\x1a\x45\xdf\xa3', b'ftyp']:
+                            # WebM format
+                            webm_path = session_dir / "audio.webm"
+                            with open(webm_path, "wb") as f:
+                                f.write(combined_audio)
+                            try:
+                                audio = AudioSegment.from_file(webm_path, format="webm")
+                                wav_path = session_dir / "audio.wav"
+                                audio.export(wav_path, format="wav")
+                                audio_path = wav_path
+                            except Exception as conv_err:
+                                print(f"Webm conversion failed: {conv_err}")
+                                audio_path = webm_path
+                        else:
+                            # Assume raw PCM Int16, create WAV container
+                            import wave
+                            wav_path = session_dir / "audio.wav"
+                            with wave.open(str(wav_path), 'wb') as wf:
+                                wf.setnchannels(1)
+                                wf.setsampwidth(2)  # 16-bit
+                                wf.setframerate(16000)  # Default to 16kHz
+                                wf.writeframes(combined_audio)
+                            audio_path = wav_path
                         
                         # Process and transcribe
                         result = get_transcripts_and_raw_times(str(audio_path), session_dir)

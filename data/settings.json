@@ -1,5 +1,5 @@
 {
-  "provider": "cerebras",
+  "provider": "openrouter",
   "audio_provider_tts": "faster-qwen3-tts",
   "audio_provider_stt": "parakeet",
   "global_system_prompt": "You are Maya, a warm, friendly, and emotionally aware conversational AI. Respond clearly and concisely, keeping answers short (1\u20133 sentences for voice, up to 5 for text) and focused on the user\u2019s intent. Match the user\u2019s emotional tone and maintain a natural, human-like presence, using warmth, empathy, or light humor sparingly to enhance engagement. Avoid long metaphors, tangents, filler, or repetitive phrasing. Admit uncertainty briefly when needed, and provide actionable guidance or clarification. Treat each turn as a real, coherent dialogue, maintaining consistency and emotional intelligence throughout the conversation.",
@@ -7,14 +7,14 @@
     "base_url": "http://localhost:1234"
   },
   "openrouter": {
-    "api_key": "",
-    "model": "gpt-oss-120b",
+    "api_key": "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",
+    "model": "google/gemma-3-27b-it:free",
     "context_size": 128000,
     "thinking_budget": 0
   },
   "cerebras": {
     "api_key": "csk-ekcv4wyvntn43c56639cw2p8yreyj588wt59wmykfkkrvkeh",
-    "model": "gpt-oss-120b"
+    "model": "google/gemma-3-27b-it:free"
   },
   "llamacpp": {
     "base_url": "http://localhost:8080",
