@@ -117,6 +117,38 @@ function stopStreamingAudio() {
     globalAudioPlayQueue = [];
 }
 
+let audioWorkletNode = null;
+
+function stopTTSPlayback() {
+    if (audioWorkletNode && audioWorkletNode.port) {
+        audioWorkletNode.port.postMessage({
+            type: "reset"
+        });
+    }
+    
+    stopStreamingAudio();
+    
+    if (typeof window.conversationMode !== 'undefined' && window.conversationMode) {
+        if (typeof updateConversationStatus === 'function') {
+            updateConversationStatus('Ready to chat');
+        }
+        if (typeof showCircleIndicator === 'function') {
+            showCircleIndicator('idle');
+        }
+    }
+    
+    if (typeof window !== 'undefined') {
+        window.stopAudioRequested = true;
+    }
+    
+    isSpeaking = false;
+    if (typeof window !== 'undefined') {
+        window.VoiceState.assistantSpeaking = false;
+    }
+}
+
+window.stopTTSPlayback = stopTTSPlayback;
+
 // Export for external use
 window.stopStreamingAudio = stopStreamingAudio;
 

@@ -598,9 +598,22 @@ from fastapi import Request, HTTPException
 async def get_settings():
     """Get settings"""
     settings = shared.load_settings()
+    secrets = shared.load_secrets()
+    
+    # Add API keys from secrets to settings (for internal use)
+    if 'api_keys' in secrets:
+        for key in ['openrouter', 'cerebras']:
+            if key in secrets['api_keys'] and secrets['api_keys'][key]:
+                if key not in settings:
+                    settings[key] = {}
+                settings[key]['api_key'] = secrets['api_keys'][key]
+    
+    # Mask API keys in response to frontend
     for key in ['openrouter', 'cerebras']:
         if settings.get(key, {}).get('api_key'):
-            settings[key]['api_key'] = "***" + settings[key]['api_key'][-4:] if len(settings[key]['api_key']) > 4 else "****"
+            api_key = settings[key]['api_key']
+            settings[key]['api_key'] = "***" + api_key[-4:] if len(api_key) > 4 else "****"
+    
     return {"success": True, "settings": settings}
 
 
@@ -609,6 +622,7 @@ async def save_settings(request: Request):
     """Save settings"""
     data = await request.json()
     settings = shared.load_settings()
+    secrets = shared.load_secrets()
     
     if 'provider' in data:
         settings['provider'] = data['provider']
@@ -617,21 +631,64 @@ async def save_settings(request: Request):
     if 'lmstudio' in data:
         settings['lmstudio'].update(data['lmstudio'])
     
-    for key in ['openrouter', 'cerebras']:
-        if key in data:
-            if key not in settings:
-                settings[key] = {}
-            if data[key].get('api_key') and not data[key]['api_key'].startswith('***'):
-                settings[key]['api_key'] = data[key]['api_key']
-            settings[key].update({k: v for k, v in data[key].items() if k != 'api_key'})
+    # Save API keys to secrets.json
+    if 'openrouter' in data:
+        if data['openrouter'].get('api_key') and not data['openrouter']['api_key'].startswith('***'):
+            if 'api_keys' not in secrets:
+                secrets['api_keys'] = {}
+            secrets['api_keys']['openrouter'] = data['openrouter']['api_key']
+        if 'openrouter' not in settings:
+            settings['openrouter'] = {}
+        settings['openrouter'].update({k: v for k, v in data['openrouter'].items() if k != 'api_key'})
+    
+    if 'cerebras' in data:
+        if data['cerebras'].get('api_key') and not data['cerebras']['api_key'].startswith('***'):
+            if 'api_keys' not in secrets:
+                secrets['api_keys'] = {}
+            secrets['api_keys']['cerebras'] = data['cerebras']['api_key']
+        if 'cerebras' not in settings:
+            settings['cerebras'] = {}
+        settings['cerebras'].update({k: v for k, v in data['cerebras'].items() if k != 'api_key'})
             
     if 'llamacpp' in data:
         if 'llamacpp' not in settings:
             settings['llamacpp'] = shared.DEFAULT_SETTINGS['llamacpp'].copy()
         settings['llamacpp'].update(data['llamacpp'])
-        
+    
+    # Save secrets (API keys)
+    shared.save_secrets(secrets)
+    
+    # Save settings
     shared.save_settings(settings)
     return {"success": True}
+
+
+@app.get("/api/openrouter/models")
+async def get_openrouter_models():
+    """Get available models from OpenRouter API"""
+    import requests
+    
+    settings = shared.load_settings()
+    api_key = settings.get('openrouter', {}).get('api_key', '')
+    
+    if not api_key:
+        return {"success": False, "error": "No API key configured"}
+    
+    try:
+        response = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            models = [{"id": m.get("id"), "name": m.get("name", m.get("id"))} for m in data.get("data", [])]
+            return {"success": True, "models": models}
+        else:
+            return {"success": False, "error": f"API error: {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/sessions")
