@@ -736,6 +736,19 @@ function setupEventListeners() {
             console.log('[CORE] Saved speaker selection:', ttsSpeaker.value);
         });
     }
+    
+    // Preserve llama.cpp model selection when dropdown is interacted with
+    if (llamacppModelInput) {
+        llamacppModelInput.addEventListener('focus', () => {
+            // Save current selection when dropdown gets focus
+            localStorage.setItem('llamacpp_selected_model', llamacppModelInput.value);
+        });
+        llamacppModelInput.addEventListener('change', () => {
+            const selected = llamacppModelInput.value;
+            console.log('[CORE] Llama.cpp model selected:', selected);
+            localStorage.setItem('llamacpp_selected_model', selected);
+        });
+    }
 }
 
 // Add custom header field
@@ -887,6 +900,12 @@ async function saveSettingsHandler() {
         selectedModel = cerebrasModelInput.value.trim();
     } else if (provider === 'openrouter' && openrouterModelInput) {
         selectedModel = openrouterModelInput.value.trim();
+    } else if (provider === 'llamacpp' && llamacppModelInput) {
+        selectedModel = llamacppModelInput.value.trim();
+        // Save to localStorage for persistence
+        if (selectedModel) {
+            localStorage.setItem('llamacpp_selected_model', selectedModel);
+        }
     }
     
     let currentSettings = {};
@@ -1878,8 +1897,11 @@ let llamacppDownloadStatusInterval = null;
 // Load LLM models into llama.cpp dropdown
 async function loadLlmModelsForLlamaCpp() {
     try {
-        // Preserve user selection if they've already selected a model
-        const userSelectedModel = llamacppModelInput.value;
+        // Check localStorage first, then current value, then settings
+        let userSelectedModel = localStorage.getItem('llamacpp_selected_model');
+        if (!userSelectedModel || userSelectedModel === "") {
+            userSelectedModel = llamacppModelInput.value;
+        }
         
         const response = await fetch('/api/llm/models');
         const data = await response.json();
@@ -2614,23 +2636,10 @@ async function autoStartLlamaCppServer() {
     }
 }
 
-// Also ensure models load when settings modal opens - handle both cases
-// (initial load and when modal is opened)
-let llamacppModelsLoaded = false;
-if (settingsModal) {
-    settingsModal.addEventListener('transitionend', () => {
-        if (settingsModal.classList.contains('active') && providerSelect && providerSelect.value === 'llamacpp' && !llamacppModelsLoaded) {
-            loadLlmModelsForLlamaCpp();
-            llamacppModelsLoaded = true;
-        }
-    });
-    // Reset flag when modal closes
-    settingsModal.addEventListener('click', (e) => {
-        if (e.target === settingsModal) {
-            llamacppModelsLoaded = false;
-        }
-    });
-}
+// Note: loadLlmModelsForLlamaCpp is called explicitly when:
+// - Settings button is clicked (if provider is llamacpp)
+// - Provider is switched to llamacpp
+// No need for automatic reload on modal transitions
 
 // Save system prompt
 async function saveSystemPromptHandler() {
