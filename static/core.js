@@ -1878,6 +1878,9 @@ let llamacppDownloadStatusInterval = null;
 // Load LLM models into llama.cpp dropdown
 async function loadLlmModelsForLlamaCpp() {
     try {
+        // Preserve user selection if they've already selected a model
+        const userSelectedModel = llamacppModelInput.value;
+        
         const response = await fetch('/api/llm/models');
         const data = await response.json();
         
@@ -1892,23 +1895,38 @@ async function loadLlmModelsForLlamaCpp() {
                 llamacppModelInput.appendChild(option);
             });
             
-            // Load saved model from settings
-            const settingsResponse = await fetch('/api/settings');
-            const settingsData = await settingsResponse.json();
-            if (settingsData.success && settingsData.settings.llamacpp?.model) {
-                const savedModel = settingsData.settings.llamacpp.model;
-                // Check if the saved model exists in the dropdown
-                const optionExists = Array.from(llamacppModelInput.options).some(option => option.value === savedModel);
+            // Restore user selection if exists, otherwise load from settings
+            if (userSelectedModel && userSelectedModel !== "") {
+                const optionExists = Array.from(llamacppModelInput.options).some(option => option.value === userSelectedModel);
                 if (optionExists) {
-                    llamacppModelInput.value = savedModel;
+                    llamacppModelInput.value = userSelectedModel;
                 } else {
-                    // If the option doesn't exist yet, add it temporarily
-                    // This can happen if models are still loading
+                    // User selection doesn't exist in new list, add it temporarily
                     const tempOption = document.createElement('option');
-                    tempOption.value = savedModel;
-                    tempOption.textContent = `${savedModel} (saved)`;
+                    tempOption.value = userSelectedModel;
+                    tempOption.textContent = `${userSelectedModel} (selected)`;
                     llamacppModelInput.appendChild(tempOption);
-                    llamacppModelInput.value = savedModel;
+                    llamacppModelInput.value = userSelectedModel;
+                }
+            } else {
+                // Load saved model from settings
+                const settingsResponse = await fetch('/api/settings');
+                const settingsData = await settingsResponse.json();
+                if (settingsData.success && settingsData.settings.llamacpp?.model) {
+                    const savedModel = settingsData.settings.llamacpp.model;
+                    // Check if the saved model exists in the dropdown
+                    const optionExists = Array.from(llamacppModelInput.options).some(option => option.value === savedModel);
+                    if (optionExists) {
+                        llamacppModelInput.value = savedModel;
+                    } else {
+                        // If the option doesn't exist yet, add it temporarily
+                        // This can happen if models are still loading
+                        const tempOption = document.createElement('option');
+                        tempOption.value = savedModel;
+                        tempOption.textContent = `${savedModel} (saved)`;
+                        llamacppModelInput.appendChild(tempOption);
+                        llamacppModelInput.value = savedModel;
+                    }
                 }
             }
         }
@@ -2598,10 +2616,18 @@ async function autoStartLlamaCppServer() {
 
 // Also ensure models load when settings modal opens - handle both cases
 // (initial load and when modal is opened)
+let llamacppModelsLoaded = false;
 if (settingsModal) {
     settingsModal.addEventListener('transitionend', () => {
-        if (settingsModal.classList.contains('active') && providerSelect && providerSelect.value === 'llamacpp') {
+        if (settingsModal.classList.contains('active') && providerSelect && providerSelect.value === 'llamacpp' && !llamacppModelsLoaded) {
             loadLlmModelsForLlamaCpp();
+            llamacppModelsLoaded = true;
+        }
+    });
+    // Reset flag when modal closes
+    settingsModal.addEventListener('click', (e) => {
+        if (e.target === settingsModal) {
+            llamacppModelsLoaded = false;
         }
     });
 }

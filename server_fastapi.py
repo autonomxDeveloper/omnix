@@ -434,7 +434,9 @@ async def websocket_conversation(websocket: WebSocket):
 
 async def _process_conversation(session: ConversationSession, user_text: str):
     """Process conversation and stream response"""
-    if not llm_provider:
+    # Reload provider from settings on each request to pick up changes
+    provider = shared.get_provider()
+    if not provider:
         await session.websocket.send_json({"type": "error", "error": "No LLM provider"})
         return
     
@@ -459,9 +461,9 @@ async def _process_conversation(session: ConversationSession, user_text: str):
         start_time = time.time()
         
         # Stream from LLM
-        stream_generator = llm_provider.chat_completion(
+        stream_generator = provider.chat_completion(
             messages=messages,
-            model=llm_provider.config.model,
+            model=provider.config.model,
             stream=True
         )
         
@@ -764,7 +766,9 @@ async def generate_session_title(request: Request):
     user_message = data.get('user_message', '')
     ai_response = data.get('ai_response', '')
     
-    if not llm_provider:
+    # Reload provider from settings on each request to pick up changes
+    provider = shared.get_provider()
+    if not provider:
         return JSONResponse({"success": False, "error": "No LLM provider"}, status_code=500)
     
     try:
@@ -779,9 +783,9 @@ Just return the title, nothing else."""
 
         messages = [ChatMessage(role="user", content=title_prompt)]
         
-        response = await llm_provider.chat_completion(
+        response = await provider.chat_completion(
             messages=messages,
-            model=llm_provider.config.model,
+            model=provider.config.model,
             stream=False
         )
         
@@ -953,6 +957,41 @@ async def create_voice_profile(request: Request):
     return {"success": True, "profile": data}
 
 
+@app.get("/api/podcast/episodes")
+async def get_podcast_episodes():
+    """Get podcast episodes"""
+    eps = _load_json(EP_FILE, {})
+    episodes = sorted(eps.values(), key=lambda x: x.get('created_at', ''), reverse=True)
+    return {"success": True, "episodes": episodes}
+
+
+@app.get("/api/podcast/episodes/{ep_id}")
+async def get_podcast_episode(ep_id: str):
+    """Get a specific podcast episode"""
+    eps = _load_json(EP_FILE, {})
+    if ep_id not in eps:
+        return JSONResponse({"success": False, "error": "Not found"}, status_code=404)
+    ep = eps[ep_id]
+    audio_path = Path(shared.DATA_DIR) / 'podcasts' / f"{ep_id}.wav"
+    if audio_path.exists():
+        ep['audio_url'] = f"/api/podcast/episodes/{ep_id}/audio"
+    return {"success": True, "episode": ep}
+
+
+@app.delete("/api/podcast/episodes/{ep_id}")
+async def delete_podcast_episode(ep_id: str):
+    """Delete a podcast episode"""
+    eps = _load_json(EP_FILE, {})
+    if ep_id not in eps:
+        return JSONResponse({"success": False, "error": "Not found"}, status_code=404)
+    del eps[ep_id]
+    _save_json(EP_FILE, eps)
+    audio_path = Path(shared.DATA_DIR) / 'podcasts' / f"{ep_id}.wav"
+    if audio_path.exists():
+        audio_path.unlink()
+    return {"success": True}
+
+
 # ============== LLAMACPP ENDPOINTS ==============
 @app.get("/api/llamacpp/server/status")
 async def llamacpp_status():
@@ -1113,6 +1152,34 @@ async def get_models():
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+@app.get("/api/llm/models")
+async def get_llm_models():
+    """Get available local LLM models (for llama.cpp)"""
+    import os
+    models = []
+    llm_dir = os.path.join(shared.BASE_DIR, 'models', 'llm')
+    if os.path.exists(llm_dir):
+        for f in os.listdir(llm_dir):
+            if f.lower().endswith('.gguf'):
+                size = os.path.getsize(os.path.join(llm_dir, f))
+                models.append({"name": f, "size": size, "size_formatted": shared.format_size(size)})
+    return {"success": True, "models": models}
+
+
+@app.delete("/api/llm/models/{filename}")
+async def delete_llm_model(filename):
+    """Delete a local LLM model file"""
+    import os
+    # URL decode the filename
+    from urllib.parse import unquote
+    filename = unquote(filename)
+    p = os.path.join(shared.BASE_DIR, 'models', 'llm', filename)
+    if os.path.exists(p):
+        os.remove(p)
+        return {"success": True}
+    return JSONResponse({"success": False, "error": "File not found"}, status_code=404)
+
+
 # ============== HTTP FALLBACK ENDPOINTS ==============
 @app.post("/api/chat/stream")
 async def chat_stream(request: Request):
@@ -1127,10 +1194,12 @@ async def chat_stream(request: Request):
     system_prompt = data.get('system_prompt', '')
     speaker = data.get('speaker', 'default')
     
-    if not llm_provider:
+    # Reload provider from settings on each request to pick up changes
+    provider = shared.get_provider()
+    if not provider:
         return JSONResponse({"success": False, "error": "Provider not available"}, status_code=500)
     
-    if not llm_provider.supports_streaming():
+    if not provider.supports_streaming():
         return JSONResponse({"success": False, "error": "Provider does not support streaming"}, status_code=400)
     
     try:
@@ -1148,9 +1217,9 @@ async def chat_stream(request: Request):
         
         messages.append(ChatMessage(role="user", content=user_message))
         
-        stream_generator = llm_provider.chat_completion(
+        stream_generator = provider.chat_completion(
             messages=messages,
-            model=model or llm_provider.config.model,
+            model=model or provider.config.model,
             stream=True
         )
         
