@@ -126,8 +126,9 @@ class LlamaCppProvider(BaseProvider):
         
         try:
             # Start the server with absolute paths to avoid Windows path issues
+            # Using -ngl 99 for maximum GPU utilization on modern GPUs
             proc = subprocess.Popen(
-                [str(binary), "-m", str(model_path.resolve()), "-c", "4096", "-ngl", "999", "--host", "0.0.0.0", "--port", str(port)],
+                [str(binary), "-m", str(model_path.resolve()), "-c", "4096", "-ngl", "99", "--host", "0.0.0.0", "--port", str(port)],
                 cwd=binary.parent,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

@@ -11,6 +11,7 @@ import subprocess
 import platform
 import json
 import urllib.request
+import urllib.error
 import zipfile
 import tarfile
 import shutil
@@ -20,6 +21,65 @@ import threading
 import time
 
 from app.shared import BASE_DIR
+
+
+def detect_os():
+    """Detect the operating system."""
+    pf = platform.system()
+    if pf == "Windows":
+        return "windows"
+    elif pf == "Linux":
+        return "linux"
+    elif pf == "Darwin":
+        return "mac"
+    else:
+        return "unknown"
+
+
+def detect_gpu():
+    """Detect GPU type for appropriate wheel selection."""
+    gpu_type = "cpu"
+
+    os_name = detect_os()
+
+    if os_name == "windows" or os_name == "linux":
+        try:
+            result = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
+            if result.returncode == 0:
+                gpu_type = "nvidia"
+        except Exception:
+            pass
+
+        if gpu_type == "cpu":
+            try:
+                result = subprocess.run(["rocminfo"], capture_output=True, text=True)
+                if result.returncode == 0:
+                    gpu_type = "amd"
+            except Exception:
+                pass
+
+    elif os_name == "mac":
+        gpu_type = "metal"
+
+    return gpu_type
+
+
+WHEEL_URLS = {
+    "windows": {
+        "nvidia": "https://github.com/boneylizard/llama-cpp-python-cu128-gemma3/releases/download/0.3.16/llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl",
+        "amd": None,
+        "cpu": "https://github.com/abetlen/llama-cpp-python/releases/download/0.3.16/llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl"
+    },
+    "linux": {
+        "nvidia": "https://github.com/boneylizard/llama-cpp-python-cu128-gemma3/releases/download/0.3.16/llama_cpp_python-0.3.16-cp312-cp312-manylinux2014_x86_64.whl",
+        "amd": None,
+        "cpu": "https://github.com/abetlen/llama-cpp-python/releases/download/0.3.16/llama_cpp_python-0.3.16-cp312-cp312-manylinux2014_x86_64.whl"
+    },
+    "mac": {
+        "metal": "https://github.com/boneylizard/llama-cpp-python/releases/download/0.3.16/llama_cpp_python-0.3.16-cp312-cp312-macosx_11_0_arm64.whl",
+        "cpu": "https://github.com/abetlen/llama-cpp-python/releases/download/0.3.16/llama_cpp_python-0.3.16-cp312-cp312-macosx_11_0_arm64.whl"
+    }
+}
 
 
 class LlamaCppInstaller:
@@ -117,26 +177,33 @@ class LlamaCppInstaller:
             if self.is_python_wheel_installed():
                 return {"success": True, "message": "llama-cpp-python is already installed"}
             
-            wheel_url, wheel_name = self.get_python_wheel_url()
+            wheel_url = self.get_wheel_url()
+            
+            if not wheel_url:
+                return {"success": False, "error": "No compatible wheel found for your system"}
+            
+            wheel_name = wheel_url.split("/")[-1]
             
             try:
-                # Install using pip with the custom index URL
-                cmd = [
-                    sys.executable, "-m", "pip", "install", "llama-cpp-python",
-                    "--extra-index-url", "https://parisneo.github.io/llama-cpp-python-wheels/whl/cu121/" if "cu121" in wheel_url else "https://parisneo.github.io/llama-cpp-python-wheels/whl/cpu/"
-                ]
+                print(f"Downloading {wheel_url}")
+                temp_wheel = self.llm_dir / wheel_name
+                temp_wheel.parent.mkdir(parents=True, exist_ok=True)
                 
-                print(f"Installing llama-cpp-python with command: {' '.join(cmd)}")
+                urllib.request.urlretrieve(wheel_url, temp_wheel)
+                
+                cmd = [sys.executable, "-m", "pip", "install", str(temp_wheel)]
+                print(f"Installing llama-cpp-python: {' '.join(cmd)}")
                 
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=300  # 5 minute timeout
+                    timeout=300
                 )
                 
+                temp_wheel.unlink(missing_ok=True)
+                
                 if result.returncode == 0:
-                    # Verify installation
                     if self.is_python_wheel_installed():
                         return {"success": True, "message": "llama-cpp-python installed successfully"}
                     else:
@@ -214,6 +281,9 @@ class LlamaCppInstaller:
     
     def download_and_extract_server(self, progress_callback=None) -> Dict[str, Any]:
         """Download and extract the llama.cpp server binary."""
+        import io
+        import sys
+        
         with self.installation_lock:
             if self.is_server_binary_available():
                 return {"success": True, "message": "Server binary already available"}
@@ -222,19 +292,57 @@ class LlamaCppInstaller:
             temp_file = self.server_dir / f"llama-cpp-download{extension}"
             
             try:
-                # Download the file
                 print(f"Downloading llama.cpp server from: {url}")
                 
-                def progress_hook(count, block_size, total_size):
-                    if progress_callback and total_size > 0:
-                        percent = int(count * block_size * 100 / total_size)
-                        progress_callback({
-                            "type": "download",
-                            "progress": percent,
-                            "message": f"Downloading... {percent}%"
-                        })
+                class ProgressTracker:
+                    def __init__(self, callback):
+                        self.callback = callback
+                        self.downloaded = 0
+                        self.total = 0
+                        self.last_percent = -1
+                    
+                    def update(self, block_num, block_size, total_size):
+                        self.downloaded = block_num * block_size
+                        self.total = total_size
+                        if total_size > 0:
+                            percent = int(self.downloaded * 100 / total_size)
+                            if percent != self.last_percent:
+                                self.last_percent = percent
+                                if self.callback:
+                                    self.callback({
+                                        "type": "download",
+                                        "progress": percent,
+                                        "message": f"Downloading... {percent}%"
+                                    })
+                                print(f"\rDownloading: {percent}%", end="", flush=True)
                 
-                urllib.request.urlretrieve(url, temp_file, reporthook=progress_hook)
+                tracker = ProgressTracker(progress_callback)
+                
+                with urllib.request.urlopen(url) as response:
+                    total_size = int(response.headers.get('Content-Length', 0))
+                    chunk_size = 8192
+                    
+                    with open(temp_file, 'wb') as f:
+                        downloaded = 0
+                        while True:
+                            chunk = response.read(chunk_size)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                percent = int(downloaded * 100 / total_size)
+                                if percent != tracker.last_percent:
+                                    tracker.last_percent = percent
+                                    if progress_callback:
+                                        progress_callback({
+                                            "type": "download",
+                                            "progress": percent,
+                                            "message": f"Downloading... {percent}%"
+                                        })
+                                    print(f"\rDownloading: {percent}%", end="", flush=True)
+                
+                print()
                 
                 if progress_callback:
                     progress_callback({
@@ -243,7 +351,7 @@ class LlamaCppInstaller:
                         "message": "Extracting files..."
                     })
                 
-                # Extract based on file type
+                print("Extracting files...")
                 if extension == ".zip":
                     with zipfile.ZipFile(temp_file, 'r') as zip_ref:
                         zip_ref.extractall(self.server_dir)
@@ -251,13 +359,11 @@ class LlamaCppInstaller:
                     with tarfile.open(temp_file, 'r:gz') as tar_ref:
                         tar_ref.extractall(self.server_dir)
                 
-                # Make binary executable on Unix systems
                 if binary_name != "llama-server.exe":
                     binary_path = self.server_dir / binary_name
                     if binary_path.exists():
                         os.chmod(binary_path, 0o755)
                 
-                # Clean up temp file
                 temp_file.unlink(missing_ok=True)
                 
                 if progress_callback:
@@ -269,8 +375,13 @@ class LlamaCppInstaller:
                 
                 return {"success": True, "message": "Server binary downloaded and extracted successfully"}
                 
+            except urllib.error.HTTPError as e:
+                temp_file.unlink(missing_ok=True)
+                return {"success": False, "error": f"HTTP error {e.code}: {e.reason}"}
+            except urllib.error.URLError as e:
+                temp_file.unlink(missing_ok=True)
+                return {"success": False, "error": f"Network error: {e.reason}"}
             except Exception as e:
-                # Clean up on error
                 temp_file.unlink(missing_ok=True)
                 return {"success": False, "error": f"Download/extract failed: {str(e)}"}
     
@@ -367,6 +478,158 @@ class LlamaCppInstaller:
             "message": "Complete installation finished" if overall_success else "Some components failed to install",
             "results": results
         }
+    
+    def get_wheel_url(self) -> Optional[str]:
+        """Get the appropriate wheel URL based on OS and GPU detection."""
+        os_name = detect_os()
+        gpu_type = detect_gpu()
+        
+        wheel_url = WHEEL_URLS.get(os_name, {}).get(gpu_type)
+        
+        if not wheel_url:
+            wheel_url = WHEEL_URLS.get(os_name, {}).get("cpu")
+        
+        return wheel_url
+    
+    def download_model_from_huggingface(
+        self,
+        repo_id: str,
+        filename: str,
+        progress_callback=None
+    ) -> Dict[str, Any]:
+        """Download a GGUF model from HuggingFace."""
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            return {"success": False, "error": "huggingface_hub not installed. Install with: pip install huggingface_hub"}
+        
+        try:
+            if progress_callback:
+                progress_callback({
+                    "type": "download",
+                    "progress": 0,
+                    "message": f"Downloading {filename} from HuggingFace..."
+                })
+            
+            file_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=str(self.llm_dir),
+                local_dir_use_symlinks=False
+            )
+            
+            if progress_callback:
+                progress_callback({
+                    "type": "complete",
+                    "progress": 100,
+                    "message": "Download complete!"
+                })
+            
+            return {
+                "success": True,
+                "message": f"Model downloaded to {file_path}",
+                "path": file_path
+            }
+            
+        except Exception as e:
+            return {"success": False, "error": f"Download failed: {str(e)}"}
+    
+    def download_model_from_url(
+        self,
+        url: str,
+        filename: Optional[str] = None,
+        progress_callback=None
+    ) -> Dict[str, Any]:
+        """Download a model from a direct URL with progress tracking."""
+        if not filename:
+            filename = url.split("/")[-1]
+        
+        dest_path = self.llm_dir / filename
+        
+        try:
+            print(f"Downloading {url}")
+            
+            with urllib.request.urlopen(url) as response:
+                total_size = int(response.headers.get('Content-Length', 0))
+                chunk_size = 8192
+                
+                with open(dest_path, 'wb') as f:
+                    downloaded = 0
+                    last_percent = -1
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = int(downloaded * 100 / total_size)
+                            if percent != last_percent:
+                                last_percent = percent
+                                if progress_callback:
+                                    progress_callback({
+                                        "type": "download",
+                                        "progress": percent,
+                                        "message": f"Downloading... {percent}%"
+                                    })
+                                print(f"\rDownloading: {percent}%", end="", flush=True)
+            
+            print()
+            
+            if progress_callback:
+                progress_callback({
+                    "type": "complete",
+                    "progress": 100,
+                    "message": "Download complete!"
+                })
+            
+            return {
+                "success": True,
+                "message": f"Model downloaded to {dest_path}",
+                "path": str(dest_path)
+            }
+            
+        except urllib.error.HTTPError as e:
+            if dest_path.exists():
+                dest_path.unlink(missing_ok=True)
+            return {"success": False, "error": f"HTTP error {e.code}: {e.reason}"}
+        except urllib.error.URLError as e:
+            if dest_path.exists():
+                dest_path.unlink(missing_ok=True)
+            return {"success": False, "error": f"Network error: {e.reason}"}
+        except Exception as e:
+            if dest_path.exists():
+                dest_path.unlink(missing_ok=True)
+            return {"success": False, "error": f"Download failed: {str(e)}"}
+    
+    def get_available_models(self) -> List[Dict[str, Any]]:
+        """Get list of locally available GGUF models."""
+        models = []
+        
+        if not self.llm_dir.exists():
+            return models
+        
+        for gguf_file in self.llm_dir.rglob("*.gguf"):
+            try:
+                size = gguf_file.stat().st_size
+                models.append({
+                    "name": gguf_file.name,
+                    "path": str(gguf_file),
+                    "size": size,
+                    "size_formatted": self._format_size(size)
+                })
+            except Exception:
+                continue
+        
+        return models
+    
+    def _format_size(self, bytes_size: int) -> str:
+        """Format bytes to human-readable size."""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if bytes_size < 1024.0:
+                return f"{bytes_size:.1f} {unit}"
+            bytes_size /= 1024.0
+        return f"{bytes_size:.1f} PB"
 
 
 # Global installer instance

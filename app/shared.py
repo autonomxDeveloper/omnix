@@ -44,7 +44,7 @@ DEFAULT_SETTINGS = {
     "provider": "lmstudio",
     "audio_provider_tts": "faster-qwen3-tts",
     "audio_provider_stt": "parakeet",
-    "global_system_prompt": """You are an intelligent conversational AI designed for natural, engaging dialogue. Respond in a clear, friendly, and human-like manner while remaining concise and coherent. Prioritize understanding the user's intent and replying directly, without unnecessary elaboration or filler. Keep responses focused and easy to follow, using natural phrasing rather than formal or technical language unless required. Maintain conversational flow across turns and adapt smoothly to the user's tone. Default to brevity and do not exceed five sentences unless the user explicitly asks for more detail.""",
+    "global_system_prompt": """You are a helpful, friendly AI assistant. Be concise, conversational, and clear. Keep answers short unless the user asks for more detail.""",
     "lmstudio": {"base_url": "http://localhost:1234"},
     "openrouter": {"api_key": "", "model": "openai/gpt-4o-mini", "context_size": 128000, "thinking_budget": 0},
     "cerebras": {"api_key": "", "model": "llama-3.3-70b-versatile"},

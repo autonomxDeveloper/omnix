@@ -2528,9 +2528,6 @@ window.loadSettings = async function() {
     if (providerSelect && providerSelect.value === 'llamacpp') {
         loadLlmModelsForLlamaCpp();
     }
-    
-    // Auto-start llama.cpp server if configured
-    await autoStartLlamaCppServer();
 };
 
 // Auto-start llama.cpp server if configured in settings

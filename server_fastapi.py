@@ -1002,7 +1002,34 @@ async def llamacpp_status():
         if (server_dir / n).exists():
             binary = n
             break
-    return {"success": True, "server_dir": str(server_dir), "binary_found": bool(binary), "binary_name": binary}
+    
+    cuda_available = False
+    try:
+        import subprocess as sp
+        result = sp.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=5)
+        cuda_available = result.returncode == 0 and result.stdout.strip() != ""
+        gpu_name = result.stdout.strip() if cuda_available else None
+    except:
+        gpu_name = None
+    
+    # Check if server is actually running by trying to connect
+    server_running = False
+    try:
+        import requests
+        resp = requests.get("http://localhost:8080/v1/models", timeout=2)
+        server_running = resp.status_code == 200
+    except:
+        pass
+    
+    return {
+        "success": True, 
+        "server_dir": str(server_dir), 
+        "binary_found": bool(binary), 
+        "binary_name": binary,
+        "cuda_available": cuda_available,
+        "gpu_name": gpu_name,
+        "running": server_running
+    }
 
 @app.post("/api/llamacpp/server/start")
 async def llamacpp_start(request: Request):
@@ -1038,12 +1065,48 @@ async def llamacpp_start(request: Request):
         except: pass
         
         import subprocess as sp
+        # Use higher GPU layers for better performance (99 = use all available)
+        cmd = [
+            str(server_dir / binary), "-m", m_path, 
+            "-c", "4096", 
+            "-ngl", "99", 
+            "--host", "0.0.0.0", 
+            "--port", str(port),
+            "--log-disable"
+        ]
+        
         proc = sp.Popen(
-            [str(server_dir / binary), "-m", m_path, "-c", "4096", "-ngl", "999", "--host", "0.0.0.0", "--port", str(port)], 
+            cmd,
             cwd=str(server_dir), 
             stdout=sp.PIPE, 
-            stderr=sp.STDOUT
+            stderr=sp.STDOUT,
+            text=True,
+            bufsize=1
         )
+        
+        # Start thread to read and log server output to file
+        import threading
+        import logging
+        
+        log_file = Path(shared.BASE_DIR) / "logs" / "llama-server.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        def log_server_output():
+            try:
+                with open(log_file, "w") as f:
+                    f.write(f"=== Server started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+                    f.flush()
+                    for line in iter(proc.stdout.readline, ''):
+                        if line:
+                            msg = line.rstrip()
+                            print(f"[LLAMA-SERVER] {msg}")
+                            f.write(msg + "\n")
+                            f.flush()
+            except Exception as e:
+                print(f"[LLAMA-SERVER] Log error: {e}")
+        
+        threading.Thread(target=log_server_output, daemon=True).start()
+        
         return {"success": True, "message": f"Started on port {port}", "pid": proc.pid}
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
@@ -1060,6 +1123,70 @@ async def llamacpp_stop():
         return {"success": True, "message": f"Stopped port {port}"}
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+@app.post("/api/llamacpp/server/download")
+async def llamacpp_download(request: Request):
+    """Download and install llama.cpp server binary"""
+    from app.llamacpp_installer import get_installer
+    import uuid
+    
+    data = await request.json()
+    release_id = data.get('release_id', 'default')
+    
+    download_id = str(uuid.uuid4())[:8]
+    
+    async def progress_callback(status):
+        shared.llamacpp_server_downloads[download_id] = {
+            "id": download_id,
+            "status": status.get("type", "downloading"),
+            "progress": status.get("progress", 0),
+            "message": status.get("message", "")
+        }
+    
+    try:
+        installer = get_installer()
+        
+        result = installer.download_and_extract_server(progress_callback=progress_callback)
+        
+        if result.get("success"):
+            shared.llamacpp_server_downloads[download_id] = {
+                "id": download_id,
+                "status": "completed",
+                "progress": 100,
+                "message": "Download and extraction complete"
+            }
+        else:
+            shared.llamacpp_server_downloads[download_id] = {
+                "id": download_id,
+                "status": "error",
+                "error": result.get("error", "Unknown error")
+            }
+        
+        return {"success": result.get("success", False), "download_id": download_id, "message": result.get("message", result.get("error", ""))}
+    except Exception as e:
+        shared.llamacpp_server_downloads[download_id] = {
+            "id": download_id,
+            "status": "error",
+            "error": str(e)
+        }
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+@app.get("/api/llamacpp/server/download/status")
+async def llamacpp_download_status(id: str = None):
+    """Get download status"""
+    if not id:
+        return JSONResponse({"success": False, "error": "Download ID required"}, status_code=400)
+    
+    download = shared.llamacpp_server_downloads.get(id)
+    if not download:
+        return JSONResponse({"success": False, "error": "Download not found"}, status_code=404)
+    
+    return {"success": True, "download": download}
+
+@app.post("/api/llamacpp/server/download/stop")
+async def llamacpp_download_stop():
+    """Stop current download (placeholder)"""
+    return {"success": True, "message": "Download cancellation not implemented"}
 
 
 # ============== SERVICES ENDPOINTS ==============
@@ -1186,6 +1313,7 @@ async def chat_stream(request: Request):
     """Streaming chat endpoint (HTTP fallback for Flask compatibility)."""
     from fastapi.responses import StreamingResponse
     import json
+    import asyncio
     
     data = await request.json()
     user_message = data.get('message', '')
@@ -1217,16 +1345,24 @@ async def chat_stream(request: Request):
         
         messages.append(ChatMessage(role="user", content=user_message))
         
-        stream_generator = provider.chat_completion(
-            messages=messages,
-            model=model or provider.config.model,
-            stream=True
-        )
-        
         async def generate():
             try:
                 ai_message = ""
                 thinking = ""
+                
+                # Run the blocking stream generator in a thread pool to avoid blocking the event loop
+                loop = asyncio.get_event_loop()
+                
+                # Use async iteration pattern for non-blocking streaming
+                def get_chunks():
+                    return provider.chat_completion(
+                        messages=messages,
+                        model=model or provider.config.model,
+                        stream=True
+                    )
+                
+                # Run in executor to prevent blocking
+                stream_generator = await loop.run_in_executor(None, get_chunks)
                 
                 for response_chunk in stream_generator:
                     if response_chunk.content:
