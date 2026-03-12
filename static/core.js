@@ -97,6 +97,7 @@ const providerSelect = document.getElementById('providerSelect');
 const lmstudioSettings = document.getElementById('lmstudioSettings');
 const openrouterSettings = document.getElementById('openrouterSettings');
 const lmstudioUrlInput = document.getElementById('lmstudioUrl');
+const lmstudioDirectInput = document.getElementById('lmstudioDirect');
 const openrouterApiKeyInput = document.getElementById('openrouterApiKey');
 const openrouterModelInput = document.getElementById('openrouterModel');
 const openrouterContextInput = document.getElementById('openrouterContext');
@@ -790,6 +791,9 @@ async function loadSettings() {
             
             if (settings.lmstudio) {
                 lmstudioUrlInput.value = settings.lmstudio.base_url || 'http://localhost:1234';
+                if (lmstudioDirectInput) {
+                    lmstudioDirectInput.checked = settings.lmstudio.direct || false;
+                }
             }
             
             if (settings.openrouter) {
@@ -942,7 +946,8 @@ async function saveSettingsHandler() {
         provider: provider,
         global_system_prompt: globalSystemPromptInput ? globalSystemPromptInput.value : '',
         lmstudio: {
-            base_url: lmstudioUrlInput.value
+            base_url: lmstudioUrlInput.value,
+            direct: lmstudioDirectInput ? lmstudioDirectInput.checked : false
         },
         openrouter: {
             api_key: !isOpenRouterMasked ? openrouterKey : (currentSettings.openrouter?.api_key || ''),

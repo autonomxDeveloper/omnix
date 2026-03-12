@@ -75,7 +75,14 @@ async function sendMessage() {
     // Use voice-stream endpoint for streaming TTS only in conversation mode
     // In regular chat mode, user must click "Speak" button to hear audio
     const useStreamingTTS = false; // Disabled for regular chat - user clicks Speak instead
-    const endpoint = '/api/chat/stream';
+    
+    // Check if LMStudio direct mode is enabled
+    const lmstudioDirectInput = document.getElementById('lmstudioDirect');
+    const useDirectMode = lmstudioDirectInput && lmstudioDirectInput.checked;
+    const lmstudioUrlInput = document.getElementById('lmstudioUrl');
+    const lmstudioBaseUrl = lmstudioUrlInput ? lmstudioUrlInput.value : 'http://localhost:1234';
+    
+    const endpoint = useDirectMode ? `${lmstudioBaseUrl}/v1/chat/completions` : '/api/chat/stream';
     
     try {
         // Get the system prompt - combine global prompt with voice personality if set
@@ -110,10 +117,31 @@ async function sendMessage() {
         
         console.log('[CHAT] Final requestBody:', JSON.stringify(requestBody, null, 2));
         
+        // For direct LMStudio mode, convert to OpenAI format
+        let fetchBody;
+        let isDirectLMStudio = useDirectMode;
+        
+        if (useDirectMode) {
+            // Build messages array in OpenAI format
+            const messages = [];
+            if (systemPrompt) {
+                messages.push({ role: 'system', content: systemPrompt });
+            }
+            messages.push({ role: 'user', content: message });
+            
+            fetchBody = JSON.stringify({
+                model: modelSelect.value,
+                messages: messages,
+                stream: true
+            });
+        } else {
+            fetchBody = JSON.stringify(requestBody);
+        }
+        
         const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestBody)
+            body: fetchBody
         });
         
         if (!response.ok) {
@@ -145,9 +173,167 @@ async function sendMessage() {
                         const dataStr = line.slice(6);
                         if (dataStr.trim() === '') continue;
                         
+                        // Check for [DONE] marker (OpenAI/LMStudio format)
+                        if (dataStr === '[DONE]') {
+                            // Signal done for direct LMStudio mode
+                            if (isDirectLMStudio) {
+                                console.log('[TOKEN] Done event received (direct mode). streamedContent length:', streamedContent?.length);
+                                const generationTimeMs = startTime ? (Date.now() - startTime) : null;
+                                const tokensGenerated = streamedContent ? Math.ceil(streamedContent.length / 4) : 0;
+                                const tokenSpeed = generationTimeMs > 0 && tokensGenerated > 0 
+                                    ? (tokensGenerated / (generationTimeMs / 1000)) 
+                                    : 0;
+                                
+                                if (typeof window.updateTokenCounterFromText === 'function') {
+                                    window.updateTokenCounterFromText(message, streamedContent, generationTimeMs);
+                                } else if (window.features && typeof window.features.updateTokenCounterFromText === 'function') {
+                                    window.features.updateTokenCounterFromText(message, streamedContent, generationTimeMs);
+                                }
+                                
+                                if (typeof window.updateTimingSummary === 'function') {
+                                    window.updateTimingSummary({
+                                        requestStart: startTime || performance.now(),
+                                        total: generationTimeMs || 0,
+                                        llm: generationTimeMs || 0,
+                                        llmDone: generationTimeMs || 0,
+                                        tts: 0,
+                                        audioPlayStart: generationTimeMs || 0,
+                                        tokens: tokensGenerated,
+                                        tokensPerSecond: tokenSpeed
+                                    });
+                                }
+                                
+                                // Rebuild message with proper structure
+                                messageDiv.innerHTML = '';
+                                let headerHTML = `<span class="message-label">AI</span>`;
+                                headerHTML += `<button class="speak-btn" title="Speak">Speak</button>`;
+                                headerHTML += `<button class="copy-btn" title="Copy">Copy</button>`;
+                                
+                                const contentDiv = document.createElement('div');
+                                contentDiv.className = 'message-content';
+                                contentDiv.textContent = streamedContent;
+                                
+                                messageDiv.innerHTML = `<div class="message-header">${headerHTML}</div>`;
+                                messageDiv.appendChild(contentDiv);
+                                
+                                // Setup buttons manually
+                                messageDiv.querySelector('.copy-btn').addEventListener('click', (e) => {
+                                    copyToClipboard(streamedContent, e.target);
+                                });
+                                
+                                messageDiv.querySelector('.speak-btn').addEventListener('click', async (e) => {
+                                    const btn = e.target;
+                                    btn.disabled = true;
+                                    btn.textContent = 'Speaking...';
+                                    try {
+                                        const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
+                                        await speakText(streamedContent, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en');
+                                    } catch (err) {
+                                        console.error('[TTS] Speak button error:', err);
+                                    } finally {
+                                        btn.disabled = false;
+                                        btn.textContent = 'Speak';
+                                    }
+                                });
+                                
+                                scrollToBottom();
+                            }
+                            continue;
+                        }
+                        
                         try {
                             const data = JSON.parse(dataStr);
                             
+                            // Handle direct LMStudio/OpenAI format
+                            if (isDirectLMStudio && data.choices && data.choices[0]) {
+                                const delta = data.choices[0].delta;
+                                if (delta && delta.content) {
+                                    streamedContent += delta.content;
+                                    
+                                    const contentEl = messageDiv.querySelector('.message-content');
+                                    if (contentEl) {
+                                        contentEl.textContent = streamedContent;
+                                    } else {
+                                        // Create content element if it doesn't exist
+                                        messageDiv.innerHTML = `
+                                            <div class="message-header">
+                                                <span class="message-label">AI</span>
+                                                <button class="speak-btn" title="Speak">Speak</button>
+                                                <button class="copy-btn" title="Copy">Copy</button>
+                                            </div>
+                                            <div class="message-content">${streamedContent}</div>
+                                        `;
+                                    }
+                                    scrollToBottom();
+                                }
+                                
+                                // Check for finish_reason
+                                if (data.choices[0].finish_reason === 'stop') {
+                                    console.log('[TOKEN] Done event received (direct mode finish). streamedContent length:', streamedContent?.length);
+                                    const generationTimeMs = startTime ? (Date.now() - startTime) : null;
+                                    const tokensGenerated = streamedContent ? Math.ceil(streamedContent.length / 4) : 0;
+                                    const tokenSpeed = generationTimeMs > 0 && tokensGenerated > 0 
+                                        ? (tokensGenerated / (generationTimeMs / 1000)) 
+                                        : 0;
+                                    
+                                    if (typeof window.updateTokenCounterFromText === 'function') {
+                                        window.updateTokenCounterFromText(message, streamedContent, generationTimeMs);
+                                    } else if (window.features && typeof window.features.updateTokenCounterFromText === 'function') {
+                                        window.features.updateTokenCounterFromText(message, streamedContent, generationTimeMs);
+                                    }
+                                    
+                                    if (typeof window.updateTimingSummary === 'function') {
+                                        window.updateTimingSummary({
+                                            requestStart: startTime || performance.now(),
+                                            total: generationTimeMs || 0,
+                                            llm: generationTimeMs || 0,
+                                            llmDone: generationTimeMs || 0,
+                                            tts: 0,
+                                            audioPlayStart: generationTimeMs || 0,
+                                            tokens: tokensGenerated,
+                                            tokensPerSecond: tokenSpeed
+                                        });
+                                    }
+                                    
+                                    // Rebuild message with proper structure
+                                    messageDiv.innerHTML = '';
+                                    let headerHTML = `<span class="message-label">AI</span>`;
+                                    headerHTML += `<button class="speak-btn" title="Speak">Speak</button>`;
+                                    headerHTML += `<button class="copy-btn" title="Copy">Copy</button>`;
+                                    
+                                    const contentDiv = document.createElement('div');
+                                    contentDiv.className = 'message-content';
+                                    contentDiv.textContent = streamedContent;
+                                    
+                                    messageDiv.innerHTML = `<div class="message-header">${headerHTML}</div>`;
+                                    messageDiv.appendChild(contentDiv);
+                                    
+                                    // Setup buttons manually
+                                    messageDiv.querySelector('.copy-btn').addEventListener('click', (e) => {
+                                        copyToClipboard(streamedContent, e.target);
+                                    });
+                                    
+                                    messageDiv.querySelector('.speak-btn').addEventListener('click', async (e) => {
+                                        const btn = e.target;
+                                        btn.disabled = true;
+                                        btn.textContent = 'Speaking...';
+                                        try {
+                                            const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
+                                            await speakText(streamedContent, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en');
+                                        } catch (err) {
+                                            console.error('[TTS] Speak button error:', err);
+                                        } finally {
+                                            btn.disabled = false;
+                                            btn.textContent = 'Speak';
+                                        }
+                                    });
+                                    
+                                    scrollToBottom();
+                                }
+                                continue;
+                            }
+                            
+                            // Handle server format
                             if (data.type === 'content') {
                                 streamedContent += data.content;
                                 
