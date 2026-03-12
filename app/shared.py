@@ -45,7 +45,7 @@ DEFAULT_SETTINGS = {
     "audio_provider_tts": "faster-qwen3-tts",
     "audio_provider_stt": "parakeet",
     "global_system_prompt": """You are a helpful, friendly AI assistant. Be concise, conversational, and clear. Keep answers short unless the user asks for more detail.""",
-    "lmstudio": {"base_url": "http://localhost:1234"},
+    "lmstudio": {"base_url": "http://localhost:1234", "direct": False},
     "openrouter": {"api_key": "", "model": "openai/gpt-4o-mini", "context_size": 128000, "thinking_budget": 0},
     "cerebras": {"api_key": "", "model": "llama-3.3-70b-versatile"},
     "llamacpp": {"base_url": "http://localhost:8080", "model": "", "download_location": "server", "auto_start": False},
