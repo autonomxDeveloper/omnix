@@ -62,6 +62,8 @@ async function sendMessage() {
             <span class="message-label">AI</span>
             <span class="tts-playing" style="display: none;">🔊 Speaking...</span>
             <button class="speak-btn" title="Speak">Speak</button>
+            <button class="pause-btn" title="Pause" style="display: none;">⏸</button>
+            <button class="stop-btn" title="Stop" style="display: none;">⏹</button>
             <button class="copy-btn" title="Copy">Copy</button>
         </div>
         <div class="message-content streaming"></div>
@@ -71,6 +73,8 @@ async function sendMessage() {
     let streamedContent = '';
     let thinkingContent = '';
     let audioChunkCount = 0;
+    let directModeDone = false; // Track if we've already processed done event
+    let firstTokenTime = null; // Track TTFT for direct mode
     
     // Use voice-stream endpoint for streaming TTS only in conversation mode
     // In regular chat mode, user must click "Speak" button to hear audio
@@ -85,16 +89,19 @@ async function sendMessage() {
     const endpoint = useDirectMode ? `${lmstudioBaseUrl}/v1/chat/completions` : '/api/chat/stream';
     
     try {
-        // Get the system prompt - combine global prompt with voice personality if set
+        // Get the system prompt - use global + voice personality without duplication
         let systemPrompt = systemPromptInput?.value || 'You are a helpful AI assistant.';
         
-        // If a voice/speaker is selected and has a personality profile, use combined prompt
+        // If a voice/speaker is selected and has a personality profile, append it
         const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
         if (ttsSpeakerSelect && ttsSpeakerSelect.value && window.features) {
             const voiceId = ttsSpeakerSelect.value;
             const voiceProfile = window.features.getVoiceProfile(voiceId);
             if (voiceProfile && voiceProfile.personality) {
-                systemPrompt = window.features.getCombinedSystemPrompt(voiceId);
+                // Only append if not already included in global prompt
+                if (!systemPrompt.includes(voiceProfile.name)) {
+                    systemPrompt = `${systemPrompt}\n\n## Current Character: ${voiceProfile.name || voiceId}\n${voiceProfile.personality}`;
+                }
                 console.log(`[CHAT] Using personality for voice: ${voiceProfile.name}`);
             }
         }
@@ -175,8 +182,9 @@ async function sendMessage() {
                         
                         // Check for [DONE] marker (OpenAI/LMStudio format)
                         if (dataStr === '[DONE]') {
-                            // Signal done for direct LMStudio mode
-                            if (isDirectLMStudio) {
+                            // Signal done for direct LMStudio mode (only once)
+                            if (isDirectLMStudio && !directModeDone) {
+                                directModeDone = true;
                                 console.log('[TOKEN] Done event received (direct mode). streamedContent length:', streamedContent?.length);
                                 const generationTimeMs = startTime ? (Date.now() - startTime) : null;
                                 const tokensGenerated = streamedContent ? Math.ceil(streamedContent.length / 4) : 0;
@@ -194,7 +202,7 @@ async function sendMessage() {
                                     window.updateTimingSummary({
                                         requestStart: startTime || performance.now(),
                                         total: generationTimeMs || 0,
-                                        llm: generationTimeMs || 0,
+                                        llm: firstTokenTime || generationTimeMs || 0,
                                         llmDone: generationTimeMs || 0,
                                         tts: 0,
                                         audioPlayStart: generationTimeMs || 0,
@@ -207,6 +215,8 @@ async function sendMessage() {
                                 messageDiv.innerHTML = '';
                                 let headerHTML = `<span class="message-label">AI</span>`;
                                 headerHTML += `<button class="speak-btn" title="Speak">Speak</button>`;
+                                headerHTML += `<button class="pause-btn" title="Pause" style="display: none;">⏸</button>`;
+                                headerHTML += `<button class="stop-btn" title="Stop" style="display: none;">⏹</button>`;
                                 headerHTML += `<button class="copy-btn" title="Copy">Copy</button>`;
                                 
                                 const contentDiv = document.createElement('div');
@@ -221,18 +231,49 @@ async function sendMessage() {
                                     copyToClipboard(streamedContent, e.target);
                                 });
                                 
+                                messageDiv.querySelector('.stop-btn').addEventListener('click', (e) => {
+                                    fetch('/api/tts/stream/cancel', { method: 'POST' }).catch(() => {});
+                                    if (typeof stopAudio === 'function') stopAudio();
+                                    if (typeof window.stopTTSAudio === 'function') window.stopTTSAudio();
+                                    if (typeof stopTTSPlayback === 'function') stopTTSPlayback();
+                                    if (typeof window.TTSQueue?.stop === 'function') window.TTSQueue.stop();
+                                    const stopBtn = e.target;
+                                    stopBtn.style.display = 'none';
+                                    const speakBtn = messageDiv.querySelector('.speak-btn');
+                                    if (speakBtn) speakBtn.style.display = 'inline-flex';
+                                });
+                                
                                 messageDiv.querySelector('.speak-btn').addEventListener('click', async (e) => {
                                     const btn = e.target;
+                                    currentMessageDiv = messageDiv;
+                                    
+                                    // If paused, resume. Otherwise start fresh
+                                    if (isPaused) {
+                                        isPaused = false;
+                                        playQueuedAudio();
+                                        btn.disabled = true;
+                                        btn.textContent = 'Speaking...';
+                                        const stopBtn = messageDiv.querySelector('.stop-btn');
+                                        const pauseBtn = messageDiv.querySelector('.pause-btn');
+                                        if (stopBtn) stopBtn.style.display = 'inline-flex';
+                                        if (pauseBtn) pauseBtn.style.display = 'inline-flex';
+                                        btn.style.display = 'none';
+                                        return;
+                                    }
+                                    
                                     btn.disabled = true;
                                     btn.textContent = 'Speaking...';
+                                    btn.style.display = 'none';
+                                    const stopBtn = messageDiv.querySelector('.stop-btn');
+                                    const pauseBtn = messageDiv.querySelector('.pause-btn');
+                                    if (stopBtn) stopBtn.style.display = 'inline-flex';
+                                    if (pauseBtn) pauseBtn.style.display = 'inline-flex';
+                                    
                                     try {
                                         const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
                                         await speakText(streamedContent, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en');
                                     } catch (err) {
                                         console.error('[TTS] Speak button error:', err);
-                                    } finally {
-                                        btn.disabled = false;
-                                        btn.textContent = 'Speak';
                                     }
                                 });
                                 
@@ -248,6 +289,12 @@ async function sendMessage() {
                             if (isDirectLMStudio && data.choices && data.choices[0]) {
                                 const delta = data.choices[0].delta;
                                 if (delta && delta.content) {
+                                    // Track TTFT - time when first token arrives
+                                    if (firstTokenTime === null) {
+                                        firstTokenTime = Date.now() - startTime;
+                                        console.log('[TOKEN] TTFT:', firstTokenTime, 'ms');
+                                    }
+                                    
                                     streamedContent += delta.content;
                                     
                                     const contentEl = messageDiv.querySelector('.message-content');
@@ -267,8 +314,9 @@ async function sendMessage() {
                                     scrollToBottom();
                                 }
                                 
-                                // Check for finish_reason
-                                if (data.choices[0].finish_reason === 'stop') {
+                                // Check for finish_reason (only once)
+                                if (!directModeDone && data.choices[0].finish_reason === 'stop') {
+                                    directModeDone = true;
                                     console.log('[TOKEN] Done event received (direct mode finish). streamedContent length:', streamedContent?.length);
                                     const generationTimeMs = startTime ? (Date.now() - startTime) : null;
                                     const tokensGenerated = streamedContent ? Math.ceil(streamedContent.length / 4) : 0;
@@ -286,7 +334,7 @@ async function sendMessage() {
                                         window.updateTimingSummary({
                                             requestStart: startTime || performance.now(),
                                             total: generationTimeMs || 0,
-                                            llm: generationTimeMs || 0,
+                                            llm: firstTokenTime || generationTimeMs || 0,
                                             llmDone: generationTimeMs || 0,
                                             tts: 0,
                                             audioPlayStart: generationTimeMs || 0,
@@ -299,6 +347,8 @@ async function sendMessage() {
                                     messageDiv.innerHTML = '';
                                     let headerHTML = `<span class="message-label">AI</span>`;
                                     headerHTML += `<button class="speak-btn" title="Speak">Speak</button>`;
+                                    headerHTML += `<button class="pause-btn" title="Pause" style="display: none;">⏸</button>`;
+                                    headerHTML += `<button class="stop-btn" title="Stop" style="display: none;">⏹</button>`;
                                     headerHTML += `<button class="copy-btn" title="Copy">Copy</button>`;
                                     
                                     const contentDiv = document.createElement('div');
@@ -313,10 +363,33 @@ async function sendMessage() {
                                         copyToClipboard(streamedContent, e.target);
                                     });
                                     
+                                messageDiv.querySelector('.stop-btn').addEventListener('click', (e) => {
+                                    fetch('/api/tts/stream/cancel', { method: 'POST' }).catch(() => {});
+                                    if (typeof stopAudio === 'function') stopAudio();
+                                    if (typeof window.stopTTSAudio === 'function') window.stopTTSAudio();
+                                    if (typeof stopTTSPlayback === 'function') stopTTSPlayback();
+                                    if (typeof window.TTSQueue?.stop === 'function') window.TTSQueue.stop();
+                                    isPaused = false;
+                                    const stopBtn = e.target;
+                                    stopBtn.style.display = 'none';
+                                    const pauseBtn = messageDiv.querySelector('.pause-btn');
+                                    if (pauseBtn) pauseBtn.style.display = 'none';
+                                    const speakBtn = messageDiv.querySelector('.speak-btn');
+                                    if (speakBtn) {
+                                        speakBtn.style.display = 'inline-flex';
+                                        speakBtn.disabled = false;
+                                        speakBtn.textContent = 'Speak';
+                                    }
+                                });
+                                    
                                     messageDiv.querySelector('.speak-btn').addEventListener('click', async (e) => {
                                         const btn = e.target;
+                                        currentMessageDiv = messageDiv;
+                                        
                                         btn.disabled = true;
                                         btn.textContent = 'Speaking...';
+                                        const stopBtn = messageDiv.querySelector('.stop-btn');
+                                        if (stopBtn) stopBtn.style.display = 'inline-flex';
                                         try {
                                             const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
                                             await speakText(streamedContent, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en');
@@ -325,6 +398,7 @@ async function sendMessage() {
                                         } finally {
                                             btn.disabled = false;
                                             btn.textContent = 'Speak';
+                                            if (stopBtn) stopBtn.style.display = 'none';
                                         }
                                     });
                                     
@@ -434,6 +508,8 @@ async function sendMessage() {
                                     headerHTML += `<span class="tts-playing" style="display: none;">🔊 Speaking...</span>`;
                                 }
                                 headerHTML += `<button class="speak-btn" title="Speak">Speak</button>`;
+                                headerHTML += `<button class="pause-btn" title="Pause" style="display: none;">⏸</button>`;
+                                headerHTML += `<button class="stop-btn" title="Stop" style="display: none;">⏹</button>`;
                                 headerHTML += `<button class="copy-btn" title="Copy">Copy</button>`;
                                 
                                 const headerDiv = document.createElement('div');
@@ -444,10 +520,26 @@ async function sendMessage() {
                                     copyToClipboard(streamedContent, e.target);
                                 });
                                 
+                                headerDiv.querySelector('.stop-btn').addEventListener('click', (e) => {
+                                    fetch('/api/tts/stream/cancel', { method: 'POST' }).catch(() => {});
+                                    if (typeof stopAudio === 'function') stopAudio();
+                                    if (typeof window.stopTTSAudio === 'function') window.stopTTSAudio();
+                                    if (typeof stopTTSPlayback === 'function') stopTTSPlayback();
+                                    if (typeof window.TTSQueue?.stop === 'function') window.TTSQueue.stop();
+                                    const stopBtn = e.target;
+                                    stopBtn.style.display = 'none';
+                                    const speakBtn = messageDiv.querySelector('.speak-btn');
+                                    if (speakBtn) speakBtn.style.display = 'inline-flex';
+                                });
+                                
                                 headerDiv.querySelector('.speak-btn').addEventListener('click', async (e) => {
                                     const btn = e.target;
+                                    currentMessageDiv = messageDiv;
+                                    
                                     btn.disabled = true;
                                     btn.textContent = 'Speaking...';
+                                    const stopBtn = messageDiv.querySelector('.stop-btn');
+                                    if (stopBtn) stopBtn.style.display = 'inline-flex';
                                     try {
                                         const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
                                         await speakText(streamedContent, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en');
@@ -456,6 +548,7 @@ async function sendMessage() {
                                     } finally {
                                         btn.disabled = false;
                                         btn.textContent = 'Speak';
+                                        if (stopBtn) stopBtn.style.display = 'none';
                                     }
                                 });
                                 
@@ -577,9 +670,33 @@ async function speakText(text, speaker = 'en') {
 let currentStreamController = null;
 let audioQueue = [];
 let isPlaying = false;
+let currentAudioSource = null;
+let isPaused = false;
+let currentMessageDiv = null;
+let isFetching = false; // Prevent multiple simultaneous fetches
+
+// Called when all audio is done playing
+function onAudioPlaybackComplete() {
+    isPlaying = false;
+    isPaused = false;
+
+    if (currentMessageDiv) {
+        const speakBtn = currentMessageDiv.querySelector('.speak-btn');
+        const stopBtn = currentMessageDiv.querySelector('.stop-btn');
+        const pauseBtn = currentMessageDiv.querySelector('.pause-btn');
+
+        if (speakBtn) {
+            speakBtn.style.display = 'inline-flex';
+            speakBtn.disabled = false;
+            speakBtn.textContent = 'Speak';
+        }
+
+        if (stopBtn) stopBtn.style.display = 'none';
+        if (pauseBtn) pauseBtn.style.display = 'none';
+    }
+}
 
 function base64ToFloat32(b64) {
-  // Fast base64 decode using typed arrays
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
@@ -594,7 +711,6 @@ function base64ToFloat32(b64) {
 }
 
 function scheduleChunk(float32Array, sampleRate) {
-  // Use the global audioContext from audio-player.js
   const audioCtx = window.AudioPlayer?.getWebAudioContext?.() || 
                    (typeof window.webAudioContext !== 'undefined' ? window.webAudioContext : null) ||
                    new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
@@ -607,30 +723,159 @@ function scheduleChunk(float32Array, sampleRate) {
 function playQueuedAudio() {
   if (audioQueue.length === 0) {
     isPlaying = false;
+    currentAudioSource = null;
+    onAudioPlaybackComplete();
     return;
   }
   
-  isPlaying = true;
-  const buffer = audioQueue.shift();
+  // Ensure AudioContext is resumed (needed after pause)
+  ensureAudioContext();
   
-  // Use the global audioContext from audio-player.js
-  const audioCtx = window.AudioPlayer?.getWebAudioContext?.() || 
-                   (typeof window.webAudioContext !== 'undefined' ? window.webAudioContext : null) ||
-                   new (window.AudioContext || window.webkitAudioContext)();
-  
-  const source = audioCtx.createBufferSource();
-  source.buffer = buffer;
-  source.connect(audioCtx.destination);
-  
-  source.onended = () => {
-    playQueuedAudio();
-  };
-  
-  source.start();
+  // Only play if not already playing and not paused
+  if (!isPlaying && !isPaused) {
+    isPlaying = true;
+    const buffer = audioQueue.shift();
+    
+    const audioCtx = window.AudioPlayer?.getWebAudioContext?.() || 
+                     (typeof window.webAudioContext !== 'undefined' ? window.webAudioContext : null) ||
+                     new (window.AudioContext || window.webkitAudioContext)();
+    
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    
+    currentAudioSource = source;
+    
+    source.onended = () => {
+      isPlaying = false;  // Reset before calling playQueuedAudio
+      currentAudioSource = null;
+      if (!isPaused) {
+        playQueuedAudio();
+      }
+    };
+    
+    source.start();
+  }
 }
+
+// Stop TTS audio playback
+function stopTTSAudio() {
+  // Cancel SSE streaming
+  if (currentStreamController) {
+      currentStreamController.abort();
+      currentStreamController = null;
+  }
+
+  // Stop current audio source
+  if (currentAudioSource) {
+    try {
+      currentAudioSource.stop();
+      currentAudioSource = null;
+    } catch (e) {}
+  }
+  
+  // Clear audio queue
+  audioQueue = [];
+  
+  isPlaying = false;
+  isPaused = false;
+  isFetching = false;
+}
+
+// Pause TTS audio playback
+function pauseTTSAudio() {
+  // Only suspend AudioContext - don't destroy the source
+  try {
+    const audioCtx = window.AudioPlayer?.getWebAudioContext?.() || 
+                     (typeof window.webAudioContext !== 'undefined' ? window.webAudioContext : null);
+    if (audioCtx && audioCtx.state === 'running') {
+      audioCtx.suspend();
+    }
+  } catch (e) {}
+
+  isPaused = true;
+  isPlaying = false;
+}
+
+// Expose functions globally
+window.stopTTSAudio = stopTTSAudio;
+window.pauseTTSAudio = pauseTTSAudio;
+
+// Ensure AudioContext is resumed before playing
+function ensureAudioContext() {
+  try {
+    const audioCtx = window.AudioPlayer?.getWebAudioContext?.() || 
+                     (typeof window.webAudioContext !== 'undefined' ? window.webAudioContext : null);
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+  } catch (e) {}
+}
+
+// Test function for TTS controls
+window.testTTSControls = function() {
+    console.log('=== TTS CONTROLS TEST ===');
+    console.log('Current state:');
+    console.log('- isPlaying:', isPlaying);
+    console.log('- isPaused:', isPaused);
+    console.log('- audioQueue length:', audioQueue.length);
+    console.log('- currentAudioSource:', currentAudioSource ? 'exists' : 'null');
+    
+    // Test stop
+    console.log('\n--- Testing stop ---');
+    stopTTSAudio();
+    console.log('After stop:');
+    console.log('- isPlaying:', isPlaying);
+    console.log('- isPaused:', isPaused);
+    console.log('- audioQueue length:', audioQueue.length);
+    
+    // Test pause
+    console.log('\n--- Testing pause ---');
+    pauseTTSAudio();
+    console.log('After pause:');
+    console.log('- isPlaying:', isPlaying);
+    console.log('- isPaused:', isPaused);
+    
+    // Test ensureAudioContext
+    console.log('\n--- Testing ensureAudioContext ---');
+    ensureAudioContext();
+    console.log('After ensureAudioContext');
+    
+    console.log('\n=== TEST COMPLETE ===');
+    return { isPlaying, isPaused, audioQueueLength: audioQueue.length };
+};
 
 // SSE streaming TTS implementation
 async function speakTextStreaming(text, speaker = 'en') {
+  // HARD RESET - stop any existing playback first
+  stopTTSAudio();
+  audioQueue = [];
+  isPlaying = false;
+  isPaused = false;
+  
+  // Prevent multiple fetches
+  if (isFetching) {
+    console.log('[TTS] Already fetching, ignoring');
+    return;
+  }
+  
+  // If we have audio in queue and not paused, just play
+  if (audioQueue.length > 0 && !isPaused) {
+      ensureAudioContext();
+      playQueuedAudio();
+      return;
+  }
+  
+  // If paused, resume
+  if (isPaused && audioQueue.length > 0) {
+      isPaused = false;
+      ensureAudioContext();
+      playQueuedAudio();
+      return;
+  }
+  
+  isFetching = true;
+  
   return new Promise((resolve, reject) => {
     // Cancel any existing stream
     if (currentStreamController) {
@@ -638,18 +883,19 @@ async function speakTextStreaming(text, speaker = 'en') {
       currentStreamController = null;
     }
     
-    // Clear audio queue
-    audioQueue = [];
-    if (isPlaying) {
-      // Stop current playback - the onended will trigger next
-      isPlaying = false;
-    }
-    
+    // Reset state for fresh play
     currentStreamController = new AbortController();
     const formData = new FormData();
     formData.append('text', text);
     formData.append('speaker', speaker || 'default');
     formData.append('language', 'en');
+    
+    // Expose abort function for stop button
+    window.currentStreamAbort = () => {
+      if (currentStreamController) {
+        currentStreamController.abort();
+      }
+    };
     
     fetch('/api/tts/stream/server-sent-events', {
       method: 'POST',
@@ -666,6 +912,15 @@ async function speakTextStreaming(text, speaker = 'en') {
       let buffer = '';
       
       while (true) {
+        // Check if stop was requested
+        if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
+          console.log('[TTS] Stop requested, aborting stream');
+          reader.cancel();
+          currentStreamController.abort();
+          resolve();
+          return;
+        }
+        
         const { done, value } = await reader.read();
         if (done) break;
         
@@ -713,6 +968,7 @@ async function speakTextStreaming(text, speaker = 'en') {
     })
     .finally(() => {
       currentStreamController = null;
+      isFetching = false;
     });
   });
 }
@@ -887,3 +1143,31 @@ window.ChatAPI = {
     loadSystemPrompt,
     saveSystemPromptHandler
 };
+
+// Global pause button handler using event delegation
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('pause-btn')) {
+        let messageDiv = e.target.closest('.message');
+        if (!messageDiv) messageDiv = e.target.closest('.message-header')?.closest('.message');
+        
+        // Pause audio
+        if (typeof window.pauseTTSAudio === 'function') {
+            window.pauseTTSAudio();
+        }
+        
+        // Hide pause, show speak and keep stop visible
+        if (messageDiv) {
+            const pauseBtn = messageDiv.querySelector('.pause-btn');
+            const stopBtn = messageDiv.querySelector('.stop-btn');
+            const speakBtn = messageDiv.querySelector('.speak-btn');
+            if (pauseBtn) pauseBtn.style.display = 'none';
+            // Keep stop button visible - user should still be able to stop
+            if (stopBtn) stopBtn.style.display = 'inline-flex';
+            if (speakBtn) {
+                speakBtn.style.display = 'inline-flex';
+                speakBtn.disabled = false;
+                speakBtn.textContent = 'Speak';
+            }
+        }
+    }
+});
