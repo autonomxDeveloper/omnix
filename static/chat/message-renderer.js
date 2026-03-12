@@ -48,6 +48,8 @@ function addMessage(role, content, thinking = null, tokens = null, tokensPerSec 
             headerHTML += '</span>';
         }
         headerHTML += `<button class="speak-btn" title="Speak">Speak</button>`;
+        headerHTML += `<button class="pause-btn" title="Pause" style="display: none;">⏸</button>`;
+        headerHTML += `<button class="stop-btn" title="Stop" style="display: none;">⏹</button>`;
         headerHTML += `<button class="copy-btn" title="Copy">Copy</button>`;
         
         const headerDiv = document.createElement('div');
@@ -58,9 +60,70 @@ function addMessage(role, content, thinking = null, tokens = null, tokensPerSec 
             copyToClipboard(content, e.target);
         });
         
+        headerDiv.querySelector('.stop-btn').addEventListener('click', (e) => {
+            console.log('[STOP] Stop button clicked');
+            // Reset pause state
+            isPaused = false;
+            
+            // Try to cancel TTS stream via API
+            fetch('/api/tts/stream/cancel', { method: 'POST' }).catch(() => {});
+            
+            // Try all possible stop functions
+            if (typeof stopAudio === 'function') stopAudio();
+            if (typeof window.stopTTSAudio === 'function') window.stopTTSAudio();
+            if (typeof stopTTSPlayback === 'function') stopTTSPlayback();
+            if (typeof window.TTSQueue?.stop === 'function') window.TTSQueue.stop();
+            
+            const stopBtn = e.target;
+            stopBtn.style.display = 'none';
+            const pauseBtn = messageDiv.querySelector('.pause-btn');
+            if (pauseBtn) pauseBtn.style.display = 'none';
+            const speakBtn = messageDiv.querySelector('.speak-btn');
+            if (speakBtn) {
+                speakBtn.style.display = 'inline-flex';
+                speakBtn.disabled = false;
+                speakBtn.textContent = 'Speak';
+            }
+        });
+        
+        // Remove duplicate handler
+        headerDiv.querySelector('.stop-btn').onclick = null;
+        
         headerDiv.querySelector('.speak-btn').addEventListener('click', (e) => {
+            const btn = e.target;
+            currentMessageDiv = messageDiv;
+            
+            // If paused, resume
+            if (isPaused) {
+                isPaused = false;
+                playQueuedAudio();
+                btn.disabled = true;
+                btn.textContent = 'Speaking...';
+                btn.style.display = 'none';
+                const stopBtn = messageDiv.querySelector('.stop-btn');
+                const pauseBtn = messageDiv.querySelector('.pause-btn');
+                if (stopBtn) stopBtn.style.display = 'inline-flex';
+                if (pauseBtn) pauseBtn.style.display = 'inline-flex';
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = 'Speaking...';
+            btn.style.display = 'none';
+            const stopBtn = messageDiv.querySelector('.stop-btn');
+            const pauseBtn = messageDiv.querySelector('.pause-btn');
+            if (stopBtn) stopBtn.style.display = 'inline-flex';
+            if (pauseBtn) pauseBtn.style.display = 'inline-flex';
+            
             const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
-            speakText(content, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en');
+            speakText(content, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en').then(() => {
+                // Audio completed naturally - buttons will be hidden by onAudioPlaybackComplete
+            }).catch(() => {
+                if (stopBtn) stopBtn.style.display = 'none';
+                if (pauseBtn) pauseBtn.style.display = 'none';
+                btn.style.display = 'inline-flex';
+                btn.disabled = false;
+            });
         });
         
         messageDiv.appendChild(headerDiv);

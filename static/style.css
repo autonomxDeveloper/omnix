@@ -1220,6 +1220,36 @@ body::before {
 .speak-btn:hover { background: var(--bg-tertiary); color: var(--accent); }
 .speak-btn.speaking { color: var(--accent); }
 
+.stop-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    transition: var(--transition);
+    opacity: 0.6;
+}
+
+.message:hover .stop-btn { opacity: 1; }
+.stop-btn:hover { background: var(--bg-tertiary); color: var(--error); }
+
+.pause-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    transition: var(--transition);
+    opacity: 0.6;
+}
+
+.message:hover .pause-btn { opacity: 1; }
+.pause-btn:hover { background: var(--bg-tertiary); color: var(--accent); }
+
 .token-info {
     font-size: 0.7rem;
     color: var(--text-muted);

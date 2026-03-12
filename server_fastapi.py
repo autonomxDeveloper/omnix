@@ -1703,6 +1703,14 @@ async def tts_stream_sse_endpoint(request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+@app.post("/api/tts/stream/cancel")
+async def tts_stream_cancel():
+    """Cancel ongoing TTS stream."""
+    # This is a simple endpoint - actual cancellation is handled client-side via AbortController
+    # The server doesn't keep track of streams, so we just return success
+    return {"success": True, "message": "TTS stream cancellation requested"}
+
+
 # ============== MAIN ==============
 if __name__ == "__main__":
     print("\n" + "=" * 50)

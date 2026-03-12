@@ -190,6 +190,21 @@ function handleAudioData(pcmBytes) {
 
 // ============== STOP AUDIO ==============
 function stopAudio() {
+    // Signal stop for TTS streaming
+    if (typeof stopAudioRequested !== 'undefined') {
+        stopAudioRequested = true;
+    }
+    
+    // Abort any ongoing TTS stream
+    if (typeof window.currentStreamAbort === 'function') {
+        window.currentStreamAbort();
+    }
+    
+    // Stop TTS audio playback
+    if (typeof window.stopTTSAudio === 'function') {
+        window.stopTTSAudio();
+    }
+    
     // Do NOT flush startupBuffer or pendingBuffer here.
     // If 'done' arrives before all binary WebSocket frames have been received
     // (race condition), those buffers contain only partial audio and flushing
@@ -623,5 +638,6 @@ function cancelLLMStream() {
 }
 
 window.cancelLLMStream = cancelLLMStream;
+window.stopAudio = stopAudio;
 
 console.log('[WS-CLIENT] Loaded and ready');
