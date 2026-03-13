@@ -160,6 +160,11 @@ def main():
     test_flask_endpoint("POST", "/api/podcast/outline", "(Flask-only)")
     print()
     
+    # Voice Clones
+    print("--- Voice Clones ---")
+    test_endpoint("GET", "/api/voice_clones")
+    print()
+    
     # Audiobook
     print("--- Audiobook ---")
     test_flask_endpoint("POST", "/api/audiobook/upload", "(Flask-only)")

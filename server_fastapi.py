@@ -906,6 +906,44 @@ async def providers_status():
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+@app.get("/api/voice_clones")
+async def get_voice_clones():
+    """Get list of saved voice clones"""
+    try:
+        voices = []
+        for voice_id, voice_data in shared.custom_voices.items():
+            voices.append({
+                "id": voice_id,
+                "name": voice_id,
+                **voice_data
+            })
+        return {"success": True, "voices": voices}
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.delete("/api/voice_clones/{voice_id}")
+async def delete_voice_clone(voice_id: str):
+    """Delete a voice clone"""
+    try:
+        voice_id = voice_id.replace("_", " ")
+        if voice_id in shared.custom_voices:
+            del shared.custom_voices[voice_id]
+            
+            clones_dir = Path(__file__).parent / 'voice_clones'
+            wav_file = clones_dir / f"{voice_id}.wav"
+            if wav_file.exists():
+                wav_file.unlink()
+            
+            with open(shared.VOICE_CLONES_FILE, 'w') as f:
+                json.dump(shared.custom_voices, f, indent=2)
+            
+            return {"success": True}
+        return JSONResponse({"success": False, "error": "Voice not found"}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
 @app.post("/api/clear")
 async def clear_session(request: Request):
     """Clear session messages"""
