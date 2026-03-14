@@ -103,69 +103,40 @@ function addMessage(role, content, thinking = null, tokens = null, tokensPerSec 
             copyToClipboard(content, e.target);
         });
         
-        headerDiv.querySelector('.stop-btn').addEventListener('click', (e) => {
+        headerDiv.querySelector('.stop-btn').addEventListener('click', () => {
             console.log('[STOP] Stop button clicked');
-            // Reset pause state
-            isPaused = false;
             
-            // Try to cancel TTS stream via API
             fetch('/api/tts/stream/cancel', { method: 'POST' }).catch(() => {});
             
-            // Try all possible stop functions
-            if (typeof stopAudio === 'function') stopAudio();
-            if (typeof window.stopTTSAudio === 'function') window.stopTTSAudio();
-            if (typeof stopTTSPlayback === 'function') stopTTSPlayback();
-            if (typeof window.TTSQueue?.stop === 'function') window.TTSQueue.stop();
-            
-            const stopBtn = e.target;
-            stopBtn.style.display = 'none';
-            const pauseBtn = messageDiv.querySelector('.pause-btn');
-            if (pauseBtn) pauseBtn.style.display = 'none';
-            const speakBtn = messageDiv.querySelector('.speak-btn');
-            if (speakBtn) {
-                speakBtn.style.display = 'inline-flex';
-                speakBtn.disabled = false;
-                speakBtn.textContent = 'Speak';
+            if (typeof window.stopTTSAudio === 'function') {
+                window.stopTTSAudio();
             }
+            
+            setTTSButtonState(messageDiv, 'idle');
         });
         
         // Remove duplicate handler
         headerDiv.querySelector('.stop-btn').onclick = null;
         
-        headerDiv.querySelector('.speak-btn').addEventListener('click', (e) => {
-            const btn = e.target;
+        headerDiv.querySelector('.speak-btn').addEventListener('click', () => {
             currentMessageDiv = messageDiv;
             
-            // If paused, resume
+            // If paused, resume playback instead of restarting TTS
             if (isPaused) {
                 isPaused = false;
+
+                ensureAudioContext();
                 playQueuedAudio();
-                btn.disabled = true;
-                btn.textContent = 'Speaking...';
-                btn.style.display = 'none';
-                const stopBtn = messageDiv.querySelector('.stop-btn');
-                const pauseBtn = messageDiv.querySelector('.pause-btn');
-                if (stopBtn) stopBtn.style.display = 'inline-flex';
-                if (pauseBtn) pauseBtn.style.display = 'inline-flex';
+
+                setTTSButtonState(messageDiv, 'playing');
                 return;
             }
             
-            btn.disabled = true;
-            btn.textContent = 'Speaking...';
-            btn.style.display = 'none';
-            const stopBtn = messageDiv.querySelector('.stop-btn');
-            const pauseBtn = messageDiv.querySelector('.pause-btn');
-            if (stopBtn) stopBtn.style.display = 'inline-flex';
-            if (pauseBtn) pauseBtn.style.display = 'inline-flex';
+            setTTSButtonState(messageDiv, 'playing');
             
             const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
-            speakText(content, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en').then(() => {
-                // Audio completed naturally - buttons will be hidden by onAudioPlaybackComplete
-            }).catch(() => {
-                if (stopBtn) stopBtn.style.display = 'none';
-                if (pauseBtn) pauseBtn.style.display = 'none';
-                btn.style.display = 'inline-flex';
-                btn.disabled = false;
+            speakText(content, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en').catch(() => {
+                setTTSButtonState(messageDiv, 'idle');
             });
         });
         
