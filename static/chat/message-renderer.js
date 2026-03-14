@@ -7,22 +7,42 @@
 
 // Add message to chat
 function addMessage(role, content, thinking = null, tokens = null, tokensPerSec = '', attachments = null) {
+    console.log('[DEBUG] addMessage called with attachments:', attachments);
     if (role === 'assistant') role = 'ai';
 
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
 
-    // Add attachments display for user messages
-    if (attachments && attachments.length > 0 && role === 'user') {
+    // Add attachments display
+    if (attachments && attachments.length > 0) {
+        console.log('[DEBUG] Rendering attachments:', attachments);
         const attachmentsDiv = document.createElement('div');
         attachmentsDiv.className = 'message-attachments';
         
         for (const att of attachments) {
-            if (att.type === 'image') {
+            // Check if it's an image - handle both processed attachments and raw file objects
+            const isImage = att.type === 'image' || 
+                (att.type && att.type.startsWith('image/')) ||
+                (att.name && att.name.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/i));
+            console.log('[DEBUG] Attachment:', att.name, 'isImage:', isImage, 'type:', att.type);
+            
+            if (isImage) {
                 const img = document.createElement('img');
-                img.src = att.data;
+                // Handle both processed (att.data) and raw file objects (URL.createObjectURL)
+                img.src = att.data || (att instanceof File ? URL.createObjectURL(att) : att.name);
                 img.alt = att.name;
                 img.className = 'message-attachment-image';
+                console.log('[DEBUG] Created image element, src:', img.src.substring(0, 50));
+                
+                // Add click handler to open image modal
+                img.style.cursor = 'pointer';
+                img.addEventListener('click', () => {
+                    const modal = document.getElementById('imageModal');
+                    const modalImg = document.getElementById('imageModalImg');
+                    modalImg.src = img.src;
+                    modal.classList.add('active');
+                });
+                
                 attachmentsDiv.appendChild(img);
             } else {
                 const doc = document.createElement('div');
@@ -253,3 +273,29 @@ window.MessageRenderer = {
     copyToClipboard,
     scrollToBottom
 };
+
+// Initialize image modal close handlers
+(function initImageModal() {
+    const modal = document.getElementById('imageModal');
+    const closeBtn = document.querySelector('.image-modal-close');
+    
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            modal.classList.remove('active');
+        });
+    }
+    
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.classList.remove('active');
+            }
+        });
+        
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && modal.classList.contains('active')) {
+                modal.classList.remove('active');
+            }
+        });
+    }
+})();
