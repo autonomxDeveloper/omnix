@@ -12,7 +12,6 @@ function fileToBase64(file) {
     });
 }
 
-// Generate a smart title from conversation using LLM
 async function generateSmartTitle(userMessage, aiResponse) {
     try {
         const response = await fetch('/api/sessions/generate-title', {
@@ -28,7 +27,15 @@ async function generateSmartTitle(userMessage, aiResponse) {
     return null;
 }
 
-// Send message with streaming support - includes streaming TTS
+// Singleton for Web Audio Context. 
+// No sampleRate param passed to prevent locking the global context to an arbitrary rate.
+function getAudioContext() {
+    if (!window._globalAudioContext) {
+        window._globalAudioContext = window.AudioPlayer?.getWebAudioContext?.() || new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return window._globalAudioContext;
+}
+
 async function sendMessage() {
     const message = messageInput.value.trim();
     const attachments = window.getAttachments ? window.getAttachments() :[];
@@ -68,29 +75,78 @@ async function sendMessage() {
     `;
     messagesContainer.appendChild(messageDiv);
     
+    let chunks =[];
     let streamedContent = '';
     let thinkingContent = '';
     let audioChunkCount = 0;
     let directModeDone = false;
     let firstTokenTime = null;
+    let contentEl = messageDiv.querySelector('.message-content');
+    
+    let scrollPending = false;
+    const requestThrottledScroll = () => {
+        if (!scrollPending) {
+            scrollPending = true;
+            requestAnimationFrame(() => {
+                scrollToBottom();
+                scrollPending = false;
+            });
+        }
+    };
     
     const useDirectMode = document.getElementById('lmstudioDirect')?.checked;
     const lmstudioBaseUrl = document.getElementById('lmstudioUrl')?.value || 'http://localhost:1234';
     const endpoint = useDirectMode ? `${lmstudioBaseUrl}/v1/chat/completions` : '/api/chat/stream';
     let isDirectLMStudio = useDirectMode;
-    
-    // Extracted chunk handler for less code duplication
-    const handleChunk = (content) => {
-        streamedContent += content;
-        const contentEl = messageDiv.querySelector('.message-content');
-        if (contentEl) contentEl.textContent = streamedContent;
-        scrollToBottom();
+
+    const attachMessageListeners = (container) => {
+        container.querySelector('.copy-btn')?.addEventListener('click', (e) => copyToClipboard(streamedContent, e.target));
+        
+        container.querySelector('.stop-btn')?.addEventListener('click', () => {
+            fetch('/api/tts/stream/cancel', { method: 'POST' }).catch(() => {});
+            if (typeof window.stopTTSAudio === 'function') window.stopTTSAudio();
+            setTTSButtonState(messageDiv, 'idle');
+        });
+
+        container.querySelector('.speak-btn')?.addEventListener('click', async () => {
+            if (isPaused && currentMessageDiv === messageDiv) {
+                isPaused = false;
+                isPlaying = false; // Bypass the queue guard as requested
+                playQueuedAudio(); // Guarantee pipeline restart
+                setTTSButtonState(messageDiv, 'playing');
+                return;
+            }
+
+            const speaker = document.getElementById('ttsSpeaker')?.value || 'en';
+            const speakPromise = speakText(streamedContent, speaker);
+            
+            currentMessageDiv = messageDiv;
+            setTTSButtonState(messageDiv, 'playing');
+
+            try {
+                await speakPromise;
+            } catch (err) {
+                console.error('[TTS] Speak error:', err);
+                setTTSButtonState(messageDiv, 'idle');
+            }
+        });
     };
 
-    // Extracted completion logic unifying multiple done states
+    attachMessageListeners(messageDiv);
+    
+    const handleChunk = (content) => {
+        if (directModeDone) return; // Prevent stray chunks after completion
+        chunks.push(content);
+        if (!contentEl) contentEl = messageDiv.querySelector('.message-content');
+        if (contentEl) contentEl.textContent += content;
+        requestThrottledScroll();
+    };
+
     const handleDone = async (thinking = '') => {
         if (directModeDone) return;
         directModeDone = true;
+        
+        streamedContent = chunks.join('');
         
         if (thinking) {
             thinkingContent = thinking;
@@ -113,10 +169,10 @@ async function sendMessage() {
             window.updateTimingSummary({
                 requestStart: startTime || performance.now(),
                 total: generationTimeMs || 0,
-                llm: firstTokenTime || generationTimeMs * 0.6 || 0,
-                llmDone: generationTimeMs * 0.8 || 0,
-                tts: audioChunkCount > 0 ? generationTimeMs * 0.4 : 0,
-                audioPlayStart: audioChunkCount > 0 ? generationTimeMs * 0.9 : 0,
+                llm: firstTokenTime || generationTimeMs || 0,
+                llmDone: generationTimeMs || 0,
+                tts: 0,
+                audioPlayStart: 0,
                 tokens: tokensGenerated,
                 tokensPerSecond: tokenSpeed
             });
@@ -152,47 +208,25 @@ async function sendMessage() {
             <button class="stop-btn" title="Stop" style="display: none;">⏹</button>
             <button class="copy-btn" title="Copy">Copy</button>
         `;
-
-        headerDiv.querySelector('.copy-btn').addEventListener('click', (e) => copyToClipboard(streamedContent, e.target));
-
-        headerDiv.querySelector('.stop-btn').addEventListener('click', () => {
-            fetch('/api/tts/stream/cancel', { method: 'POST' }).catch(() => {});
-            if (typeof window.stopTTSAudio === 'function') window.stopTTSAudio();
-            setTTSButtonState(messageDiv, 'idle');
-        });
-
-        headerDiv.querySelector('.speak-btn').addEventListener('click', async () => {
-            if (isPaused && currentMessageDiv === messageDiv) {
-                isPaused = false;
-                ensureAudioContext();
-                playQueuedAudio();
-                setTTSButtonState(messageDiv, 'playing');
-                return;
-            }
-
-            const speaker = document.getElementById('ttsSpeaker')?.value || 'en';
-            
-            // FIX: Triggers `speakText` FIRST so `stopTTSAudio()` safely clears ANY OLD playback interface...
-            const speakPromise = speakText(streamedContent, speaker);
-            
-            // ...THEN update current properties to ensure the state isn't immediately overwritten.
-            currentMessageDiv = messageDiv;
-            setTTSButtonState(messageDiv, 'playing');
-
-            try {
-                await speakPromise;
-            } catch (err) {
-                console.error('[TTS] Speak error:', err);
-                setTTSButtonState(messageDiv, 'idle');
-            }
-        });
-
+        
+        attachMessageListeners(headerDiv);
         messageDiv.appendChild(headerDiv);
 
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
-        contentDiv[typeof renderMarkdown === 'function' ? 'innerHTML' : 'textContent'] = typeof renderMarkdown === 'function' ? renderMarkdown(streamedContent) : streamedContent;
+        
+        if (typeof renderMarkdown === 'function') {
+            const rawHtml = renderMarkdown(streamedContent);
+            contentDiv.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rawHtml) : rawHtml;
+        } else {
+            contentDiv.textContent = streamedContent;
+        }
+        
         messageDiv.appendChild(contentDiv);
+        
+        if (currentMessageDiv === messageDiv) {
+            setTTSButtonState(messageDiv, isPaused ? 'paused' : (isPlaying ? 'playing' : 'idle'));
+        }
         
         scrollToBottom();
         
@@ -214,7 +248,7 @@ async function sendMessage() {
         
         let processedAttachments = [];
         for (const file of attachments ||[]) {
-            const isImage = file.type.startsWith('image/') || file.name.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/i);
+            const isImage = file.type?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(file.name);
             processedAttachments.push({
                 type: isImage ? 'image' : 'document',
                 name: file.name,
@@ -225,11 +259,11 @@ async function sendMessage() {
 
         let fetchBody;
         if (useDirectMode) {
-            const messages = systemPrompt ? [{ role: 'system', content: systemPrompt }] :[];
+            const messages = systemPrompt ?[{ role: 'system', content: systemPrompt }] :[];
             const imageAttachments = processedAttachments.filter(a => a.type === 'image');
             
             if (imageAttachments.length > 0) {
-                const contentParts = message ? [{ type: 'text', text: message }] :[];
+                const contentParts = message ?[{ type: 'text', text: message }] :[];
                 imageAttachments.forEach(img => contentParts.push({ type: 'image_url', image_url: { url: img.data } }));
                 messages.push({ role: 'user', content: contentParts });
             } else {
@@ -237,7 +271,7 @@ async function sendMessage() {
             }
             fetchBody = JSON.stringify({ model: modelSelect.value, messages, stream: true });
         } else {
-            const reqObj = { message, session_id: SessionManager.sessionId, model: modelSelect.value, system_prompt: systemPrompt, attachments: processedAttachments };
+            const reqObj = { message, session_id: SessionManager?.sessionId, model: modelSelect.value, system_prompt: systemPrompt, attachments: processedAttachments };
             if (ttsSpeakerSelect?.value) reqObj.speaker = ttsSpeakerSelect.value;
             fetchBody = JSON.stringify(reqObj);
         }
@@ -254,11 +288,11 @@ async function sendMessage() {
             if (done) break;
             
             sseBuffer += decoder.decode(value, { stream: true });
-            const events = sseBuffer.split('\n\n');
+            const events = sseBuffer.split(/\r?\n\r?\n/);
             sseBuffer = events.pop() || '';
             
             for (const event of events) {
-                const lines = event.split('\n');
+                const lines = event.split(/\r?\n/);
                 for (const line of lines) {
                     if (!line.startsWith('data: ')) continue;
                     const dataStr = line.slice(6);
@@ -284,6 +318,7 @@ async function sendMessage() {
                         if (data.type === 'content') {
                             handleChunk(data.content);
                         } else if (data.type === 'audio') {
+                            // Uses global window.TTSQueue built for chat SSE Integration
                             window.TTSQueue?.enqueueAudio?.(data.audio, data.sample_rate);
                             audioChunkCount++;
                             const ttsIndicator = messageDiv.querySelector('.tts-playing');
@@ -292,7 +327,8 @@ async function sendMessage() {
                         } else if (data.type === 'done') {
                             await handleDone(data.thinking);
                         } else if (data.type === 'error') {
-                            messageDiv.querySelector('.message-content').innerHTML = `<span class="error">${data.error || 'An error occurred'}</span>`;
+                            const errorEl = messageDiv.querySelector('.message-content');
+                            if (errorEl) errorEl.innerHTML = `<span class="error">${data.error || 'An error occurred'}</span>`;
                         }
                     } catch (e) {
                         console.error('Error parsing SSE:', e);
@@ -302,20 +338,29 @@ async function sendMessage() {
         }
     } catch (error) {
         console.error('Error:', error);
-        messageDiv.querySelector('.message-content').innerHTML = '<span class="error">Failed to connect to the server</span>';
+        const errContentEl = messageDiv.querySelector('.message-content');
+        if (errContentEl) errContentEl.innerHTML = '<span class="error">Failed to connect to the server</span>';
     } finally {
         isLoading = false;
         typingIndicator.style.display = 'none';
         checkHealth();
         
-        if (window.SessionManager && message && streamedContent) {
-            const currentSession = window.sessions?.find(s => s.id === window.sessionId);
-            if (currentSession && (currentSession.title === 'New Chat' || !currentSession.title)) {
-                const smartTitle = await generateSmartTitle(message, streamedContent);
-                if (smartTitle) SessionManager.updateSessionTitle(window.sessionId, smartTitle);
+        // Strictly verified session bounds to prevent Title race conditions
+        const safeSessionId = SessionManager?.sessionId;
+        streamedContent = chunks.join('');
+        
+        if (safeSessionId && message && streamedContent) {
+            if (SessionManager?.sessionId === safeSessionId) {
+                const currentSession = window.sessions?.find(s => s.id === safeSessionId);
+                if (currentSession && (currentSession.title === 'New Chat' || !currentSession.title)) {
+                    const smartTitle = await generateSmartTitle(message, streamedContent);
+                    if (smartTitle && SessionManager?.sessionId === safeSessionId) {
+                        SessionManager.updateSessionTitle(safeSessionId, smartTitle);
+                    }
+                }
             }
         }
-        SessionManager.renderSessionList();
+        window.SessionManager?.renderSessionList?.();
     }
 }
 
@@ -355,15 +400,15 @@ async function speakText(text, speaker = 'en') {
     }
 }
 
+// Local playback variables tailored for speakTextStreaming (Distinct from global chat window.TTSQueue)
 let currentStreamController = null;
-let audioQueue =[];
+let audioQueue =[]; 
 let isPlaying = false;
 let currentAudioSource = null;
 let isPaused = false;
 let currentMessageDiv = null;
 let isFetching = false;
 
-// Minified state handler removing bulky switch blocks
 function setTTSButtonState(messageDiv, state) {
     const speakBtn = messageDiv.querySelector('.speak-btn');
     const stopBtn = messageDiv.querySelector('.stop-btn');
@@ -393,24 +438,25 @@ function base64ToFloat32(b64) {
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const int16 = new Int16Array(bytes.buffer);
+  
+  const alignedLength = bytes.length - (bytes.length % 2);
+  const int16 = new Int16Array(bytes.buffer.slice(0, alignedLength));
+  
   const float32 = new Float32Array(int16.length);
   for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
   return float32;
 }
 
 function scheduleChunk(float32Array, sampleRate) {
-  const audioCtx = window.AudioPlayer?.getWebAudioContext?.() || 
-                   (typeof window.webAudioContext !== 'undefined' ? window.webAudioContext : null) ||
-                   new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
-  
+  const audioCtx = getAudioContext();
   const buffer = audioCtx.createBuffer(1, float32Array.length, sampleRate);
   buffer.copyToChannel(float32Array, 0);
   audioQueue.push(buffer);
 }
 
 function playQueuedAudio() {
-  if (isPlaying) return;
+  if (isPlaying && !isPaused) return; // Prevent dual-playing queue shifts
+  
   if (audioQueue.length === 0) {
     isPlaying = false;
     currentAudioSource = null;
@@ -420,25 +466,30 @@ function playQueuedAudio() {
   
   ensureAudioContext();
   
-  if (!isPlaying && !isPaused) {
-    isPlaying = true;
-    const buffer = audioQueue.shift();
-    const audioCtx = window.AudioPlayer?.getWebAudioContext?.() || 
-                     (typeof window.webAudioContext !== 'undefined' ? window.webAudioContext : null) ||
-                     new (window.AudioContext || window.webkitAudioContext)();
-    
-    const source = audioCtx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(audioCtx.destination);
-    currentAudioSource = source;
-    
-    source.onended = () => {
-      isPlaying = false;
-      currentAudioSource = null;
-      if (!isPaused) playQueuedAudio();
-    };
-    source.start();
+  // Guard to ensure we don't accidentally shift a new buffer if one is currently paused/playing
+  if (currentAudioSource) {
+      isPlaying = true; 
+      return; 
   }
+  
+  isPlaying = true;
+  isPaused = false;
+  
+  const buffer = audioQueue.shift();
+  const audioCtx = getAudioContext();
+  
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioCtx.destination);
+  currentAudioSource = source;
+  
+  source.onended = () => {
+    isPlaying = false;
+    currentAudioSource = null;
+    if (!isPaused) playQueuedAudio();
+  };
+  
+  source.start();
 }
 
 function stopTTSAudio() {
@@ -447,7 +498,10 @@ function stopTTSAudio() {
       currentStreamController = null;
   }
   if (currentAudioSource) {
-    try { currentAudioSource.stop(); } catch (e) {}
+    try { 
+        currentAudioSource.stop();
+        currentAudioSource.disconnect();
+    } catch (e) {}
     currentAudioSource = null;
   }
   audioQueue =[];
@@ -463,11 +517,11 @@ function stopTTSAudio() {
 
 function pauseTTSAudio() {
   try {
-    const audioCtx = window.AudioPlayer?.getWebAudioContext?.() || (typeof window.webAudioContext !== 'undefined' ? window.webAudioContext : null);
+    const audioCtx = getAudioContext();
     if (audioCtx?.state === 'running') audioCtx.suspend();
   } catch (e) { console.warn('[TTS] pause error', e); }
-  isPaused = true;
-  isPlaying = false;
+  
+  isPaused = true; 
 }
 
 window.stopTTSAudio = stopTTSAudio;
@@ -476,7 +530,7 @@ window.setTTSButtonState = setTTSButtonState;
 
 function ensureAudioContext() {
   try {
-    const audioCtx = window.AudioPlayer?.getWebAudioContext?.() || (typeof window.webAudioContext !== 'undefined' ? window.webAudioContext : null);
+    const audioCtx = getAudioContext();
     if (audioCtx?.state === 'suspended') audioCtx.resume();
   } catch (e) { console.warn('[TTS] Failed to resume AudioContext', e); }
 }
@@ -492,8 +546,6 @@ window.testTTSControls = function() {
 async function speakTextStreaming(text, speaker = 'en') {
   stopTTSAudio();
   if (isFetching) return;
-  if (audioQueue.length > 0 && !isPaused) { ensureAudioContext(); playQueuedAudio(); return; }
-  if (isPaused && audioQueue.length > 0) { isPaused = false; ensureAudioContext(); playQueuedAudio(); return; }
   
   isFetching = true;
   return new Promise((resolve, reject) => {
@@ -529,7 +581,7 @@ async function speakTextStreaming(text, speaker = 'en') {
         if (done) break;
         
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
+        const lines = buffer.split(/\r?\n/);
         buffer = lines.pop();
         
         for (const line of lines) {
@@ -612,14 +664,14 @@ async function clearChat() {
         await fetch('/api/clear', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: SessionManager.sessionId })
+            body: JSON.stringify({ session_id: SessionManager?.sessionId })
         });
     } catch (error) { console.error('Error clearing session:', error); }
     messageInput.focus();
 }
 
 async function loadSystemPrompt() {
-    if (!SessionManager.sessionId) return;
+    if (!SessionManager?.sessionId) return;
     try {
         const response = await fetch(`/api/sessions/${SessionManager.sessionId}`);
         const data = await response.json();
@@ -629,7 +681,7 @@ async function loadSystemPrompt() {
 
 async function saveSystemPromptHandler() {
     try {
-        await fetch(`/api/sessions/${SessionManager.sessionId}`, {
+        await fetch(`/api/sessions/${SessionManager?.sessionId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
