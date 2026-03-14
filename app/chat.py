@@ -3,21 +3,101 @@ import re
 import base64
 from datetime import datetime
 import numpy as np
+from io import StringIO, BytesIO
 from flask import Blueprint, request, jsonify, Response
 import app.shared as shared
 from app.providers import ChatMessage, ChatResponse
 
 chat_bp = Blueprint('chat', __name__)
 
+def process_attachment(attachment):
+    """Process an attachment - extract text from documents or prepare images for vision."""
+    att_type = attachment.get('type', '')
+    
+    if att_type == 'image':
+        # Return image in base64 format for vision models
+        return {
+            'type': 'image',
+            'data': attachment.get('data', ''),
+            'name': attachment.get('name', '')
+        }
+    elif att_type == 'document':
+        # Document processing will be handled separately
+        return {
+            'type': 'document',
+            'name': attachment.get('name', ''),
+            'mimeType': attachment.get('mimeType', '')
+        }
+    return None
+
+def extract_document_text(file_data, filename):
+    """Extract text from document files."""
+    import PyPDF2
+    import docx
+    import pandas as pd
+    
+    text = ''
+    ext = filename.lower().split('.')[-1] if '.' in filename else ''
+    
+    try:
+        if ext == 'pdf':
+            # Handle PDF
+            if isinstance(file_data, str):
+                # Base64 encoded
+                file_bytes = base64.b64decode(file_data)
+            else:
+                file_bytes = file_data
+                
+            pdf_file = BytesIO(file_bytes)
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            for page in pdf_reader.pages:
+                text += page.extract_text() + '\n'
+                
+        elif ext == 'docx':
+            # Handle DOCX
+            if isinstance(file_data, str):
+                file_bytes = base64.b64decode(file_data)
+            else:
+                file_bytes = file_data
+                
+            doc_file = BytesIO(file_bytes)
+            doc = docx.Document(doc_file)
+            for para in doc.paragraphs:
+                text += para.text + '\n'
+                
+        elif ext == 'txt':
+            # Handle TXT
+            if isinstance(file_data, str):
+                text = file_data
+            else:
+                text = file_data.decode('utf-8', errors='ignore')
+                
+        elif ext == 'csv':
+            # Handle CSV
+            if isinstance(file_data, str):
+                csv_data = base64.b64decode(file_data)
+            else:
+                csv_data = file_data
+                
+            df = pd.read_csv(BytesIO(csv_data))
+            text = df.to_string()
+            
+    except Exception as e:
+        print(f'[CHAT] Error extracting text from {filename}: {e}')
+        return f'[Error: Could not extract text from {filename}]'
+    
+    return text[:10000]  # Limit to first 10000 chars
+
 def prepare_messages(data):
     """Prepare chat messages from request data."""
-    if not data or 'message' not in data:
-        return None, jsonify({"success": False, "error": "Message required"}), 400
+    if not data or ('message' not in data and 'attachments' not in data):
+        return None, jsonify({"success": False, "error": "Message or attachments required"}), 400
     
-    user_message = data['message']
+    user_message = data.get('message', '')
     session_id = data.get('session_id', 'default')
     model = data.get('model', '')
     system_prompt = data.get('system_prompt', shared.get_global_system_prompt())
+    attachments = data.get('attachments', [])
     
     shared.sessions_data = shared.load_sessions()
     
@@ -30,6 +110,28 @@ def prepare_messages(data):
             'updated_at': datetime.now().isoformat()
         }
     
+    # Process attachments - separate images and documents
+    image_attachments = []
+    doc_attachments = []
+    
+    for att in attachments:
+        att_type = att.get('type', '')
+        
+        if att_type == 'image':
+            image_attachments.append(att)
+        elif att_type == 'document':
+            doc_attachments.append(att)
+    
+    # Build message content - for vision models, use multi-part content
+    message_content = user_message
+    
+    # Add document info to message
+    if doc_attachments:
+        message_content += '\n\n--- Attached Documents ---\n'
+        for doc in doc_attachments:
+            message_content += f'\n[{doc.get("name", "document")}]'
+        message_content += '\n(Please analyze the document content)'
+    
     # Build message list
     messages = [ChatMessage(role="system", content=system_prompt)]
     messages.extend([
@@ -37,9 +139,17 @@ def prepare_messages(data):
         for m in shared.sessions_data[session_id].get('messages', [])
         if m.get('role') != 'system'
     ])
-    messages.append(ChatMessage(role="user", content=user_message))
     
-    # Save user message to session
+    # Store vision images for provider to handle
+    user_msg = ChatMessage(role="user", content=message_content)
+    
+    # Attach images as a special attribute (will be processed by provider)
+    if image_attachments:
+        user_msg.vision_images = image_attachments
+    
+    messages.append(user_msg)
+    
+    # Save user message to session (without vision content)
     shared.sessions_data[session_id]['messages'].append({
         "role": "user",
         "content": user_message

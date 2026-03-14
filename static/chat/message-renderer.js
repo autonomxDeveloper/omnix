@@ -6,11 +6,34 @@
 // Current audio element for playback - SEPARATE from voice.js currentAudio
 
 // Add message to chat
-function addMessage(role, content, thinking = null, tokens = null, tokensPerSec = '') {
+function addMessage(role, content, thinking = null, tokens = null, tokensPerSec = '', attachments = null) {
     if (role === 'assistant') role = 'ai';
 
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
+
+    // Add attachments display for user messages
+    if (attachments && attachments.length > 0 && role === 'user') {
+        const attachmentsDiv = document.createElement('div');
+        attachmentsDiv.className = 'message-attachments';
+        
+        for (const att of attachments) {
+            if (att.type === 'image') {
+                const img = document.createElement('img');
+                img.src = att.data;
+                img.alt = att.name;
+                img.className = 'message-attachment-image';
+                attachmentsDiv.appendChild(img);
+            } else {
+                const doc = document.createElement('div');
+                doc.className = 'message-attachment-doc';
+                doc.innerHTML = `<span class="doc-icon">📄</span> ${att.name}`;
+                attachmentsDiv.appendChild(doc);
+            }
+        }
+        
+        messageDiv.appendChild(attachmentsDiv);
+    }
     
     if (role === 'ai' || role === 'assistant') {
         if (thinking) {

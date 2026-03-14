@@ -3,6 +3,8 @@
  * DOM Elements, State, and Initialization
  */
 
+console.log('[CORE] core.js loading...');
+
 // ============================================================
 // GLOBAL TTS PLAYBACK MODE - ONLY ONE CAN BE ACTIVE
 // ============================================================
@@ -160,9 +162,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     
     // Load UI elements FIRST (no await - these are fast and make UI appear immediately)
-    console.log('Setting up event listeners...');
+    console.log('=== SETUP STEP 1: Event listeners ===');
     setupEventListeners();
-    console.log('Loading sessions...');
+    console.log('=== SETUP STEP 2: File attachments ===');
+    if (typeof setupFileAttachments === 'function') {
+        console.log('=== CALLING setupFileAttachments NOW ===');
+        setupFileAttachments();
+        console.log('=== setupFileAttachments returned ===');
+    } else {
+        console.error('!!! setupFileAttachments is NOT a function !!!');
+    }
+    console.log('=== SETUP STEP 3: Loading sessions ===');
     // Use SessionManager.loadSessions if available, otherwise create a fallback
     if (typeof SessionManager?.loadSessions === 'function') {
         SessionManager.loadSessions();
@@ -750,6 +760,193 @@ function setupEventListeners() {
             localStorage.setItem('llamacpp_selected_model', selected);
         });
     }
+}
+
+// File attachment handling
+function setupFileAttachments() {
+    console.log('!!! INSIDE setupFileAttachments function !!!');
+    console.log('[CORE] Setting up file attachments...');
+    
+    const fileInput = document.getElementById('fileInput');
+    const fileBtn = document.getElementById('fileBtn');
+    const attachmentPreview = document.getElementById('attachmentPreview');
+    
+    console.log('[CORE] fileBtn:', fileBtn);
+    console.log('[CORE] fileInput:', fileInput);
+    console.log('[CORE] attachmentPreview:', attachmentPreview);
+    
+    if (fileBtn) {
+        console.log('[CORE] fileBtn offsetWidth:', fileBtn.offsetWidth);
+        console.log('[CORE] fileBtn offsetHeight:', fileBtn.offsetHeight);
+        console.log('[CORE] fileBtn style.display:', fileBtn.style.display);
+        console.log('[CORE] fileBtn getComputedStyle display:', window.getComputedStyle(fileBtn).display);
+        console.log('[CORE] fileBtn className:', fileBtn.className);
+        console.log('[CORE] fileBtn z-index:', window.getComputedStyle(fileBtn).zIndex);
+        console.log('[CORE] fileBtn pointer-events:', window.getComputedStyle(fileBtn).pointerEvents);
+        
+        // Check if it's covered by something
+        const rect = fileBtn.getBoundingClientRect();
+        console.log('[CORE] fileBtn rect:', rect);
+    }
+    
+    let attachments = [];
+    const MAX_FILES = 5;
+    const MAX_SIZE = 30 * 1024 * 1024;
+
+    if (fileBtn && fileInput) {
+        console.log('[CORE] Adding event listeners to fileBtn and fileInput');
+        
+        // Global click debug
+        document.addEventListener('click', (e) => {
+            if (e.target === fileBtn || fileBtn.contains(e.target)) {
+                console.log('[CORE] Global click on fileBtn detected!');
+            }
+        });
+        
+        // Direct onclick as fallback
+        fileBtn.onclick = function(e) {
+            console.log('[CORE] fileBtn onclick fired');
+            e.preventDefault();
+            e.stopPropagation();
+            // Use setTimeout to ensure the click is in a new event loop
+            setTimeout(() => {
+                console.log('[CORE] Triggering file input click');
+                fileInput.click();
+            }, 0);
+        };
+        
+        fileBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('[CORE] File button CLICKED via addEventListener');
+            setTimeout(() => {
+                fileInput.click();
+            }, 0);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            console.log('[CORE] File input CHANGE event:', e);
+            handleFileSelect(e);
+        });
+        
+        // Also try mousedown
+        fileBtn.addEventListener('mousedown', (e) => {
+            console.log('[CORE] File button MOUSEDOWN');
+        });
+        
+        // Expose for testing
+        window.testFileBtn = function() {
+            console.log('[CORE] Testing fileBtn click');
+            fileInput.click();
+        };
+    } else {
+        console.error('[CORE] fileBtn or fileInput not found!');
+    }
+
+    function handleFileSelect(e) {
+        const files = Array.from(e.target.files);
+        if (files.length === 0) return;
+
+        const currentSize = attachments.reduce((sum, f) => sum + f.size, 0);
+        const newSize = files.reduce((sum, f) => sum + f.size, 0);
+
+        if (attachments.length + files.length > MAX_FILES) {
+            alert(`Maximum ${MAX_FILES} files allowed`);
+            return;
+        }
+
+        if (currentSize + newSize > MAX_SIZE) {
+            alert('Maximum total size is 30MB');
+            return;
+        }
+
+        for (const file of files) {
+            if (!file.type.match(/^image\/(png|jpeg|jpg|gif|webp)$/) && 
+                !file.name.match(/\.(pdf|docx|txt|csv)$/i)) {
+                alert('Unsupported file type. Supported: images, PDF, DOCX, TXT, CSV');
+                continue;
+            }
+            attachments.push(file);
+        }
+
+        renderAttachments();
+        fileInput.value = '';
+        updateSendButton();
+    }
+
+    function renderAttachments() {
+        attachmentPreview.innerHTML = '';
+        
+        attachments.forEach((file, index) => {
+            const item = document.createElement('div');
+            item.className = 'attachment-item';
+            
+            if (file.type.startsWith('image/')) {
+                item.classList.add('image-preview');
+                const img = document.createElement('img');
+                img.src = URL.createObjectURL(file);
+                item.appendChild(img);
+            } else {
+                const icon = document.createElement('div');
+                icon.className = 'attachment-icon';
+                icon.innerHTML = getFileIcon(file.name);
+                item.appendChild(icon);
+            }
+            
+            const name = document.createElement('span');
+            name.className = 'attachment-name';
+            name.textContent = file.name;
+            item.appendChild(name);
+            
+            const size = document.createElement('span');
+            size.className = 'attachment-size';
+            size.textContent = formatFileSize(file.size);
+            item.appendChild(size);
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-attachment';
+            removeBtn.innerHTML = '&times;';
+            removeBtn.onclick = () => removeAttachment(index);
+            item.appendChild(removeBtn);
+            
+            attachmentPreview.appendChild(item);
+        });
+    }
+
+    function getFileIcon(filename) {
+        const ext = filename.split('.').pop().toLowerCase();
+        const icons = {
+            pdf: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>',
+            docx: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>',
+            txt: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>',
+            csv: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/><line x1="8" y1="20" x2="16" y2="20"/></svg>'
+        };
+        return icons[ext] || icons.txt;
+    }
+
+    function formatFileSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    function removeAttachment(index) {
+        attachments.splice(index, 1);
+        renderAttachments();
+        updateSendButton();
+    }
+
+    function updateSendButton() {
+        if (sendBtn) {
+            sendBtn.disabled = (!messageInput.value.trim() || isLoading) && attachments.length === 0;
+        }
+    }
+
+    window.getAttachments = () => attachments;
+    window.clearAttachments = () => {
+        attachments = [];
+        renderAttachments();
+    };
 }
 
 // Add custom header field

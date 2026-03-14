@@ -30,6 +30,7 @@ class ChatMessage:
     name: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
+    vision_images: Optional[List[Dict[str, Any]]] = None  # For vision models
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
@@ -40,6 +41,26 @@ class ChatMessage:
             result["tool_calls"] = self.tool_calls
         if self.tool_call_id:
             result["tool_call_id"] = self.tool_call_id
+        
+        # Handle vision images for multi-modal content
+        if self.vision_images:
+            # Convert to OpenAI vision format
+            vision_parts = []
+            for img in self.vision_images:
+                vision_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": img.get('data', '')
+                    }
+                })
+            # Add text part if there's content
+            if self.content:
+                vision_parts.insert(0, {
+                    "type": "text",
+                    "text": self.content
+                })
+            result["content"] = vision_parts
+        
         return result
 
 
