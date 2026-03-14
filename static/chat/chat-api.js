@@ -3,6 +3,15 @@
  * Handles sending messages and conversation REST API
  */
 
+function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+    });
+}
+
 // Generate a smart title from conversation using LLM
 async function generateSmartTitle(userMessage, aiResponse) {
     try {
@@ -27,15 +36,21 @@ async function generateSmartTitle(userMessage, aiResponse) {
 // Send message with streaming support - includes streaming TTS
 async function sendMessage() {
     const message = messageInput.value.trim();
+    const attachments = window.getAttachments ? window.getAttachments() : [];
     
-    if (!message || isLoading) return;
+    if ((!message && attachments.length === 0) || isLoading) return;
     
     welcomeMessage.classList.add('hidden');
-    addMessage('user', message);
+    addMessage('user', message, null, null, '', attachments);
     
     messageInput.value = '';
     messageInput.style.height = 'auto';
     sendBtn.disabled = true;
+    
+    // Clear attachments after adding to message
+    if (window.clearAttachments) {
+        window.clearAttachments();
+    }
     
     isLoading = true;
     statusDot.className = 'status-dot loading';
@@ -106,11 +121,34 @@ async function sendMessage() {
             }
         }
         
+        // Process attachments - convert images to base64 for vision models
+        let processedAttachments = [];
+        if (attachments && attachments.length > 0) {
+            for (const file of attachments) {
+                if (file.type.startsWith('image/')) {
+                    const base64 = await fileToBase64(file);
+                    processedAttachments.push({
+                        type: 'image',
+                        name: file.name,
+                        mimeType: file.type,
+                        data: base64
+                    });
+                } else {
+                    processedAttachments.push({
+                        type: 'document',
+                        name: file.name,
+                        mimeType: file.type
+                    });
+                }
+            }
+        }
+
         const requestBody = {
             message: message,
             session_id: SessionManager.sessionId,
             model: modelSelect.value,
-            system_prompt: systemPrompt
+            system_prompt: systemPrompt,
+            attachments: processedAttachments
         };
         
         // Add speaker for voice-stream endpoint
@@ -123,6 +161,7 @@ async function sendMessage() {
         }
         
         console.log('[CHAT] Final requestBody:', JSON.stringify(requestBody, null, 2));
+        console.log('[CHAT] Attachments being sent:', processedAttachments.length);
         
         // For direct LMStudio mode, convert to OpenAI format
         let fetchBody;
@@ -134,7 +173,25 @@ async function sendMessage() {
             if (systemPrompt) {
                 messages.push({ role: 'system', content: systemPrompt });
             }
-            messages.push({ role: 'user', content: message });
+            
+            // Handle vision content for direct mode
+            const imageAttachments = processedAttachments.filter(a => a.type === 'image');
+            if (imageAttachments.length > 0) {
+                // Build multi-modal content for vision models
+                const contentParts = [];
+                if (message) {
+                    contentParts.push({ type: 'text', text: message });
+                }
+                for (const img of imageAttachments) {
+                    contentParts.push({
+                        type: 'image_url',
+                        image_url: { url: img.data }
+                    });
+                }
+                messages.push({ role: 'user', content: contentParts });
+            } else {
+                messages.push({ role: 'user', content: message });
+            }
             
             fetchBody = JSON.stringify({
                 model: modelSelect.value,

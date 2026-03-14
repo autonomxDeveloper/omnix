@@ -381,6 +381,12 @@
                             <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                         </svg>
                     </button>
+                    <input type="file" id="fileInput" multiple accept="image/*,.pdf,.docx,.txt,.csv" style="display: none;">
+                    <button id="fileBtn" class="mic-btn" title="Attach files or images">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <path d="M21.44 11.05L12.25 20.24C11.1242 21.3658 9.59723 21.9983 8.005 21.9983C6.41277 21.9983 4.88583 21.3658 3.76 20.24C2.63417 19.1142 2.00166 17.5872 2.00166 15.995C2.00166 14.4028 2.63417 12.8758 3.76 11.75L12.33 3.17C13.0806 2.42608 14.0999 2 15.16 2C16.2201 2 17.2394 2.42608 17.99 3.17C18.74 3.91392 19.1699 4.92751 19.1699 5.98C19.1699 7.03249 18.74 8.04608 17.99 8.79L9.41 17.37C9.03472 17.7413 8.52573 17.9472 7.995 17.9472C7.46428 17.9472 6.95528 17.7413 6.58 17.37C6.20473 16.9987 5.995 16.497 5.995 15.975C5.995 15.453 6.20473 14.9513 6.58 14.58L14.59 6.58" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
                     <textarea 
                         id="messageInput" 
                         class="message-input" 
@@ -403,6 +409,7 @@
                     </button>
                 </div>
             </footer>
+            <div id="attachmentPreview" class="attachment-preview"></div>
         </main>
     </div>
 
