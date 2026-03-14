@@ -37,6 +37,7 @@ async function generateSmartTitle(userMessage, aiResponse) {
 async function sendMessage() {
     const message = messageInput.value.trim();
     const attachments = window.getAttachments ? window.getAttachments() : [];
+    console.log('[DEBUG] Sending message with attachments:', attachments);
     
     if ((!message && attachments.length === 0) || isLoading) return;
     
@@ -124,8 +125,13 @@ async function sendMessage() {
         // Process attachments - convert images to base64 for vision models
         let processedAttachments = [];
         if (attachments && attachments.length > 0) {
+            console.log('[DEBUG] Processing attachments:', attachments);
             for (const file of attachments) {
-                if (file.type.startsWith('image/')) {
+                console.log('[DEBUG] File:', file.name, file.type);
+                const isImage = file.type.startsWith('image/') || 
+                    file.name.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/i);
+                console.log('[DEBUG] Is image:', isImage);
+                if (isImage) {
                     const base64 = await fileToBase64(file);
                     processedAttachments.push({
                         type: 'image',

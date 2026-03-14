@@ -861,8 +861,8 @@ function setupFileAttachments() {
         }
 
         for (const file of files) {
-            if (!file.type.match(/^image\/(png|jpeg|jpg|gif|webp)$/) && 
-                !file.name.match(/\.(pdf|docx|txt|csv)$/i)) {
+            if (!file.type.match(/^image\/(png|jpeg|jpg|gif|webp|bmp|svg)$/) && 
+                !file.name.match(/\.(pdf|docx|txt|csv|png|jpe?g|gif|webp|bmp|svg)$/i)) {
                 alert('Unsupported file type. Supported: images, PDF, DOCX, TXT, CSV');
                 continue;
             }
@@ -942,7 +942,10 @@ function setupFileAttachments() {
         }
     }
 
-    window.getAttachments = () => attachments;
+    window.getAttachments = () => {
+        console.log('[DEBUG] getAttachments called, returning:', attachments);
+        return attachments;
+    };
     window.clearAttachments = () => {
         attachments = [];
         renderAttachments();
