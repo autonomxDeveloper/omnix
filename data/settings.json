@@ -13,7 +13,7 @@
     "thinking_budget": 0
   },
   "cerebras": {
-    "api_key": "csk-ekcv4wyvntn43c56639cw2p8yreyj588wt59wmykfkkrvkeh",
+    "api_key": "",
     "model": ""
   },
   "llamacpp": {
