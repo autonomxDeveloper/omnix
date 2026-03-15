@@ -37,6 +37,9 @@ let firstAudioTime = 0;
 let currentAssistantDiv = null;
 let streamedContent = '';
 let responseComplete = false;
+let _audioGate = true;  // false after stopAudio() to block stale tts_audio chunks
+let _workletSamplesQueued = 0;    // running total of samples posted to worklet this turn
+let _drainCalledThisTurn = false; // prevents double-call of _onWorkletDrained
 
 function mergeFloat32Arrays(arrays) {
     const total = arrays.reduce((sum, arr) => sum + arr.length, 0);
@@ -134,6 +137,16 @@ async function initAudioWorklet() {
     await wsAudioContext.audioWorklet.addModule("/static/js/audio/pcm-player-worklet.js?v=" + Date.now());
 
     pcmNode = new AudioWorkletNode(wsAudioContext, "pcm-player");
+    pcmNode.port.onmessage = (event) => {
+        if (event.data && event.data.type === 'drained') {
+            // Worklet buffer is empty — cancel drain timer and signal VAD to resume
+            if (_drainTimer) {
+                clearTimeout(_drainTimer);
+                _drainTimer = null;
+            }
+            _onWorkletDrained();
+        }
+    };
     wsGainNode = wsAudioContext.createGain();
     wsGainNode.gain.value = 1.0;
 
@@ -146,6 +159,9 @@ async function initAudioWorklet() {
 
 // ============== PUSH AUDIO ==============
 function pushAudioData(samples) {
+    // Ignore audio arriving after stopAudio() - prevents late tts_audio frames
+    // from resetting _pcmWorkletBufferEmpty and stalling the drain poller.
+    if (!_audioGate) return;
     if (!pcmNode || !wsAudioContext || !samples || samples.length === 0) return;
 
     samples = upsample24toNative(samples);
@@ -161,6 +177,7 @@ function pushAudioData(samples) {
             while (pendingBuffer.length >= FRAME_SIZE) {
                 const frame = pendingBuffer.slice(0, FRAME_SIZE);
                 pcmNode.port.postMessage(frame);
+                _workletSamplesQueued += frame.length;
                 pendingBuffer = pendingBuffer.slice(FRAME_SIZE);
             }
 
@@ -178,6 +195,7 @@ function pushAudioData(samples) {
     while (pendingBuffer.length >= FRAME_SIZE) {
         const frame = pendingBuffer.slice(0, FRAME_SIZE);
         pcmNode.port.postMessage(frame);
+        _workletSamplesQueued += frame.length;
         pendingBuffer = pendingBuffer.slice(FRAME_SIZE);
     }
 }
@@ -218,15 +236,68 @@ function stopAudio() {
     startupBuffer = [];
     bufferedSamples = 0;
     isSpeaking = false;
-    window.VoiceState.assistantSpeaking = false;
+    _audioGate = false;  // block any tts_audio frames still in the socket buffer
     window.VoiceState.tokenBuffer = '';
     window.VoiceState.llmStreaming = false;
     
-    // Trigger TTS cooldown to prevent immediate voice detection
+    // DO NOT set assistantSpeaking=false or trigger TTS cooldown here.
+    // The worklet uses a soft-stop (draining mode) — it continues playing
+    // all already-queued audio for several more seconds. If we mark the
+    // assistant as done now, the VAD loop will pick up the AI's own voice
+    // from the speakers and fire a spurious second LLM request.
+    //
+    // Instead, poll until the worklet has actually finished draining, then
+    // signal the cooldown. We estimate drain time from audio context clock.
+    _waitForWorkletDrain();
+}
+
+
+// Wait for PCM worklet drain then signal VAD to resume.
+// The worklet posts a 'drained' message (set up in initAudioWorklet) when its
+// buffer empties. We listen for that, with a hard 6s timeout as a safety net
+// so the engine can never get permanently stuck.
+let _drainTimer = null;
+let _drainResolve = null;
+
+function _waitForWorkletDrain() {
+    // Cancel any in-flight drain wait
+    if (_drainTimer) { clearTimeout(_drainTimer); _drainTimer = null; }
+    _drainCalledThisTurn = false;
+
+    if (!wsAudioContext || !pcmNode) {
+        _onWorkletDrained();
+        return;
+    }
+
+    // Compute how long the queued audio will take to play at the native sample rate,
+    // then add a 3s margin. This is far more accurate than a fixed timeout and
+    // avoids cutting off long responses prematurely.
+    // Primary signal: worklet posts 'drained' when its buffer empties (fast path).
+    // Fallback: this timer fires if the 'drained' message is somehow never received.
+    const drainMs = Math.ceil((_workletSamplesQueued / (nativeSampleRate || 48000)) * 1000) + 3000;
+    console.log(`[WS-AUDIO] Waiting for drain: ~${Math.ceil(drainMs/1000)}s (${_workletSamplesQueued} samples @ ${nativeSampleRate}Hz)`);
+
+    _drainTimer = setTimeout(() => {
+        console.warn('[WS-AUDIO] Drain timeout — forcing listening resume');
+        _drainTimer = null;
+        _onWorkletDrained();
+    }, drainMs);
+}
+
+function _onWorkletDrained() {
+    // Guard: only fire once per turn to prevent double-cooldown when both
+    // the worklet message and the timeout fire (e.g. timeout fires first,
+    // then worklet message arrives for a long response)
+    if (_drainCalledThisTurn) return;
+    _drainCalledThisTurn = true;
+
+    if (_drainTimer) { clearTimeout(_drainTimer); _drainTimer = null; }
+
+    window.VoiceState.assistantSpeaking = false;
+
     if (typeof window.triggerTTSCooldown === 'function') {
         window.triggerTTSCooldown();
     }
-    
     if (typeof updateConversationStatus === 'function') {
         updateConversationStatus('Ready to chat');
     }
@@ -286,6 +357,7 @@ async function connectWebSocket(sessionIdVal, speakerVal) {
                 streamedContent = '';
                 currentAssistantDiv = null;
                 responseComplete = false;
+                _audioGate = true;
                 ws.send(JSON.stringify({ type: 'text', text: msg.text }));
             }
         }
@@ -305,6 +377,10 @@ async function connectWebSocket(sessionIdVal, speakerVal) {
         console.log("[WS-CLIENT] Disconnected");
         isConnected = false;
         isSpeaking = false;
+        // Make sure VAD can resume even if the socket drops mid-response
+        if (window.VoiceState && window.VoiceState.assistantSpeaking) {
+            stopAudio();
+        }
     };
 }
 
@@ -413,6 +489,7 @@ async function handleMessage(msg) {
                 
                 if (!responseComplete && !isSpeaking) {
                     isSpeaking = true;
+                    window.VoiceState.assistantSpeaking = true;
                     if (typeof updateConversationStatus === 'function') {
                         updateConversationStatus('🔊 Speaking...', 'speaking');
                     }
@@ -484,7 +561,9 @@ async function handleMessage(msg) {
         case 'error':
             console.error('[WS-CLIENT] Server error:', msg.error);
             stopAudio();
-            if (typeof window.triggerLLMCooldown === 'function') {
+            // Only trigger rate-limit cooldown for actual rate-limit errors,
+            // not for empty/spurious error frames which just add unnecessary dead time
+            if (msg.error && typeof window.triggerLLMCooldown === 'function') {
                 window.triggerLLMCooldown();
             }
             if (typeof updateConversationStatus === 'function') {
@@ -535,6 +614,7 @@ window.wsConversationStart = async function(sessionIdVal, speakerVal) {
         totalStartTime = performance.now();
         llmFirstTokenTime = 0;
         firstAudioTime = 0;
+        _audioGate = true;
         
         playbackStarted = false;
         startupBuffer = [];
@@ -580,6 +660,9 @@ window.wsConversationSend = function(text) {
         bufferedSamples = 0;
         pendingBuffer = new Float32Array(0);
         isSpeaking = false;
+        _audioGate = true;  // re-open for new turn
+        _workletSamplesQueued = 0;
+        _drainCalledThisTurn = false;
         window.VoiceState.tokenBuffer = '';
         
         ws.send(JSON.stringify({

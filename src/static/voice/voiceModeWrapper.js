@@ -1,4 +1,4 @@
-import { VoiceEngine, VoiceState } from './voiceEngine.js';
+import { VoiceEngine, VoiceState } from './voiceEngine.js?v=2';
 
 let voiceEngine = null;
 let voiceModeActive = false;

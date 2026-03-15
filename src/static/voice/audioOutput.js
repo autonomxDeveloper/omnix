@@ -193,6 +193,22 @@ export class AudioOutput {
     return this.playing;
   }
 
+  queueLength() {
+    return this.audioQueue.length;
+  }
+
+  stopAll() {
+    if (this.currentAudio) {
+      try {
+        this.currentAudio.stop();
+      } catch (e) {}
+      this.currentAudio = null;
+    }
+    
+    this.audioQueue = [];
+    this.playing = false;
+  }
+
   clear() {
     this.audioQueue = [];
   }

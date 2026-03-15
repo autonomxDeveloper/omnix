@@ -410,19 +410,31 @@ let currentMessageDiv = null;
 let isFetching = false;
 
 function setTTSButtonState(messageDiv, state) {
+    if (!messageDiv) return;
+    
     const speakBtn = messageDiv.querySelector('.speak-btn');
     const stopBtn = messageDiv.querySelector('.stop-btn');
     const pauseBtn = messageDiv.querySelector('.pause-btn');
 
-    if (!speakBtn || !stopBtn || !pauseBtn) return;
+    if (!speakBtn && !stopBtn && !pauseBtn) {
+        console.log('[TTS] No TTS buttons found in messageDiv');
+        return;
+    }
 
-    speakBtn.style.display = (state === 'idle' || state === 'paused') ? 'inline-flex' : 'none';
-    speakBtn.textContent = state === 'paused' ? 'Resume' : 'Speak';
-    speakBtn.disabled = false;
+    if (speakBtn) {
+        speakBtn.style.display = (state === 'idle' || state === 'paused') ? 'inline-flex' : 'none';
+        speakBtn.textContent = state === 'paused' ? 'Resume' : 'Speak';
+        speakBtn.disabled = false;
+    }
     
-    stopBtn.style.display = (state === 'playing' || state === 'paused') ? 'inline-flex' : 'none';
-    pauseBtn.style.display = state === 'playing' ? 'inline-flex' : 'none';
-    pauseBtn.textContent = '⏸';
+    if (stopBtn) {
+        stopBtn.style.display = (state === 'playing' || state === 'paused') ? 'inline-flex' : 'none';
+    }
+    
+    if (pauseBtn) {
+        pauseBtn.style.display = state === 'playing' ? 'inline-flex' : 'none';
+        if (pauseBtn) pauseBtn.textContent = '⏸';
+    }
 }
 
 function onAudioPlaybackComplete() {
@@ -452,6 +464,11 @@ function scheduleChunk(float32Array, sampleRate) {
   const buffer = audioCtx.createBuffer(1, float32Array.length, sampleRate);
   buffer.copyToChannel(float32Array, 0);
   audioQueue.push(buffer);
+  
+  // Auto-start playback if not playing and we have enough buffered (3+ chunks for smoothness)
+  if (!isPlaying && audioQueue.length >= 3) {
+    playQueuedAudio();
+  }
 }
 
 function playQueuedAudio() {
@@ -590,10 +607,20 @@ async function speakTextStreaming(text, speaker = 'en') {
               const data = JSON.parse(line.slice(6));
               if (data.type === 'chunk') {
                 scheduleChunk(base64ToFloat32(data.audio_b64), data.sample_rate);
-                if (!isPlaying) playQueuedAudio();
+                // Start playback only after buffering 3 chunks for smoother audio
+                if (!isPlaying && audioQueue.length >= 3) {
+                  playQueuedAudio();
+                }
               } else if (data.type === 'done') {
-                reader.cancel();
-                resolve();
+                // Wait for queue to finish before resolving
+                const waitForQueue = () => {
+                  if (audioQueue.length > 0 || isPlaying) {
+                    setTimeout(waitForQueue, 100);
+                  } else {
+                    resolve();
+                  }
+                };
+                waitForQueue();
                 return;
               } else if (data.type === 'error') {
                 reject(new Error(data.message));

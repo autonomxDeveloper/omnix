@@ -1229,7 +1229,21 @@ Morgan: Indeed, it reminds me of home."></textarea>
     <script src="{{ url_for('static', filename='chat/tts-queue.js') }}"></script>
     <script src="{{ url_for('static', filename='chat/ws-client.js') }}"></script>
     <script src="{{ url_for('static', filename='voice.js') }}"></script>
-    <script type="module" src="{{ url_for('static', filename='voice/voiceModeWrapper.js') }}"></script>
+    <script type="importmap">
+    {
+      "imports": {
+        "./audioInput.js": "/static/voice/audioInput.js?v=4",
+        "./audioOutput.js": "/static/voice/audioOutput.js?v=4",
+        "./sttClient.js": "/static/voice/sttClient.js?v=4",
+        "./ttsClient.js": "/static/voice/ttsClient.js?v=4",
+        "./llmClient.js": "/static/voice/llmClient.js?v=4",
+        "./voiceEngine.js": "/static/voice/voiceEngine.js?v=4",
+        "./voiceState.js": "/static/voice/voiceState.js?v=4",
+        "./voiceModeWrapper.js": "/static/voice/voiceModeWrapper.js?v=4"
+      }
+    }
+    </script>
+    <script type="module" src="{{ url_for('static', filename='voice/voiceModeWrapper.js') }}?v=4"></script>
     <script src="{{ url_for('static', filename='chat/chat.js') }}"></script>
     <script src="{{ url_for('static', filename='audiobook.js') }}"></script>
     <script src="{{ url_for('static', filename='podcast.js') }}"></script>

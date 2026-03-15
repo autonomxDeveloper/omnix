@@ -7,6 +7,15 @@ from app.providers import get_registry
 
 core_bp = Blueprint('core', __name__)
 
+@core_bp.after_app_request
+def no_cache_voice_js(response):
+    """Disable browser caching for voice module JS files so updates take effect immediately."""
+    if request.path.startswith('/static/voice/') and request.path.endswith('.js'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
 @core_bp.route('/')
 def index():
     return render_template('index.html')

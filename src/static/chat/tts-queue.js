@@ -71,6 +71,10 @@ function playNextPendingChunk() {
     
     if (pendingChunks.length === 0) {
         isPlaying = false;
+        if (window.VoiceState) window.VoiceState.assistantSpeaking = false;
+        // Trigger cooldown so VAD doesn't immediately pick up room noise or
+        // speaker echo after playback ends
+        if (typeof window.triggerTTSCooldown === 'function') window.triggerTTSCooldown();
         if (typeof window.conversationMode !== 'undefined' && window.conversationMode) {
             if (typeof updateConversationStatus === 'function') updateConversationStatus('Ready to chat');
             if (typeof showCircleIndicator === 'function') showCircleIndicator('idle');
@@ -179,6 +183,7 @@ function enqueueAudio(audioBase64, sampleRate) {
     // Start playback if not already playing
     if (!isPlaying) {
         isPlaying = true;
+        if (window.VoiceState) window.VoiceState.assistantSpeaking = true;
         playNextPendingChunk();
     }
 }

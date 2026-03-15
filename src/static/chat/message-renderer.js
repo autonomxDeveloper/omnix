@@ -119,6 +119,7 @@ function addMessage(role, content, thinking = null, tokens = null, tokensPerSec 
         headerDiv.querySelector('.stop-btn').onclick = null;
         
         headerDiv.querySelector('.speak-btn').addEventListener('click', () => {
+            console.log('[TTS] Speak button clicked');
             currentMessageDiv = messageDiv;
             
             // If paused, resume playback instead of restarting TTS
@@ -135,7 +136,11 @@ function addMessage(role, content, thinking = null, tokens = null, tokensPerSec 
             setTTSButtonState(messageDiv, 'playing');
             
             const ttsSpeakerSelect = document.getElementById('ttsSpeaker');
-            speakText(content, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en').catch(() => {
+            speakText(content, ttsSpeakerSelect ? ttsSpeakerSelect.value : 'en').then(() => {
+                console.log('[TTS] Speak completed');
+                setTTSButtonState(messageDiv, 'idle');
+            }).catch((err) => {
+                console.error('[TTS] Speak error:', err);
                 setTTSButtonState(messageDiv, 'idle');
             });
         });

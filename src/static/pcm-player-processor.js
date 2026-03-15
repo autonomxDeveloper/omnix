@@ -1,38 +1,70 @@
 class PCMPlayerProcessor extends AudioWorkletProcessor {
-
     constructor() {
-        super()
-
-        this.bufferSize = 24000 * 6
-        this.buffer = new Float32Array(this.bufferSize)
-        this.readIndex = 0
-        this.writeIndex = 0
+        super();
+        this.buffer = [];
+        this.bufferSamples = 0;
+        this.chunkOffset = 0;
+        this.draining = false;
 
         this.port.onmessage = (event) => {
-            const data = event.data
-            for (let i = 0; i < data.length; i++) {
-                this.buffer[this.writeIndex] = data[i]
-                this.writeIndex = (this.writeIndex + 1) % this.bufferSize
+            const data = event.data;
+            if (!data) return;
+
+            if (data.type === 'reset') {
+                this.buffer = [];
+                this.bufferSamples = 0;
+                this.chunkOffset = 0;
+                this.draining = false;
+                return;
             }
-        }
+
+            if (data.type === 'stop') {
+                // Soft stop: finish playing queued audio, then go silent.
+                // Do NOT clear the buffer — frames already queued must play out.
+                this.draining = true;
+                return;
+            }
+
+            if (!this.draining && data instanceof Float32Array && data.length > 0) {
+                this.buffer.push(data);
+                this.bufferSamples += data.length;
+            }
+        };
     }
 
     process(inputs, outputs) {
+        const output = outputs[0][0];
+        const needed = output.length;
+        let written = 0;
 
-        const output = outputs[0][0]
+        while (written < needed && this.buffer.length > 0) {
+            const chunk = this.buffer[0];
+            const available = chunk.length - this.chunkOffset;
+            const toCopy = Math.min(available, needed - written);
 
-        for (let i = 0; i < output.length; i++) {
-            if (this.readIndex !== this.writeIndex) {
-                output[i] = this.buffer[this.readIndex]
-                this.readIndex = (this.readIndex + 1) % this.bufferSize
-            } else {
-                output[i] = 0
+            output.set(chunk.subarray(this.chunkOffset, this.chunkOffset + toCopy), written);
+            written += toCopy;
+            this.chunkOffset += toCopy;
+            this.bufferSamples -= toCopy;
+
+            if (this.chunkOffset >= chunk.length) {
+                this.buffer.shift();
+                this.chunkOffset = 0;
             }
         }
 
-        return true
-    }
+        if (this.draining && this.buffer.length === 0) {
+            this.draining = false;
+            // Notify the main thread that the buffer has fully drained
+            this.port.postMessage({ type: 'drained' });
+        }
 
+        for (let i = written; i < needed; i++) {
+            output[i] = 0;
+        }
+
+        return true;
+    }
 }
 
-registerProcessor("pcm-player", PCMPlayerProcessor)
+registerProcessor("pcm-player", PCMPlayerProcessor);

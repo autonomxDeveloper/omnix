@@ -1,187 +1,222 @@
-export class AudioInput {
-  constructor(onSpeechStart, onSpeechEnd, onAudioChunk) {
-    this.onSpeechStart = onSpeechStart;
-    this.onSpeechEnd = onSpeechEnd;
-    this.onAudioChunk = onAudioChunk;
-    this.stream = null;
+export class AudioOutput {
+  constructor() {
+    this.audioQueue = [];
+    this.playing = false;
     this.audioContext = null;
-    this.processor = null;
-    this.analyser = null;
-    this.source = null;
-    this.isRecording = false;
-    this.silenceTimeout = null;
-    this.isSpeaking = false;
-    this.speechStartTime = 0;
-    this.accumulatedAudio = [];
-    
-    this.VAD_SILENCE_THRESHOLD = 0.008;
-    this.VAD_SILENCE_TIMEOUT = 400;
-    this.MIN_SPEECH_DURATION = 0.3;
+    this.currentAudio = null;
+    this.onPlaybackStart = null;
+    this.onPlaybackEnd = null;
+    this.hasPlayedSomething = false;
   }
 
-  async start() {
-    try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
-
+  async initContext() {
+    if (!this.audioContext) {
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
         latencyHint: 'interactive'
       });
+    }
+    
+    if (this.audioContext.state === 'suspended') {
+      await this.audioContext.resume();
+    }
+  }
 
-      this.source = this.audioContext.createMediaStreamSource(this.stream);
-      
-      this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = 256;
-      this.source.connect(this.analyser);
+  enqueue(chunk) {
+    this.audioQueue.push(chunk);
+    this.playNext();
+  }
 
-      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
-      this.processor.onaudioprocess = this.handleAudioProcess.bind(this);
-      
-      this.source.connect(this.processor);
-      this.processor.connect(this.audioContext.destination);
+  async playNext() {
+    if (this.playing) return;
+    if (this.audioQueue.length === 0) {
+      // Only fire onPlaybackEnd if we actually played something this session.
+      // Avoids a spurious callback on first call before any audio is enqueued.
+      if (this.onPlaybackEnd && this.hasPlayedSomething) {
+        this.hasPlayedSomething = false;
+        this.onPlaybackEnd();
+      }
+      return;
+    }
 
-      this.isRecording = true;
-      this.startVADLoop();
-      
-      console.log('[AudioInput] Started successfully');
+    await this.initContext();
+
+    this.playing = true;
+    this.hasPlayedSomething = true;
+    
+    if (this.onPlaybackStart) {
+      this.onPlaybackStart();
+    }
+
+    const chunk = this.audioQueue.shift();
+    
+    try {
+      await this.playAudioChunk(chunk);
     } catch (error) {
-      console.error('[AudioInput] Failed to start:', error);
-      throw error;
+      console.error('[AudioOutput] Error playing chunk:', error);
     }
+    
+    this.playing = false;
+    this.playNext();
   }
 
-  handleAudioProcess(event) {
-    if (!this.isRecording) return;
+  async playAudioChunk(chunk) {
+    const isFirstChunk = this.currentAudio === null;
     
-    const inputData = event.inputBuffer.getChannelData(0);
-    const chunk = new Float32Array(inputData);
+    let float32;
+    let sampleRate;
     
-    this.accumulatedAudio.push(chunk);
+    const uint8arr = new Uint8Array(chunk);
+    const arrView = new DataView(uint8arr.buffer);
     
-    if (this.onAudioChunk) {
-      this.onAudioChunk(chunk);
+    if (uint8arr.length > 44 && 
+        String.fromCharCode(uint8arr[0], uint8arr[1], uint8arr[2], uint8arr[3]) === 'RIFF' &&
+        String.fromCharCode(uint8arr[8], uint8arr[9], uint8arr[10], uint8arr[11]) === 'WAVE') {
+      const wavData = this.parseWAV(uint8arr);
+      float32 = wavData.float32;
+      sampleRate = wavData.sampleRate;
+    } else {
+      let buffer = chunk;
+      if (buffer.byteLength % 2 !== 0) {
+        const paddedBuffer = new ArrayBuffer(buffer.byteLength + 1);
+        new Uint8Array(paddedBuffer).set(new Uint8Array(buffer));
+        buffer = paddedBuffer;
+      }
+
+      const pcm16 = new Int16Array(buffer);
+      const numSamples = pcm16.length;
+      float32 = new Float32Array(numSamples);
+
+      for (let i = 0; i < numSamples; i++) {
+        float32[i] = pcm16[i] / 32768.0;
+      }
+      sampleRate = 24000;
     }
+
+    // Fade-in only on the very first chunk to avoid a click on playback start.
+    // Subsequent chunks are continuous PCM — applying a fade would create
+    // a volume dip at every chunk boundary.
+    if (isFirstChunk) {
+      const fadeLength = Math.min(48, Math.floor(float32.length / 16));
+      for (let i = 0; i < fadeLength; i++) {
+        float32[i] *= i / fadeLength;
+      }
+    }
+
+    const audioBuffer = this.audioContext.createBuffer(1, float32.length, sampleRate);
+    audioBuffer.getChannelData(0).set(float32);
+
+    const source = this.audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(this.audioContext.destination);
+
+    this.currentAudio = source;
+
+    return new Promise((resolve, reject) => {
+      source.onended = () => {
+        this.currentAudio = null;
+        resolve();
+      };
+      
+      source.onerror = (error) => {
+        this.currentAudio = null;
+        reject(error);
+      };
+
+      source.start();
+    });
   }
 
-  startVADLoop() {
-    const checkVAD = () => {
-      if (!this.isRecording || !this.analyser) {
-        if (this.isRecording) {
-          requestAnimationFrame(checkVAD);
-        }
-        return;
-      }
-
-      const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
-      this.analyser.getByteFrequencyData(dataArray);
-
-      let sum = 0;
-      for (let i = 0; i < dataArray.length; i++) {
-        sum += dataArray[i];
-      }
-      const average = sum / dataArray.length / 255;
-
-      if (average > this.VAD_SILENCE_THRESHOLD) {
-        if (!this.isSpeaking) {
-          this.isSpeaking = true;
-          this.speechStartTime = performance.now();
-          
-          if (this.silenceTimeout) {
-            clearTimeout(this.silenceTimeout);
-            this.silenceTimeout = null;
+  parseWAV(wavData) {
+    const view = new DataView(wavData.buffer);
+    
+    let offset = 12;
+    let sampleRate = 24000;
+    let numChannels = 1;
+    let bitsPerSample = 16;
+    
+    while (offset < wavData.length - 8) {
+      const id = String.fromCharCode(
+        wavData[offset], wavData[offset + 1], 
+        wavData[offset + 2], wavData[offset + 3]
+      );
+      const size = view.getUint32(offset + 4, true);
+      
+      if (id === 'fmt ') {
+        numChannels = view.getUint16(offset + 10, true);
+        sampleRate = view.getUint32(offset + 12, true);  // sampleRate is 4 bytes, not 2
+        bitsPerSample = view.getUint16(offset + 22, true);
+        offset += 8 + size;
+      } else if (id === 'data') {
+        const dataOffset = offset + 8;
+        const numSamples = Math.floor(size / (bitsPerSample / 8));
+        
+        const float32 = new Float32Array(numSamples);
+        
+        if (bitsPerSample === 16) {
+          for (let i = 0; i < numSamples; i++) {
+            const sample = view.getInt16(dataOffset + i * 2, true);
+            float32[i] = sample / 32768.0;
           }
-          
-          if (this.onSpeechStart) {
-            this.onSpeechStart();
+        } else if (bitsPerSample === 32) {
+          for (let i = 0; i < numSamples; i++) {
+            const sample = view.getInt32(dataOffset + i * 4, true);
+            float32[i] = sample / 2147483648.0;
+          }
+        } else if (bitsPerSample === 8) {
+          for (let i = 0; i < numSamples; i++) {
+            const sample = wavData[dataOffset + i] - 128;
+            float32[i] = sample / 128.0;
           }
         }
-      } else if (this.isSpeaking) {
-        if (!this.silenceTimeout) {
-          this.silenceTimeout = setTimeout(() => {
-            const duration = (performance.now() - this.speechStartTime) / 1000;
-            if (duration >= this.MIN_SPEECH_DURATION) {
-              this.handleSpeechEnd();
-            } else {
-              this.isSpeaking = false;
-            }
-          }, this.VAD_SILENCE_TIMEOUT);
-        }
+        
+        return { float32, sampleRate };
+      } else {
+        offset += 8 + size;
       }
-
-      if (this.isRecording) {
-        requestAnimationFrame(checkVAD);
-      }
-    };
-
-    requestAnimationFrame(checkVAD);
-  }
-
-  handleSpeechEnd() {
-    if (this.silenceTimeout) {
-      clearTimeout(this.silenceTimeout);
-      this.silenceTimeout = null;
     }
     
-    this.isSpeaking = false;
-    
-    if (this.onSpeechEnd) {
-      this.onSpeechEnd();
-    }
+    return { float32: new Float32Array(0), sampleRate: 24000 };
   }
 
   stop() {
-    this.isRecording = false;
+    this.audioQueue = [];
+    this.hasPlayedSomething = false;
     
-    if (this.silenceTimeout) {
-      clearTimeout(this.silenceTimeout);
-      this.silenceTimeout = null;
+    if (this.currentAudio) {
+      try {
+        this.currentAudio.stop();
+      } catch (e) {
+      }
+      this.currentAudio = null;
     }
-
-    if (this.processor) {
-      this.processor.disconnect();
-      this.processor = null;
-    }
-
-    if (this.source) {
-      this.source.disconnect();
-      this.source = null;
-    }
-
-    if (this.audioContext) {
-      this.audioContext.close().catch(console.error);
-      this.audioContext = null;
-    }
-
-    if (this.stream) {
-      this.stream.getTracks().forEach(track => track.stop());
-      this.stream = null;
-    }
-
-    this.analyser = null;
-    this.accumulatedAudio = [];
     
-    console.log('[AudioInput] Stopped');
+    this.playing = false;
   }
 
-  getAccumulatedAudio() {
-    if (this.accumulatedAudio.length === 0) return null;
-    
-    const totalLength = this.accumulatedAudio.reduce((sum, chunk) => sum + chunk.length, 0);
-    const combined = new Float32Array(totalLength);
-    let offset = 0;
-    for (const chunk of this.accumulatedAudio) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
+  isPlaying() {
+    return this.playing;
+  }
+
+  queueLength() {
+    return this.audioQueue.length;
+  }
+
+  stopAll() {
+    if (this.currentAudio) {
+      try {
+        this.currentAudio.stop();
+      } catch (e) {}
+      this.currentAudio = null;
     }
     
-    this.accumulatedAudio = [];
-    return combined;
+    this.audioQueue = [];
+    this.playing = false;
+    this.hasPlayedSomething = false;
+  }
+
+  clear() {
+    this.audioQueue = [];
   }
 }
 
-export default AudioInput;
+export default AudioOutput;
