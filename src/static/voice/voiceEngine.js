@@ -1,15 +1,16 @@
-import { VoiceState } from './voiceState.js';
-import { AudioInput } from './audioInput.js';
-import { AudioOutput } from './audioOutput.js';
-import { STTClient } from './sttClient.js';
-import { LLMClient } from './llmClient.js';
-import { TTSClient } from './ttsClient.js';
+import { VoiceState } from './voiceState.js?v=2';
+import { AudioInput } from './audioInput.js?v=2';
+import { AudioOutput } from './audioOutput.js?v=2';
+import { STTClient } from './sttClient.js?v=2';
+import { LLMClient } from './llmClient.js?v=2';
+import { TTSClient } from './ttsClient.js?v=2';
 
 export { VoiceState };
 export class VoiceEngine {
   constructor(options = {}) {
     this.onStateChange = options.onStateChange || (() => {});
-    this.onTranscript = options.onTranscript || (() => {});
+    this.onTranscript = options.onTranscript || (() => {});  // kept for external use
+    this._onTranscriptCallback = options.onTranscript || (() => {});
     this.onAIResponse = options.onAIResponse || (() => {});
     this.onError = options.onError || console.error;
 
@@ -39,13 +40,19 @@ export class VoiceEngine {
     this.audioInput = new AudioInput(
       this.onSpeechStart.bind(this),
       this.onSpeechEnd.bind(this),
-      this.onAudioChunkInput.bind(this)
+      this.onAudioChunkInput.bind(this),
+      this.handleUserSpeechStart.bind(this)
     );
 
     this.currentTranscript = '';
     this.accumulatedResponse = '';
     this.ttsBuffer = '';
-    this.minTranscriptLength = 10;
+    this.responseFinished = false;
+    this.awaitingSTT = false;
+    this.hasStartedSpeaking = false;
+    this.interrupting = false;
+    this.ttsActive = false;
+    this.minTranscriptLength = 2;
   }
 
   setState(newState) {
@@ -101,15 +108,26 @@ export class VoiceEngine {
   }
 
   onSpeechStart() {
-    if (this.state === VoiceState.AI_SPEAKING || this.state === VoiceState.THINKING) {
+    const isInterrupt = (this.state === VoiceState.AI_SPEAKING || this.state === VoiceState.THINKING) 
+                        && this.audioInput.hasEnoughAudioForInterrupt();
+    
+    this.ttsBuffer = '';
+    this.responseFinished = false;
+    this.hasStartedSpeaking = false;
+    
+    if (isInterrupt) {
       console.log('[VoiceEngine] User interrupted AI');
       
       this.audioOutput.stop();
       this.llm.cancel();
+      this.ttsActive = false;
+      this.audioInput.resumeVAD();
       
       this.setState(VoiceState.INTERRUPTED);
       this.accumulatedResponse = '';
       this.ttsBuffer = '';
+    } else if (this.state === VoiceState.AI_SPEAKING || this.state === VoiceState.THINKING) {
+      return;
     }
 
     if (this.state !== VoiceState.INTERRUPTED) {
@@ -118,9 +136,29 @@ export class VoiceEngine {
   }
 
   onSpeechEnd() {
+    // Also handle speech-end coming in from INTERRUPTED state (user spoke after barge-in)
+    if (this.state === VoiceState.INTERRUPTED) {
+      this.setState(VoiceState.USER_SPEAKING);
+    }
     if (this.state === VoiceState.USER_SPEAKING) {
       this.setState(VoiceState.THINKING);
-      this.stt.sendFinal();
+      this.audioInput.pauseVAD();
+      
+      if (!this.awaitingSTT) {
+        this.awaitingSTT = true;
+        this.stt.sendFinal();
+
+        // Safety net: if STT never responds within 4s (e.g. connection died),
+        // recover the engine from THINKING back to LISTENING so it is not stuck.
+        setTimeout(() => {
+          if (this.awaitingSTT) {
+            console.warn('[VoiceEngine] STT response timeout - recovering to LISTENING');
+            this.awaitingSTT = false;
+            this.setState(VoiceState.LISTENING);
+            this.audioInput.resumeVAD();
+          }
+        }, 4000);
+      }
     }
   }
 
@@ -132,13 +170,17 @@ export class VoiceEngine {
 
   onTranscript(text) {
     this.currentTranscript = text;
-    this.onTranscript(text);
+    // Call the external callback passed via options (not this method — that would recurse infinitely)
+    if (this._onTranscriptCallback) this._onTranscriptCallback(text);
   }
 
   onSTTFinal(text) {
+    this.awaitingSTT = false;
+    
     if (!text || !text.trim()) {
       console.log('[VoiceEngine] Empty transcript, returning to listening');
       this.setState(VoiceState.LISTENING);
+      this.audioInput.resumeVAD();
       return;
     }
 
@@ -147,6 +189,7 @@ export class VoiceEngine {
     if (text.trim().length < this.minTranscriptLength) {
       console.log('[VoiceEngine] Transcript too short, ignoring');
       this.setState(VoiceState.LISTENING);
+      this.audioInput.resumeVAD();
       return;
     }
 
@@ -160,28 +203,49 @@ export class VoiceEngine {
   }
 
   onLLMToken(token) {
-    this.setState(VoiceState.AI_SPEAKING);
+    if (!this.hasStartedSpeaking) {
+      this.hasStartedSpeaking = true;
+      this.setState(VoiceState.AI_SPEAKING);
+      this.audioInput.pauseVAD();
+    }
     
     this.accumulatedResponse += token;
     this.onAIResponse(this.accumulatedResponse);
     
     this.ttsBuffer += token;
     
-    if (this.ttsBuffer.length >= 20) {
-      this.sendTTSChunk();
+    if (this.ttsBuffer.length > 80 && !this.ttsActive) {
+      // Flush when enough text has accumulated and we are not already generating audio
+      const flushText = this.ttsBuffer;
+      this.ttsBuffer = "";
+      this.sendTTSChunk(flushText);
+      return;
+    } else if (this.ttsBuffer.length > 300) {
+      // Hard cap: if ttsActive is stuck, flush anyway to avoid unbounded buffer growth
+      const flushText = this.ttsBuffer;
+      this.ttsBuffer = "";
+      this.sendTTSChunk(flushText);
+      return;
+    }
+    
+    const sentenceMatch = this.ttsBuffer.match(/(.+?[.!?])(\s|$)/);
+    
+    if (sentenceMatch) {
+      const sentence = sentenceMatch[1];
+      this.ttsBuffer = this.ttsBuffer.slice(sentence.length);
+      this.sendTTSChunk(sentence);
     }
   }
 
-  sendTTSChunk() {
-    if (this.ttsBuffer.trim()) {
-      const text = this.ttsBuffer;
-      this.ttsBuffer = '';
-      
-      if (this.ttsConnected && this.tts.ws && this.tts.ws.readyState === WebSocket.OPEN) {
-        this.tts.sendText(text, this.speaker);
-      } else {
-        this.sendTTSHTTP(text);
-      }
+  async sendTTSChunk(text) {
+    if (!text || !text.trim()) return;
+    
+    this.ttsActive = true;
+    
+    if (this.ttsConnected && this.tts.ws && this.tts.ws.readyState === WebSocket.OPEN) {
+      this.tts.sendText(text, this.speaker);
+    } else {
+      await this.sendTTSHTTP(text);
     }
   }
   
@@ -199,8 +263,12 @@ export class VoiceEngine {
         const audioData = this.base64ToArrayBuffer(data.audio);
         this.audioOutput.enqueue(audioData);
       }
+      // Always clear regardless of success/failure
+      this.ttsActive = false;
     } catch (e) {
       console.error('[VoiceEngine] HTTP TTS failed:', e);
+      // Always clear the flag so the engine can continue even on TTS errors
+      this.ttsActive = false;
     }
   }
   
@@ -215,13 +283,10 @@ export class VoiceEngine {
 
   onLLMEnd() {
     if (this.ttsBuffer.trim()) {
-      if (this.ttsConnected && this.tts.ws && this.tts.ws.readyState === WebSocket.OPEN) {
-        this.tts.sendText(this.ttsBuffer, this.speaker);
-      } else {
-        this.sendTTSHTTP(this.ttsBuffer);
-      }
+      this.sendTTSChunk(this.ttsBuffer);
       this.ttsBuffer = '';
     }
+    this.responseFinished = true;
   }
 
   onTTSStart() {
@@ -232,11 +297,19 @@ export class VoiceEngine {
   }
 
   onTTSDone() {
+    this.ttsActive = false;
   }
 
   onPlaybackEnded() {
-    if (this.state === VoiceState.AI_SPEAKING) {
+    this.ttsActive = false;
+
+    if (!this.responseFinished) return;
+    
+    if (this.audioOutput.queueLength() === 0 && !this.ttsActive) {
+      this.responseFinished = false;
+      this.hasStartedSpeaking = false;
       this.setState(VoiceState.LISTENING);
+      this.audioInput.resumeVAD();
     }
   }
 
@@ -245,12 +318,42 @@ export class VoiceEngine {
       console.log('[VoiceEngine] Interrupt requested');
       
       this.audioOutput.stop();
+      this.tts.cancel();
       this.llm.cancel();
       this.accumulatedResponse = '';
       this.ttsBuffer = '';
+      this.ttsActive = false;
       
       this.setState(VoiceState.LISTENING);
+      this.audioInput.resumeVAD();
     }
+  }
+
+  handleUserSpeechStart() {
+    if (this.state === VoiceState.AI_SPEAKING) {
+      this.interruptAI();
+    }
+  }
+
+  interruptAI() {
+    if (this.interrupting) return;
+    
+    this.interrupting = true;
+    
+    this.llm.cancel();
+
+    this.tts.cancel();
+    this.audioOutput.stopAll();
+
+    this.ttsBuffer = "";
+    this.responseFinished = false;
+    this.hasStartedSpeaking = false;
+    this.ttsActive = false;
+
+    this.setState(VoiceState.LISTENING);
+    this.audioInput.resumeVAD();
+
+    this.interrupting = false;
   }
 
   getState() {

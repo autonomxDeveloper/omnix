@@ -15,13 +15,13 @@ let voiceAudioContext = null;
 let analyser = null;
 
 // VAD Settings - Optimized for low latency
-const VAD_SILENCE_THRESHOLD = 0.008;
+const VAD_SILENCE_THRESHOLD = 0.015;  // Raised to reduce false triggers from ambient noise
 const VAD_SILENCE_TIMEOUT = 400;
 const VAD_MIN_AUDIO_LENGTH = 200;
 const VAD_CHECK_INTERVAL = 50;
 const VAD_SPEECH_START_DELAY = 150;
-const MIN_SPEECH_DURATION = 2.0;
-const MIN_TRANSCRIPT_LENGTH = 10;
+const MIN_SPEECH_DURATION = 0.4;  // Minimum utterance length before sending to STT
+const MIN_TRANSCRIPT_LENGTH = 2;
 const LLM_COOLDOWN_MS = 3000; // Wait 3 seconds after error before accepting new speech
 const TTS_COOLDOWN_MS = 2000; // Wait 2 seconds after TTS finishes before listening
 
@@ -56,14 +56,24 @@ let processor = null;
 let source = null;
 
 function checkVAD() {
+    // Prevent duplicate rAF loops — only one instance should run at a time
+    if (_checkVADRunning) return;
+    _checkVADRunning = true;
+    _runCheckVAD();
+}
+
+function _runCheckVAD() {
     // Stop VAD when processing final transcript
     if (window.VoiceState.sttFinalizing) {
+        _checkVADRunning = false;
         return;
     }
     
     if (!window.VoiceState.recording || !sttAnalyser) {
         if (alwaysListening && !window.VoiceState.sttFinalizing) {
-            requestAnimationFrame(checkVAD);
+            requestAnimationFrame(_runCheckVAD);
+        } else {
+            _checkVADRunning = false;
         }
         return;
     }
@@ -101,7 +111,9 @@ function checkVAD() {
     }
     
     if (alwaysListening) {
-        requestAnimationFrame(checkVAD);
+        requestAnimationFrame(_runCheckVAD);
+    } else {
+        _checkVADRunning = false;
     }
 }
 
@@ -115,14 +127,18 @@ function float32ToInt16(float32Array) {
 
 function int16ToBase64(int16Array) {
     const uint8Array = new Uint8Array(int16Array.buffer);
+    // Chunked spread avoids call-stack overflow on large buffers and is
+    // significantly faster than the byte-by-byte string concat loop.
     let binary = '';
-    for (let i = 0; i < uint8Array.length; i++) {
-        binary += String.fromCharCode(uint8Array[i]);
+    const CHUNK = 8192;
+    for (let i = 0; i < uint8Array.length; i += CHUNK) {
+        binary += String.fromCharCode(...uint8Array.subarray(i, i + CHUNK));
     }
     return btoa(binary);
 }
 
 let sttWsConnecting = false;
+let _checkVADRunning = false;  // prevents duplicate rAF loops
 
 async function ensureWebSocketConnection() {
     // Already connected
@@ -317,8 +333,23 @@ async function startStreamingStt() {
             }
         });
         
+        // Stop any previously active mic tracks before overwriting the reference
+        if (mediaStream) {
+            mediaStream.getTracks().forEach(t => t.stop());
+        }
         mediaStream = stream;
         
+        // Tear down any leftover context/interval from a previous call
+        // (guards against resource leaks when startStreamingStt is called rapidly)
+        if (audioSendInterval) {
+            clearInterval(audioSendInterval);
+            audioSendInterval = null;
+        }
+        if (audioContext) {
+            audioContext.close().catch(() => {});
+            audioContext = null;
+        }
+
         audioContext = new (window.AudioContext || window.webkitAudioContext)({
             latencyHint: 'interactive'
         });
@@ -791,7 +822,13 @@ function detectVoiceActivity() {
         return;
     }
     
-    if (!alwaysListening || !analyser) return;
+    if (!alwaysListening) return;
+    if (!analyser) {
+        // analyser may be temporarily null between stopStreamingStt and the next
+        // VAD setup — keep the loop alive so listening resumes automatically
+        requestAnimationFrame(detectVoiceActivity);
+        return;
+    }
     
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteFrequencyData(dataArray);
@@ -804,7 +841,7 @@ function detectVoiceActivity() {
     
     if (average > VAD_SILENCE_THRESHOLD) {
         // Check both legacy isRecording and new VoiceState.recording
-        if (!isRecording && !isProcessing && !window.VoiceState.recording) {
+        if (!isRecording && !isProcessing && !window.VoiceState.recording && !window.VoiceState.sttFinalizing) {
             console.log('Voice detected, starting streaming STT');
             startStreamingStt();
         }
@@ -1319,8 +1356,18 @@ async function switchToConversationView() {
     // Play greeting after view is set up
     await playConversationGreeting();
     
-    // Enable auto-listening by default after greeting
-    toggleAlwaysListening();
+    // Enable auto-listening only after the greeting audio has fully finished.
+    // TTSQueue.enqueueAudio is fire-and-forget, so we poll assistantSpeaking
+    // rather than awaiting a promise.
+    function waitForGreetingThenListen() {
+        if (window.VoiceState && window.VoiceState.assistantSpeaking) {
+            setTimeout(waitForGreetingThenListen, 100);
+        } else {
+            toggleAlwaysListening();
+        }
+    }
+    // Give the greeting a moment to actually start before polling
+    setTimeout(waitForGreetingThenListen, 200);
 }
 
 // Switch to regular view

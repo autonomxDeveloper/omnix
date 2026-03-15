@@ -65,16 +65,21 @@ export class LLMClient {
 
             try {
               const parsed = JSON.parse(data);
-              
               if (parsed.content) {
                 if (this.onToken) {
                   this.onToken(parsed.content);
                 }
               }
-            } catch (e) {
-              if (this.onToken) {
-                this.onToken(data);
+              // Also handle OpenAI-style delta format
+              const delta = parsed?.choices?.[0]?.delta?.content;
+              if (delta && !parsed.content) {
+                if (this.onToken) {
+                  this.onToken(delta);
+                }
               }
+            } catch (e) {
+              // Silently ignore non-JSON lines (e.g. comments, keep-alives)
+              // — do NOT pass raw text to onToken as it pollutes the transcript
             }
           }
         }
@@ -97,10 +102,18 @@ export class LLMClient {
     }
   }
 
-  cancel() {
+  cancel(requestId) {
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
+    }
+    
+    if (requestId) {
+      try {
+        fetch(`/api/llm/cancel/${requestId}`, {
+          method: "POST"
+        }).catch(() => {});
+      } catch (e) {}
     }
   }
 }

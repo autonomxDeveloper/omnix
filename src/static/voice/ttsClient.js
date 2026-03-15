@@ -7,6 +7,20 @@ export class TTSClient {
     this.connected = false;
     this.connecting = false;
     this.url = 'ws://localhost:8020/ws/tts';
+    this.currentAudio = null;
+  }
+
+  cancel() {
+    if (this.currentAudio) {
+      try {
+        this.currentAudio.pause();
+      } catch (e) {}
+      this.currentAudio = null;
+    }
+  }
+
+  async speak(text) {
+    return null;
   }
 
   connect() {
