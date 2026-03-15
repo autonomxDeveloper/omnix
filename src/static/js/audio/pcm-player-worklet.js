@@ -55,6 +55,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
 
         if (this.draining && this.buffer.length === 0) {
             this.draining = false;
+            this.port.postMessage({ type: 'drained' });
         }
 
         for (let i = written; i < needed; i++) {
