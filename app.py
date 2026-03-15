@@ -2,6 +2,10 @@
 LM Studio Chatbot - Flask Backend
 Modular version using Blueprints
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent / 'src'))
+
 from flask import Flask
 
 # Import Blueprints
@@ -15,8 +19,8 @@ from app.llm import llm_bp
 from app.llamacpp import llamacpp_bp
 
 def create_app():
-    # Force Flask to look for templates and static files in the root directory
-    app = Flask(__name__, template_folder='templates', static_folder='static')
+    # Force Flask to look for templates and static files in the src directory
+    app = Flask(__name__, template_folder='src/templates', static_folder='src/static')
     
     # Pre-load TTS provider on app startup for immediate availability
     with app.app_context():
