@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse
 
 # Import existing infrastructure
 import sys
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 import app.shared as shared
 from app.providers.base import ChatMessage
@@ -119,7 +119,7 @@ def _warmup_tts():
         print("[FASTAPI] Warming up TTS...")
         # Try to get a reference audio path
         ref_audio_path = None
-        voice_clones_dir = Path(__file__).parent / 'voice_clones'
+        voice_clones_dir = Path(shared.VOICE_CLONES_DIR)
         if voice_clones_dir.exists():
             wav_files = list(voice_clones_dir.glob('*.wav'))
             if wav_files:
@@ -296,8 +296,8 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
-static_dir = BASE_DIR / 'static'
-templates_dir = BASE_DIR / 'templates'
+static_dir = BASE_DIR / 'src' / 'static'
+templates_dir = BASE_DIR / 'src' / 'templates'
 index_file = templates_dir / 'index.html'
 
 # Cache for processed index.html
@@ -339,7 +339,7 @@ async def serve_static(path: str):
 @app.get("/logo/{path:path}")
 async def serve_logo(path: str):
     """Serve logo files"""
-    logo_dir = Path(shared.BASE_DIR) / 'logo'
+    logo_dir = Path(shared.BASE_DIR) / 'resources' / 'logo'
     file_path = logo_dir / path
     if file_path.exists() and file_path.is_file():
         return FileResponse(file_path)
@@ -930,7 +930,7 @@ async def delete_voice_clone(voice_id: str):
         if voice_id in shared.custom_voices:
             del shared.custom_voices[voice_id]
             
-            clones_dir = Path(__file__).parent / 'voice_clones'
+            clones_dir = Path(shared.VOICE_CLONES_DIR)
             wav_file = clones_dir / f"{voice_id}.wav"
             if wav_file.exists():
                 wav_file.unlink()
