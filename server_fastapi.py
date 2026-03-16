@@ -405,6 +405,10 @@ async def websocket_conversation(websocket: WebSocket):
                     user_text = message.get("text", "")
                     await _process_conversation(session, user_text)
                     
+                elif msg_type == "chat_stream":
+                    user_text = message.get("message") if "message" in message else message.get("text", "")
+                    await _process_conversation(session, user_text)
+                    
                 elif msg_type == "config":
                     # Update config
                     if "speaker" in message:
