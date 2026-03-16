@@ -91,11 +91,14 @@ export class LLMClient {
 
     } catch (error) {
       if (error.name === 'AbortError') {
-        console.log('[LLMClient] Request aborted');
-      } else {
-        console.error('[LLMClient] Error:', error);
+        console.log('[LLMClient] Request aborted (intentional cancel)');
+        // Do NOT call onComplete for intentional aborts — the engine already
+        // cleaned up via its cancel path (e.g. VoiceEngine._cancelOngoingResponse).
+        // Firing onComplete here would set responseFinished=true on the NEW
+        // request's state, causing a premature LISTENING transition.
+        return;
       }
-      
+      console.error('[LLMClient] Error:', error);
       if (this.onComplete) {
         this.onComplete();
       }
