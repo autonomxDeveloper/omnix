@@ -59,6 +59,7 @@ class ConversationSession:
     stop_requested: bool = False
     tts_active: bool = False
     tts_chunks_pending: int = 0
+    loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 # Global session management
@@ -189,7 +190,7 @@ FRAME_SIZE = 2400  # 100ms at 24kHz — smaller frames for smoother streaming
 
 def _generate_tts_stream(session: ConversationSession, text: str):
     """Generate TTS and send directly via WebSocket with proper chunking"""
-    print(f"[TTS] _generate_tts_stream called with text: '{text[:30]}...'")
+    print(f"[TTS] _generate_tts_stream called with text: '{text[:30]}...' loop={id(session.loop)}")
     
     if not tts_provider:
         print("[TTS] ERROR: No tts_provider available")
@@ -205,84 +206,104 @@ def _generate_tts_stream(session: ConversationSession, text: str):
     
     session.tts_active = True
     buffer = np.array([], dtype=np.float32)
+    frames_sent = 0
     
+    def _ws_send_json(data):
+        """Send JSON on the WebSocket's event loop and wait for completion."""
+        if session.loop is None:
+            print(f"[TTS] ERROR: session.loop is None, cannot send JSON: {data}")
+            raise RuntimeError("session.loop is None — WebSocket event loop was not captured at connect time")
+        asyncio.run_coroutine_threadsafe(
+            session.websocket.send_json(data), session.loop
+        ).result()
+
+    def _ws_send_bytes(data):
+        """Send bytes on the WebSocket's event loop and wait for completion."""
+        if session.loop is None:
+            print(f"[TTS] ERROR: session.loop is None, cannot send {len(data)} bytes")
+            raise RuntimeError("session.loop is None — WebSocket event loop was not captured at connect time")
+        asyncio.run_coroutine_threadsafe(
+            session.websocket.send_bytes(data), session.loop
+        ).result()
+
+    start_time = time.time()
     try:
-        start_time = time.time()
         
         if hasattr(tts_provider, 'generate_audio_stream'):
             first_sent = False
+            raw_chunks_received = 0
             
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def generate_and_send():
-                nonlocal first_sent
-                nonlocal buffer
-                
-                # generate_audio_stream is a regular generator, not async
-                for audio_chunk, sr, timing in tts_provider.generate_audio_stream(
-                    text=text,
-                    speaker=session.speaker,
-                    language="English",
-                    chunk_size=TTS_CHUNK_SIZE,
-                    non_streaming_mode=False,
-                    temperature=0.6,
-                    top_k=20,
-                    top_p=0.85,
-                    repetition_penalty=1.0,
-                    append_silence=False,
-                    max_new_tokens=180
-                ):
-                    if session.stop_requested:
-                        break
+            # generate_audio_stream is a regular (synchronous) generator.
+            # Run TTS generation entirely in this worker thread; dispatch
+            # each WebSocket send to the main event loop via
+            # run_coroutine_threadsafe so we use the loop that owns the socket.
+            for audio_chunk, sr, timing in tts_provider.generate_audio_stream(
+                text=text,
+                speaker=session.speaker,
+                language="English",
+                chunk_size=TTS_CHUNK_SIZE,
+                non_streaming_mode=False,
+                temperature=0.6,
+                top_k=20,
+                top_p=0.85,
+                repetition_penalty=1.0,
+                append_silence=False,
+                max_new_tokens=180
+            ):
+                if session.stop_requested:
+                    print(f"[TTS] Stop requested mid-stream after {raw_chunks_received} raw chunks")
+                    break
+                    
+                if audio_chunk is not None and len(audio_chunk) > 0:
+                    raw_chunks_received += 1
+                    audio = np.asarray(audio_chunk, dtype=np.float32)
+                    
+                    if audio.ndim > 1:
+                        audio = audio.mean(axis=1)
+                    
+                    # Fixed gain only — per-chunk normalization destroys
+                    # volume envelope and causes distortion when clipped
+                    audio = np.clip(audio * 0.85, -1.0, 1.0)
+                    
+                    buffer = np.concatenate([buffer, audio])
+                    
+                    while len(buffer) >= FRAME_SIZE:
+                        frame = buffer[:FRAME_SIZE]
+                        buffer = buffer[FRAME_SIZE:]
                         
-                    if audio_chunk is not None and len(audio_chunk) > 0:
-                        audio = np.asarray(audio_chunk, dtype=np.float32)
-                        
-                        if audio.ndim > 1:
-                            audio = audio.mean(axis=1)
-                        
-                        # Fixed gain only — per-chunk normalization destroys
-                        # volume envelope and causes distortion when clipped
-                        audio = np.clip(audio * 0.85, -1.0, 1.0)
-                        
-                        buffer = np.concatenate([buffer, audio])
-                        
-                        while len(buffer) >= FRAME_SIZE:
-                            frame = buffer[:FRAME_SIZE]
-                            buffer = buffer[FRAME_SIZE:]
+                        try:
+                            if not first_sent:
+                                elapsed = (time.time() - start_time) * 1000
+                                print(f"[TTS] First chunk for '{text[:20]}...' in {elapsed:.0f}ms, sent {len(frame)} samples")
+                                _ws_send_json({
+                                    "type": "tts_start",
+                                    "time": elapsed
+                                })
+                                first_sent = True
                             
-                            try:
-                                if not first_sent:
-                                    elapsed = (time.time() - start_time) * 1000
-                                    print(f"[TTS] First chunk for '{text[:20]}...' in {elapsed:.0f}ms, sent {len(frame)} samples")
-                                    await session.websocket.send_json({
-                                        "type": "tts_start",
-                                        "time": elapsed
-                                    })
-                                    first_sent = True
-                                
-                                await session.websocket.send_bytes(frame.tobytes())
-                            except Exception as e:
-                                print(f"[TTS] Send error: {e}")
-                                break
-                
-                if len(buffer) > 0:
-                    try:
-                        if len(buffer) < FRAME_SIZE:
-                            buffer = np.pad(buffer, (0, FRAME_SIZE - len(buffer)))
-                        await session.websocket.send_bytes(buffer.tobytes())
-                    except Exception as e:
-                        print(f"[TTS] Final send error: {e}")
+                            _ws_send_bytes(frame.tobytes())
+                            frames_sent += 1
+                        except Exception as e:
+                            print(f"[TTS] Send error (frame {frames_sent}): {e}")
+                            break
             
-            try:
-                loop.run_until_complete(generate_and_send())
-            finally:
-                loop.close()
+            print(f"[TTS] Generator done for '{text[:20]}...': raw_chunks={raw_chunks_received}, frames_sent={frames_sent}, remainder={len(buffer)}")
+            
+            if len(buffer) > 0:
+                try:
+                    if len(buffer) < FRAME_SIZE:
+                        buffer = np.pad(buffer, (0, FRAME_SIZE - len(buffer)))
+                    _ws_send_bytes(buffer.tobytes())
+                    frames_sent += 1
+                    print(f"[TTS] Flushed remainder frame, total frames_sent={frames_sent}")
+                except Exception as e:
+                    print(f"[TTS] Final send error: {e}")
                         
     except Exception as e:
         print(f"[TTS] Generation error: {e}")
     finally:
+        elapsed_total = (time.time() - start_time) * 1000
+        print(f"[TTS] Finished '{text[:20]}...': frames_sent={frames_sent}, total_time={elapsed_total:.0f}ms, tts_chunks_pending={session.tts_chunks_pending}")
         session.tts_active = False
         if session.tts_chunks_pending > 0:
             session.tts_chunks_pending -= 1
@@ -375,12 +396,16 @@ async def websocket_conversation(websocket: WebSocket):
         
         print(f"[WS] New session: {session_id}, speaker: {speaker}")
         
-        # Create session
+        # Create session, capturing the running event loop so the TTS
+        # worker thread can schedule WebSocket sends on the correct loop.
+        current_loop = asyncio.get_event_loop()
+        print(f"[WS] Capturing event loop id={id(current_loop)} for session {session_id}")
         with sessions_lock:
             session = ConversationSession(
                 websocket=websocket,
                 session_id=session_id,
-                speaker=speaker
+                speaker=speaker,
+                loop=current_loop
             )
             sessions[session_id] = session
         
@@ -530,6 +555,7 @@ async def _process_conversation(session: ConversationSession, user_text: str):
                             try:
                                 session.tts_queue.put_nowait(text_to_speak)
                                 session.tts_chunks_pending += 1
+                                print(f"[CONV] Queued TTS chunk ({len(text_to_speak)} chars, pending={session.tts_chunks_pending}): '{text_to_speak[:40]}'")
                             except:
                                 pass
         
@@ -538,6 +564,7 @@ async def _process_conversation(session: ConversationSession, user_text: str):
             try:
                 session.tts_queue.put_nowait(sentence_buffer.strip())
                 session.tts_chunks_pending += 1
+                print(f"[CONV] Queued final TTS chunk (pending={session.tts_chunks_pending}): '{sentence_buffer.strip()[:40]}'")
             except:
                 pass
         
@@ -548,6 +575,7 @@ async def _process_conversation(session: ConversationSession, user_text: str):
         # Checking only tts_queue.empty() is insufficient because the worker
         # dequeues the text item before it starts generating/sending audio.
         drain_timeout = time.time() + 60.0  # max 60s wait for long responses
+        drain_polls = 0
         while not session.stop_requested:
             if time.time() > drain_timeout:
                 print("[CONV] TTS drain timeout — sending done anyway")
@@ -556,7 +584,9 @@ async def _process_conversation(session: ConversationSession, user_text: str):
             tts_done = not session.tts_active
             chunks_done = session.tts_chunks_pending <= 0
             if queue_empty and tts_done and chunks_done:
+                print(f"[CONV] TTS drain complete after {drain_polls} polls ({(time.time() - start_time)*1000:.0f}ms total)")
                 break
+            drain_polls += 1
             await asyncio.sleep(0.05)
         
         # One additional render-cycle wait to ensure the final send_bytes
@@ -564,9 +594,11 @@ async def _process_conversation(session: ConversationSession, user_text: str):
         if not session.stop_requested:
             await asyncio.sleep(0.1)
         
+        total_ms = (time.time() - start_time) * 1000
+        print(f"[CONV] Sending 'done' at {total_ms:.0f}ms, response_length={len(buffer)} chars")
         await session.websocket.send_json({
             "type": "done",
-            "total_time": (time.time() - start_time) * 1000
+            "total_time": total_ms
         })
         
         # Save to history
@@ -584,7 +616,8 @@ async def _process_conversation(session: ConversationSession, user_text: str):
             shared.save_sessions(shared.sessions_data)
             
     except Exception as e:
-        print(f"[CONV] Error: {e}")
+        import traceback
+        print(f"[CONV] Error: {e}\n{traceback.format_exc()}")
         try:
             await session.websocket.send_json({
                 "type": "error", 
