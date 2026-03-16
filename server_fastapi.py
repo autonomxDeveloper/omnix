@@ -498,6 +498,7 @@ async def _process_conversation(session: ConversationSession, user_text: str):
         # Prepare for streaming
         buffer = ""
         sentence_buffer = ""
+        done_sent = False  # guard: ensure 'done' is sent exactly once per turn
         
         start_time = time.time()
         
@@ -618,12 +619,14 @@ async def _process_conversation(session: ConversationSession, user_text: str):
         if not session.stop_requested:
             await asyncio.sleep(0.1)
         
-        total_ms = (time.time() - start_time) * 1000
-        print(f"[CONV] Sending 'done' at {total_ms:.0f}ms, response_length={len(buffer)} chars")
-        await session.websocket.send_json({
-            "type": "done",
-            "total_time": total_ms
-        })
+        if not done_sent:
+            done_sent = True
+            total_ms = (time.time() - start_time) * 1000
+            print(f"[CONV] Sending 'done' at {total_ms:.0f}ms, response_length={len(buffer)} chars")
+            await session.websocket.send_json({
+                "type": "done",
+                "total_time": total_ms
+            })
         
         # Save to history
         if session.session_id in shared.sessions_data:

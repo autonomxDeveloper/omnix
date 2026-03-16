@@ -1076,18 +1076,16 @@ async function processVADTranscript(text, sttDuration = null) {
     
     const totalStartTime = performance.now();
     
-    // Try WebSocket first (FastAPI mode), fall back to HTTP
+    // Try WebSocket first (FastAPI mode), fall back to HTTP only on exception.
     if (window.wsConversationStart && window.wsConversationSend) {
         try {
             console.log('[VOICE] Using WebSocket for voice response');
             await window.wsConversationStart(sessionId, ttsSpeaker.value);
-            const sent = window.wsConversationSend(text);
-            if (sent) {
-                return;
-            }
-            // wsConversationSend returned false; fall through to REST so the
-            // voice turn is not silently dropped.
-            console.log('[VOICE] wsConversationSend returned false, falling back to HTTP');
+            window.wsConversationSend(text);
+            // Always return here — the WS layer handles queuing and de-duplication.
+            // Falling through to HTTP while a WS message is in-flight (or queued)
+            // causes the same message to be processed twice.
+            return;
         } catch (e) {
             console.log('[VOICE] WebSocket failed, falling back to HTTP:', e);
         }
@@ -1508,7 +1506,7 @@ async function sendConversationMessage() {
     const totalStartTime = performance.now();
     const sttDuration = null; // No STT for typed messages
     
-    // Try WebSocket first (FastAPI mode), fall back to HTTP
+    // Try WebSocket first (FastAPI mode), fall back to HTTP only on exception.
     if (window.wsConversationStart && window.wsConversationSend) {
         console.log('[VOICE] WebSocket available, attempting FastAPI connection...');
         try {
@@ -1518,11 +1516,11 @@ async function sendConversationMessage() {
                 // Clear the input so the user can type the next message immediately.
                 conversationInput.value = '';
                 conversationSendBtn.disabled = true;
-                return;
             }
-            // wsConversationSend returned false (e.g. still streaming or WS closed);
-            // fall through to the REST API so the message is not silently dropped.
-            console.log('[VOICE] wsConversationSend returned false, falling back to HTTP');
+            // Always return here — the WS layer handles queuing and de-duplication.
+            // Falling through to HTTP while a WS message is in-flight (or queued)
+            // causes the same message to be processed twice.
+            return;
         } catch (e) {
             console.log('[VOICE] WebSocket failed, falling back to HTTP:', e);
         }
@@ -1542,16 +1540,14 @@ async function startWebSocketConversation(message, sessionId, speaker, systemPro
         // Start WebSocket connection
         await window.wsConversationStart(sessionId, speaker);
         
-        // Send the message; fall back to HTTP if the send fails
-        const sent = window.wsConversationSend(message);
-        if (!sent) {
-            console.log('[VOICE] wsConversationSend returned false, falling back to HTTP');
-            await sendConversationMessageREST(message, totalStartTime, null);
-        }
+        // Delegate to the WS layer — it handles queuing and de-duplication.
+        // Do NOT fall back to HTTP here: that would send the same message via
+        // both transports simultaneously, producing duplicate AI responses.
+        window.wsConversationSend(message);
         
     } catch (error) {
         console.error('[VOICE] WebSocket conversation error:', error);
-        // Fall back to HTTP
+        // Fall back to HTTP only on a genuine connection failure.
         await sendConversationMessageREST(message, totalStartTime, null);
     }
 }
@@ -1635,16 +1631,16 @@ async function transcribeConversationAudio() {
                 // Pass timing info
                 const totalStartTime = performance.now();
                 
-                // Try WebSocket first (FastAPI mode), fall back to HTTP
+                // Try WebSocket first (FastAPI mode), fall back to HTTP only on exception.
                 if (window.wsConversationStart && window.wsConversationSend) {
                     try {
                         console.log('[VOICE] Using WebSocket for voice response');
                         await window.wsConversationStart(sessionId, ttsSpeaker.value);
-                        const sent = window.wsConversationSend(data.text);
-                        if (sent) {
-                            return;
-                        }
-                        console.log('[VOICE] wsConversationSend returned false, falling back to HTTP');
+                        window.wsConversationSend(data.text);
+                        // Always return here — the WS layer handles queuing and de-duplication.
+                        // Falling through to HTTP while a WS message is in-flight (or queued)
+                        // causes the same message to be processed twice.
+                        return;
                     } catch (e) {
                         console.log('[VOICE] WebSocket failed, falling back to HTTP:', e);
                     }
