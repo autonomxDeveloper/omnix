@@ -1789,6 +1789,10 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
     // Reset stop flag at start of new conversation
     stopAudioRequested = false;
     
+    // Resolve speaker early so it is available for both the WebSocket and HTTP paths
+    const ttsSpeakerEl = document.getElementById('ttsSpeaker');
+    const speaker = ttsSpeakerEl ? ttsSpeakerEl.value : 'default';
+
     // Start timing if not provided
     if (!totalStartTime) {
         totalStartTime = performance.now();
@@ -1936,7 +1940,6 @@ async function sendConversationMessageREST(message, totalStartTime = null, sttDu
     // HTTP fallback
     try {
         // Get combined system prompt (global + voice personality)
-        const speaker = ttsSpeaker.value;
         let systemPrompt = null;
         
         // Use the combined system prompt if available

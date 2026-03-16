@@ -6,6 +6,7 @@ export class AudioOutput {
     this.currentAudio = null;
     this.onPlaybackStart = null;
     this.onPlaybackEnd = null;
+    this.hasPlayedSomething = false;
   }
 
   async initContext() {
@@ -28,7 +29,10 @@ export class AudioOutput {
   async playNext() {
     if (this.playing) return;
     if (this.audioQueue.length === 0) {
-      if (this.onPlaybackEnd) {
+      // Only fire onPlaybackEnd if we actually played something this session.
+      // Avoids a spurious callback before any audio is enqueued.
+      if (this.onPlaybackEnd && this.hasPlayedSomething) {
+        this.hasPlayedSomething = false;
         this.onPlaybackEnd();
       }
       return;
@@ -37,6 +41,7 @@ export class AudioOutput {
     await this.initContext();
 
     this.playing = true;
+    this.hasPlayedSomething = true;
     
     if (this.onPlaybackStart) {
       this.onPlaybackStart();
@@ -87,13 +92,11 @@ export class AudioOutput {
       sampleRate = 24000;
     }
 
-    const fadeLength = Math.min(48, Math.floor(float32.length / 16));
-    
+    // Fade-in only on the very first chunk to avoid a click on playback start.
+    // Subsequent chunks are continuous PCM — applying a fade would create
+    // a volume dip at every chunk boundary.
     if (isFirstChunk) {
-      for (let i = 0; i < fadeLength; i++) {
-        float32[i] *= i / fadeLength;
-      }
-    } else {
+      const fadeLength = Math.min(48, Math.floor(float32.length / 16));
       for (let i = 0; i < fadeLength; i++) {
         float32[i] *= i / fadeLength;
       }
@@ -140,7 +143,7 @@ export class AudioOutput {
       
       if (id === 'fmt ') {
         numChannels = view.getUint16(offset + 10, true);
-        sampleRate = view.getUint16(offset + 12, true);
+        sampleRate = view.getUint32(offset + 12, true);  // sampleRate is 4 bytes, not 2
         bitsPerSample = view.getUint16(offset + 22, true);
         offset += 8 + size;
       } else if (id === 'data') {
@@ -177,6 +180,7 @@ export class AudioOutput {
 
   stop() {
     this.audioQueue = [];
+    this.hasPlayedSomething = false;
     
     if (this.currentAudio) {
       try {
@@ -207,6 +211,7 @@ export class AudioOutput {
     
     this.audioQueue = [];
     this.playing = false;
+    this.hasPlayedSomething = false;
   }
 
   clear() {
