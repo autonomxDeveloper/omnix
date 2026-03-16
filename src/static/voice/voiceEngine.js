@@ -308,7 +308,12 @@ export class VoiceEngine {
     
     if (sentenceMatch) {
       const sentence = sentenceMatch[1];
-      this.ttsBuffer = this.ttsBuffer.slice(sentence.length);
+      // Use sentenceMatch.index so that any leading characters skipped by the
+      // regex (e.g. newlines, which `.+?` never matches) are also consumed.
+      // Without this, `slice(sentence.length)` would leave the matched text at
+      // the start of the buffer and the same sentence would be re-queued on
+      // every subsequent token – producing the "1." infinite-repeat bug.
+      this.ttsBuffer = this.ttsBuffer.slice(sentenceMatch.index + sentence.length);
       this.addToTTSQueue(sentence);
       // Return after flushing one sentence; the clause check below would
       // otherwise examine the freshly-trimmed remainder before the next token
@@ -322,17 +327,60 @@ export class VoiceEngine {
       const clauseMatch = this.ttsBuffer.match(/(.+?[,;])(\s|$)/);
       if (clauseMatch) {
         const clause = clauseMatch[1];
-        this.ttsBuffer = this.ttsBuffer.slice(clause.length);
+        // Same index-aware slice as the sentence match above.
+        this.ttsBuffer = this.ttsBuffer.slice(clauseMatch.index + clause.length);
         this.addToTTSQueue(clause);
       }
     }
   }
 
+  /**
+   * Strip common markdown formatting so the TTS engine speaks clean prose
+   * instead of literal asterisks, hashes, or bracket syntax.
+   */
+  _stripMarkdown(text) {
+    return text
+      // Fenced code blocks (multiline)
+      .replace(/```[\s\S]*?```/g, '')
+      // Inline code
+      .replace(/`([^`]+)`/g, '$1')
+      // Bold + italic (*** or ___)
+      .replace(/\*{3}([^*]+)\*{3}/g, '$1')
+      .replace(/_{3}([^_]+)_{3}/g, '$1')
+      // Bold (** or __)
+      .replace(/\*{2}([^*]+)\*{2}/g, '$1')
+      .replace(/_{2}([^_]+)_{2}/g, '$1')
+      // Numbered list markers (e.g. "1. " "  2. ") – before italic so "1." dot isn't re-matched
+      .replace(/^\s*\d+\.\s+/gm, '')
+      // Bullet list markers ("* ", "- ", "+ ") – before italic so lone * isn't re-matched
+      .replace(/^\s*[-*+]\s+/gm, '')
+      // Headings
+      .replace(/^#{1,6}\s+/gm, '')
+      // Blockquotes
+      .replace(/^\s*>\s*/gm, '')
+      // Italic (* or _) – processed after bold/bullets so remaining * and _ are italic markers
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      // Links – keep display text, drop URL
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      // HTML entities common in LLM output – decode &amp; last to avoid
+      // double-unescaping sequences like &amp;lt; → &lt; → <
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      // Collapse runs of whitespace / newlines into a single space
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   /** Add text to the TTS processing queue and kick off processing if idle. */
   addToTTSQueue(text) {
     if (!text || !text.trim()) return;
-    this.ttsQueue.push(text);
-    console.log(`[VoiceEngine] TTS queued (queue=${this.ttsQueue.length}): "${text.trim().substring(0, 40)}${text.length > 40 ? '…' : ''}"`);
+    const cleaned = this._stripMarkdown(text);
+    if (!cleaned) return;
+    this.ttsQueue.push(cleaned);
+    console.log(`[VoiceEngine] TTS queued (queue=${this.ttsQueue.length}): "${cleaned.substring(0, 40)}${cleaned.length > 40 ? '…' : ''}"`);
     this.processTTSQueue();
   }
 
