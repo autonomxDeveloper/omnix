@@ -61,6 +61,8 @@ export class VoiceEngine {
     // TTS buffer flush thresholds
     this.TTS_FLUSH_LENGTH = 80;
     this.TTS_MAX_BUFFER_LENGTH = 300;
+    // When false, VAD is paused after each turn so the user must type
+    this.alwaysListening = options.alwaysListening !== false;
   }
 
   setState(newState) {
@@ -398,7 +400,58 @@ export class VoiceEngine {
     this.responseFinished = false;
     this.hasStartedSpeaking = false;
     this.setState(VoiceState.LISTENING);
-    this.audioInput.resumeVAD();
+    if (this.alwaysListening) {
+      this.audioInput.resumeVAD();
+    }
+  }
+
+  /**
+   * Toggle whether the engine automatically resumes listening after each AI turn.
+   * When disabled the microphone VAD is paused and the user must type to send messages.
+   */
+  setAlwaysListening(enabled) {
+    this.alwaysListening = enabled;
+    if (this.state === VoiceState.LISTENING) {
+      if (enabled) {
+        this.audioInput.resumeVAD();
+      } else {
+        this.audioInput.pauseVAD();
+      }
+    }
+  }
+
+  /**
+   * Fetch a greeting from the server and play it as the first AI turn.
+   * Transitions through AI_SPEAKING → LISTENING (respecting alwaysListening).
+   */
+  async playGreeting() {
+    try {
+      const response = await fetch('/api/conversation/greeting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ speaker: this.speaker })
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        if (data.text) {
+          this.onAIResponse(data.text);
+        }
+
+        if (data.audio) {
+          this.setState(VoiceState.AI_SPEAKING);
+          this.audioInput.pauseVAD();
+          this.ignoreAudioChunks = false;
+          // Mark response finished so _tryCompleteResponse() can fire once playback ends
+          this.responseFinished = true;
+          const audioData = this.base64ToArrayBuffer(data.audio);
+          this.audioOutput.enqueue(audioData);
+          // onPlaybackEnded → _tryCompleteResponse → LISTENING (+ resumeVAD if alwaysListening)
+        }
+      }
+    } catch (e) {
+      console.warn('[VoiceEngine] Greeting failed:', e.message || e);
+    }
   }
 
   interrupt() {
@@ -406,7 +459,9 @@ export class VoiceEngine {
       console.log('[VoiceEngine] Interrupt requested');
       this._cancelOngoingResponse();
       this.setState(VoiceState.LISTENING);
-      this.audioInput.resumeVAD();
+      if (this.alwaysListening) {
+        this.audioInput.resumeVAD();
+      }
     }
   }
 
