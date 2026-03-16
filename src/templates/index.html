@@ -281,85 +281,6 @@
                     <div class="typing-dot"></div>
                     <div class="typing-dot"></div>
                 </div>
-
-                    <!-- Conversation Mode Chat View -->
-                <div class="conversation-chat-view" id="conversationChatView">
-                    <div class="conversation-chat-header">
-                        <div class="mode-indicator">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                                <path d="M12 2C8.13 2 5 5.13 5 9C5 11.38 6.19 13.47 8 14.74V17" stroke="currentColor" stroke-width="2"/>
-                                <path d="M12 14.74C13.81 13.47 15 11.38 15 9C15 5.13 11.87 2 8 2" stroke="currentColor" stroke-width="2"/>
-                                <path d="M12 17V21M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                            </svg>
-                            <span>Voice Mode</span>
-                        </div>
-                        <button id="toggleMessagesBtn" class="toggle-messages-btn" title="Toggle message display">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                                <path d="M21 15C21 15.5304 20.7893 16.0391 20.4142 16.4142C20.0391 16.7893 19.5304 17 19 17H7L3 21V5C3 4.46957 3.21071 3.96086 3.58579 3.58579C3.96086 3.21071 4.46957 3 5 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V15Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                            </svg>
-                            <span>Messages</span>
-                        </button>
-                        <button id="alwaysListeningBtn" class="always-listening-btn" title="Toggle always listening - when ON, automatically listens after AI responds">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                                <path d="M12 1C10.9 1 10 1.9 10 3V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V3C14 1.9 13.1 1 12 1Z" stroke="currentColor" stroke-width="2"/>
-                                <path d="M19 10V12C19 15.866 15.866 19 12 19C8.13401 19 5 15.866 5 12V10" stroke="currentColor" stroke-width="2"/>
-                                <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                            </svg>
-                            <span class="auto-label">Auto: OFF</span>
-                        </button>
-                        <button id="exitConversationBtn" class="exit-conversation-btn" title="Exit Voice Mode">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                                <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                            </svg>
-                            Exit
-                        </button>
-                    </div>
-
-                    <div class="conversation-messages" id="conversationMessages"></div>
-
-                    <!-- Circle Indicator in Middle -->
-                    <div class="conversation-circle-indicator" id="circleIndicator">
-                        <div class="circle-indicator">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                                <path d="M12 2C8.13 2 5 5.13 5 9C5 11.38 6.19 13.47 8 14.74V17" stroke="currentColor" stroke-width="2"/>
-                                <path d="M12 14.74C13.81 13.47 15 11.38 15 9C15 5.13 11.87 2 8 2" stroke="currentColor" stroke-width="2"/>
-                                <path d="M12 17V21M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                            </svg>
-                        </div>
-                        <!-- Tap to Talk Button (shown when auto is OFF) -->
-                        <button id="tapToTalkBtn" class="tap-to-talk-btn" title="Tap to talk">
-                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
-                                <path d="M12 1C10.9 1 10 1.9 10 3V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V3C14 1.9 13.1 1 12 1Z" stroke="currentColor" stroke-width="2"/>
-                                <path d="M19 10V12C19 15.866 15.866 19 12 19C8.13401 19 5 15.866 5 12V10" stroke="currentColor" stroke-width="2"/>
-                                <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                            </svg>
-                            <span>Tap to Talk</span>
-                        </button>
-                    </div>
-
-                    <div class="conversation-status-message" id="conversationStatusMessage" style="display: none;">
-                        Ready to chat
-                    </div>
-
-                    <div class="conversation-input-container" id="conversationInputContainer">
-                        <div class="conversation-input-wrapper">
-                            <button id="conversationMicBtn" class="conversation-mic-btn" title="Hold to speak">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                                    <path d="M12 1C10.9 1 10 1.9 10 3V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V3C14 1.9 13.1 1 12 1Z" stroke="currentColor" stroke-width="2"/>
-                                    <path d="M19 10V12C19 15.866 15.866 19 12 19C8.13401 19 5 15.866 5 12V10" stroke="currentColor" stroke-width="2"/>
-                                    <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                                </svg>
-                            </button>
-                            <input type="text" id="conversationInput" class="message-input" placeholder="Type or hold mic to speak...">
-                            <button id="conversationSendBtn" class="send-btn" disabled>
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                                    <path d="M22 2L11 13" stroke="currentColor" stroke-width="2"/>
-                                    <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2"/>
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-                </div>
             </main>
 
 
@@ -410,6 +331,85 @@
                 </div>
             </footer>
             <div id="attachmentPreview" class="attachment-preview"></div>
+
+            <!-- Voice Mode View - separate from chat, replaces chat+footer when active -->
+            <div class="conversation-chat-view" id="conversationChatView">
+                <div class="conversation-chat-header">
+                    <div class="mode-indicator">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                            <path d="M12 2C8.13 2 5 5.13 5 9C5 11.38 6.19 13.47 8 14.74V17" stroke="currentColor" stroke-width="2"/>
+                            <path d="M12 14.74C13.81 13.47 15 11.38 15 9C15 5.13 11.87 2 8 2" stroke="currentColor" stroke-width="2"/>
+                            <path d="M12 17V21M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        <span>Voice Mode</span>
+                    </div>
+                    <button id="toggleMessagesBtn" class="toggle-messages-btn" title="Toggle message display">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                            <path d="M21 15C21 15.5304 20.7893 16.0391 20.4142 16.4142C20.0391 16.7893 19.5304 17 19 17H7L3 21V5C3 4.46957 3.21071 3.96086 3.58579 3.58579C3.96086 3.21071 4.46957 3 5 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V15Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        <span>Messages</span>
+                    </button>
+                    <button id="alwaysListeningBtn" class="always-listening-btn" title="Toggle always listening - when ON, automatically listens after AI responds">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                            <path d="M12 1C10.9 1 10 1.9 10 3V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V3C14 1.9 13.1 1 12 1Z" stroke="currentColor" stroke-width="2"/>
+                            <path d="M19 10V12C19 15.866 15.866 19 12 19C8.13401 19 5 15.866 5 12V10" stroke="currentColor" stroke-width="2"/>
+                            <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        <span class="auto-label">Auto: OFF</span>
+                    </button>
+                    <button id="exitConversationBtn" class="exit-conversation-btn" title="Exit Voice Mode">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                            <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        Exit
+                    </button>
+                </div>
+
+                <div class="conversation-messages" id="conversationMessages"></div>
+
+                <!-- Circle Indicator in Middle -->
+                <div class="conversation-circle-indicator" id="circleIndicator">
+                    <div class="circle-indicator">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                            <path d="M12 2C8.13 2 5 5.13 5 9C5 11.38 6.19 13.47 8 14.74V17" stroke="currentColor" stroke-width="2"/>
+                            <path d="M12 14.74C13.81 13.47 15 11.38 15 9C15 5.13 11.87 2 8 2" stroke="currentColor" stroke-width="2"/>
+                            <path d="M12 17V21M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                    </div>
+                    <!-- Tap to Talk Button (shown when auto is OFF) -->
+                    <button id="tapToTalkBtn" class="tap-to-talk-btn" title="Tap to talk">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                            <path d="M12 1C10.9 1 10 1.9 10 3V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V3C14 1.9 13.1 1 12 1Z" stroke="currentColor" stroke-width="2"/>
+                            <path d="M19 10V12C19 15.866 15.866 19 12 19C8.13401 19 5 15.866 5 12V10" stroke="currentColor" stroke-width="2"/>
+                            <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        <span>Tap to Talk</span>
+                    </button>
+                </div>
+
+                <div class="conversation-status-message" id="conversationStatusMessage" style="display: none;">
+                    Ready to chat
+                </div>
+
+                <div class="conversation-input-container" id="conversationInputContainer">
+                    <div class="conversation-input-wrapper">
+                        <button id="conversationMicBtn" class="conversation-mic-btn" title="Hold to speak">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                                <path d="M12 1C10.9 1 10 1.9 10 3V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V3C14 1.9 13.1 1 12 1Z" stroke="currentColor" stroke-width="2"/>
+                                <path d="M19 10V12C19 15.866 15.866 19 12 19C8.13401 19 5 15.866 5 12V10" stroke="currentColor" stroke-width="2"/>
+                                <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                        </button>
+                        <input type="text" id="conversationInput" class="message-input" placeholder="Type or hold mic to speak...">
+                        <button id="conversationSendBtn" class="send-btn" disabled>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                                <path d="M22 2L11 13" stroke="currentColor" stroke-width="2"/>
+                                <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
         </main>
     </div>
 

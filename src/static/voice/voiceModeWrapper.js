@@ -13,15 +13,8 @@ export function initNewVoiceMode() {
   newVoiceModeInitialized = true;
   
   const conversationToggle = document.getElementById('conversationToggle');
-  const conversationControls = document.getElementById('conversationControls');
-  const conversationStatus = document.getElementById('conversationStatus');
-  const conversationStatusMessage = document.getElementById('conversationStatusMessage');
-  const circleIndicator = document.getElementById('circleIndicator');
-  const conversationMessages = document.getElementById('conversationMessages');
-  const conversationInput = document.getElementById('conversationInput');
-  const conversationMicBtn = document.getElementById('conversationMicBtn');
   const exitConversationBtn = document.getElementById('exitConversationBtn');
-  const tapToTalkBtn = document.getElementById('tapToTalkBtn');
+  const toggleMessagesBtn = document.getElementById('toggleMessagesBtn');
   
   if (!conversationToggle) {
     console.warn('[NewVoiceMode] conversationToggle not found');
@@ -46,6 +39,18 @@ export function initNewVoiceMode() {
       await stopNewVoiceMode();
     });
   }
+
+  if (toggleMessagesBtn) {
+    toggleMessagesBtn.addEventListener('click', () => {
+      const conversationMessages = document.getElementById('conversationMessages');
+      if (!conversationMessages) return;
+      const nowHidden = conversationMessages.classList.toggle('hidden');
+      const label = toggleMessagesBtn.querySelector('span');
+      if (label) {
+        label.textContent = nowHidden ? 'Show Messages' : 'Messages';
+      }
+    });
+  }
 }
 
 async function startNewVoiceMode() {
@@ -56,21 +61,19 @@ async function startNewVoiceMode() {
   console.log('[NewVoiceMode] Starting...');
   voiceModeActive = true;
 
-  const conversationControls = document.getElementById('conversationControls');
-  const conversationStatus = document.getElementById('conversationStatus');
   const conversationToggle = document.getElementById('conversationToggle');
   const conversationStatusMessage = document.getElementById('conversationStatusMessage');
   const circleIndicator = document.getElementById('circleIndicator');
   const conversationChatView = document.getElementById('conversationChatView');
-  const welcomeMessage = document.getElementById('welcomeMessage');
-  const messagesContainer = document.getElementById('messagesContainer');
+  const chatContainer = document.getElementById('chatContainer');
+  const inputArea = document.querySelector('.input-area');
 
-  if (conversationControls) {
-    conversationControls.style.display = 'block';
+  if (chatContainer) {
+    chatContainer.style.display = 'none';
   }
 
-  if (conversationStatus) {
-    conversationStatus.textContent = '🎙️ Voice Mode Active';
+  if (inputArea) {
+    inputArea.style.display = 'none';
   }
 
   if (conversationToggle) {
@@ -79,14 +82,6 @@ async function startNewVoiceMode() {
 
   if (conversationChatView) {
     conversationChatView.classList.add('active');
-  }
-
-  if (welcomeMessage) {
-    welcomeMessage.classList.add('hidden');
-  }
-
-  if (messagesContainer) {
-    messagesContainer.style.display = 'none';
   }
 
   if (circleIndicator) {
@@ -135,21 +130,19 @@ async function stopNewVoiceMode() {
     voiceEngine = null;
   }
 
-  const conversationControls = document.getElementById('conversationControls');
-  const conversationStatus = document.getElementById('conversationStatus');
   const conversationToggle = document.getElementById('conversationToggle');
   const conversationStatusMessage = document.getElementById('conversationStatusMessage');
   const circleIndicator = document.getElementById('circleIndicator');
   const conversationChatView = document.getElementById('conversationChatView');
-  const welcomeMessage = document.getElementById('welcomeMessage');
-  const messagesContainer = document.getElementById('messagesContainer');
+  const chatContainer = document.getElementById('chatContainer');
+  const inputArea = document.querySelector('.input-area');
 
-  if (conversationControls) {
-    conversationControls.style.display = 'none';
+  if (chatContainer) {
+    chatContainer.style.display = '';
   }
 
-  if (conversationStatus) {
-    conversationStatus.textContent = 'Voice Mode';
+  if (inputArea) {
+    inputArea.style.display = '';
   }
 
   if (conversationToggle) {
@@ -158,14 +151,6 @@ async function stopNewVoiceMode() {
 
   if (conversationChatView) {
     conversationChatView.classList.remove('active');
-  }
-
-  if (welcomeMessage) {
-    welcomeMessage.classList.remove('hidden');
-  }
-
-  if (messagesContainer) {
-    messagesContainer.style.display = 'flex';
   }
 
   if (circleIndicator) {

@@ -1819,16 +1819,23 @@ body::before {
 .conversation-chat-view {
     display: none;
     flex-direction: column;
-    height: 100%;
+    flex: 1;
+    overflow: hidden;
     width: 100%;
     max-width: 800px;
     margin: 0 auto;
     padding: 0 20px;
     position: relative;
+    background: var(--bg-primary);
 }
 
 .conversation-chat-view.active {
     display: flex;
+}
+
+/* Always show the input bar inside the active voice view */
+.conversation-chat-view.active .conversation-input-container {
+    display: block;
 }
 
 /* Chat header in conversation mode */
