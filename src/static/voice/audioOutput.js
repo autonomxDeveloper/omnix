@@ -23,6 +23,7 @@ export class AudioOutput {
 
   enqueue(chunk) {
     this.audioQueue.push(chunk);
+    console.log(`[AudioOutput] Enqueued chunk (queue=${this.audioQueue.length})`);
     this.playNext();
   }
 
@@ -32,6 +33,7 @@ export class AudioOutput {
       // Only fire onPlaybackEnd if we actually played something this session.
       // Avoids a spurious callback before any audio is enqueued.
       if (this.onPlaybackEnd && this.hasPlayedSomething) {
+        console.log('[AudioOutput] Playback queue empty – firing onPlaybackEnd');
         this.hasPlayedSomething = false;
         this.onPlaybackEnd();
       }
@@ -46,6 +48,7 @@ export class AudioOutput {
     if (this.onPlaybackStart) {
       this.onPlaybackStart();
     }
+    console.log(`[AudioOutput] Playing next chunk (${this.audioQueue.length} remaining in queue)`);
 
     const chunk = this.audioQueue.shift();
     
