@@ -1359,12 +1359,20 @@ async function switchToConversationView() {
     // Enable auto-listening only after the greeting audio has fully finished.
     // TTSQueue.enqueueAudio is fire-and-forget, so we poll assistantSpeaking
     // rather than awaiting a promise.
+    //
+    // Guard: only start listening once per greeting. If the LLM responds while
+    // the timer is still polling (assistantSpeaking bounces true → false again
+    // after the LLM turn), we must NOT call toggleAlwaysListening() a second
+    // time — that would toggle it OFF and stop the listening loop.
     function waitForGreetingThenListen() {
         if (window.VoiceState && window.VoiceState.assistantSpeaking) {
             setTimeout(waitForGreetingThenListen, 100);
-        } else {
+        } else if (!alwaysListening) {
+            // Only start if not already listening. If alwaysListening is
+            // already true a previous call already started it; do nothing.
             toggleAlwaysListening();
         }
+        // If alwaysListening is already true the polling loop stops here.
     }
     // Give the greeting a moment to actually start before polling
     setTimeout(waitForGreetingThenListen, 200);
