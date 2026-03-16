@@ -7,7 +7,7 @@
 
 // Add message to chat
 function addMessage(role, content, thinking = null, tokens = null, tokensPerSec = '', attachments = null) {
-    console.log('[DEBUG] addMessage called with attachments:', attachments);
+
     if (role === 'assistant') role = 'ai';
 
     const messageDiv = document.createElement('div');
