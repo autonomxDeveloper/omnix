@@ -51,6 +51,32 @@ export function initNewVoiceMode() {
       }
     });
   }
+
+  const conversationInput = document.getElementById('conversationInput');
+  const conversationSendBtn = document.getElementById('conversationSendBtn');
+
+  if (conversationInput) {
+    // Enable/disable send button based on input content
+    conversationInput.addEventListener('input', () => {
+      if (conversationSendBtn) {
+        conversationSendBtn.disabled = !conversationInput.value.trim();
+      }
+    });
+
+    // Submit on Enter (without Shift)
+    conversationInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        submitConversationInput();
+      }
+    });
+  }
+
+  if (conversationSendBtn) {
+    conversationSendBtn.addEventListener('click', () => {
+      submitConversationInput();
+    });
+  }
 }
 
 async function startNewVoiceMode() {
@@ -107,6 +133,7 @@ async function startNewVoiceMode() {
     sessionId: window.sessionId || null,
     onStateChange: handleStateChange,
     onTranscript: handleTranscript,
+    onUserMessage: handleUserMessage,
     onAIResponse: handleAIResponse,
     onError: handleError
   });
@@ -240,6 +267,74 @@ function handleTranscript(text) {
   const conversationInput = document.getElementById('conversationInput');
   if (conversationInput) {
     conversationInput.value = text;
+    // Keep send button in sync with interim transcript text
+    const conversationSendBtn = document.getElementById('conversationSendBtn');
+    if (conversationSendBtn) {
+      conversationSendBtn.disabled = !text.trim();
+    }
+  }
+}
+
+function submitConversationInput() {
+  const conversationInput = document.getElementById('conversationInput');
+  if (!conversationInput) return;
+
+  const text = conversationInput.value.trim();
+  if (!text) return;
+
+  console.log('[NewVoiceMode] Submitting typed message:', text);
+
+  conversationInput.value = '';
+  const conversationSendBtn = document.getElementById('conversationSendBtn');
+  if (conversationSendBtn) {
+    conversationSendBtn.disabled = true;
+  }
+
+  if (voiceEngine) {
+    voiceEngine.sendTypedMessage(text);
+  } else {
+    console.warn('[NewVoiceMode] No voice engine active, cannot send message');
+  }
+}
+
+function handleUserMessage(text) {
+  const conversationMessages = document.getElementById('conversationMessages');
+  if (!conversationMessages) return;
+
+  // Clear the input field: for voice-originated messages this removes the
+  // interim transcript that was shown there; for typed messages it's a no-op
+  // because submitConversationInput() already cleared it.
+  const conversationInput = document.getElementById('conversationInput');
+  if (conversationInput) {
+    conversationInput.value = '';
+  }
+  const conversationSendBtn = document.getElementById('conversationSendBtn');
+  if (conversationSendBtn) {
+    conversationSendBtn.disabled = true;
+  }
+
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'conversation-message user';
+
+  const avatarDiv = document.createElement('div');
+  avatarDiv.className = 'conversation-message-avatar';
+  avatarDiv.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M20 21V19C20 17.9391 19.5786 16.9217 18.8284 16.1716C18.0783 15.4214 17.0609 15 16 15H8C6.93913 15 5.92172 15.4214 5.17157 16.1716C4.42143 16.9217 4 17.9391 4 19V21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="7" r="4" stroke="currentColor" stroke-width="2"/></svg>`;
+
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'conversation-message-content';
+  contentDiv.textContent = text;
+
+  msgDiv.appendChild(avatarDiv);
+  msgDiv.appendChild(contentDiv);
+  conversationMessages.appendChild(msgDiv);
+  conversationMessages.scrollTop = conversationMessages.scrollHeight;
+
+  // Auto-show messages panel so user sees their message
+  conversationMessages.classList.remove('hidden');
+  const toggleMessagesBtn = document.getElementById('toggleMessagesBtn');
+  if (toggleMessagesBtn) {
+    const label = toggleMessagesBtn.querySelector('span');
+    if (label) label.textContent = 'Messages';
   }
 }
 
