@@ -173,6 +173,13 @@ def start_tts_worker():
                         text = session.tts_queue.get_nowait()
                         if text and len(text.strip()) >= 3:
                             _generate_tts_stream(session, text.strip())
+                        else:
+                            # Chunk is too short to speak (e.g. a bare emoji).
+                            # Still decrement the pending counter so the drain
+                            # loop in _process_conversation doesn't hang until
+                            # the 60-second timeout waiting for it to reach zero.
+                            if session.tts_chunks_pending > 0:
+                                session.tts_chunks_pending -= 1
                     except queue.Empty:
                         continue
                     except Exception as e:
