@@ -298,11 +298,21 @@ function _onWorkletDrained() {
     if (typeof window.triggerTTSCooldown === 'function') {
         window.triggerTTSCooldown();
     }
+
+    // If always-listening mode is active, show the listening indicator so
+    // the user knows the system is ready for their next voice turn.
+    // Otherwise fall back to a generic "Ready to chat" idle state.
+    const alwaysListeningBtn = document.getElementById('alwaysListeningBtn');
+    const isAutoListening = alwaysListeningBtn && alwaysListeningBtn.classList.contains('active');
+
     if (typeof updateConversationStatus === 'function') {
-        updateConversationStatus('Ready to chat');
+        updateConversationStatus(
+            isAutoListening ? '🎤 Auto-listening - Speak now!' : 'Ready to chat',
+            isAutoListening ? 'listening' : ''
+        );
     }
     if (typeof showCircleIndicator === 'function') {
-        showCircleIndicator('idle');
+        showCircleIndicator(isAutoListening ? 'listening' : 'idle');
     }
 }
 

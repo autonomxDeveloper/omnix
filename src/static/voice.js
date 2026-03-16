@@ -229,6 +229,11 @@ function handleSttMessage(data) {
                 console.log('[STT] Final transcript:', finalText, '- sending to LLM');
                 lastLLMRequestTime = Date.now();
                 processVADTranscript(finalText, null);
+                // Clean up the STT audio pipeline so that detectVoiceActivity
+                // can trigger a new startStreamingStt() for the next turn.
+                // Without this, window.VoiceState.recording stays true and the
+                // VAD loop never restarts, stopping conversation after 1 turn.
+                stopStreamingStt();
             } else if (finalText && finalText.trim()) {
                 console.log('[STT] Transcript too short ("' + finalText + '"), ignoring');
                 resetToListening();
