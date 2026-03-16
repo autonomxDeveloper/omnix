@@ -109,6 +109,7 @@ async function startNewVoiceMode() {
 
   voiceEngine = new VoiceEngine({
     speaker: speaker,
+    sessionId: window.sessionId || null,
     onStateChange: handleStateChange,
     onTranscript: handleTranscript,
     onAIResponse: handleAIResponse,
