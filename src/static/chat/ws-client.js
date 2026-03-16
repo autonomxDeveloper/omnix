@@ -14,6 +14,15 @@ const START_BUFFER_SAMPLES = 6000;
 
 let pendingMessages = [];
 
+// Single-flight guard: only one message may be in-flight at a time.
+// Set when a message is sent or queued; cleared when the response is done/error/stopped.
+let inFlightMessageId = null;
+
+// Maximum number of samples that may be buffered for playback (~5 seconds at 48 kHz).
+// Exceeding this cap causes the backlog to be dropped so the engine doesn't fall
+// 40+ seconds behind the live audio stream.
+const MAX_BUFFER_SAMPLES = 48000 * 5;
+
 let pendingBuffer = new Float32Array(0);
 let nativeSampleRate = 48000;
 
@@ -165,6 +174,21 @@ function pushAudioData(samples) {
     if (!pcmNode || !wsAudioContext || !samples || samples.length === 0) return;
 
     samples = upsample24toNative(samples);
+
+    // Drop the backlog if the buffer has grown beyond the cap (~5 seconds).
+    // This prevents a multi-second drain wait when TTS streams faster than playback.
+    if (_workletSamplesQueued > MAX_BUFFER_SAMPLES) {
+        console.warn(`[AUDIO] Buffer cap reached (${_workletSamplesQueued} samples), clearing backlog`);
+        if (pcmNode && pcmNode.port) {
+            pcmNode.port.postMessage({ type: 'reset' });
+        }
+        _workletSamplesQueued = 0;
+        pendingBuffer = new Float32Array(0);
+        startupBuffer = [];
+        bufferedSamples = 0;
+        playbackStarted = false;
+        return;
+    }
 
     if (!playbackStarted) {
         startupBuffer.push(samples);
@@ -322,23 +346,30 @@ async function connectWebSocket(sessionIdVal, speakerVal) {
     currentSpeaker = speakerVal;
 
     if (ws && isConnected) {
-        console.log('[WS-CLIENT] Already connected, reusing connection');
-        // Reset worklet and all playback state for the new turn.
-        // Without this, playbackStarted stays true from the prior turn,
-        // causing the pre-buffer to be skipped and audio to underrun immediately.
-        if (pcmNode && pcmNode.port) {
-            pcmNode.port.postMessage({ type: 'reset' });
+        // Validate the socket is truly OPEN before reusing it.
+        if (ws.readyState !== WebSocket.OPEN) {
+            console.log('[WS-CLIENT] Stale connection (readyState=' + ws.readyState + '), reconnecting');
+            isConnected = false;
+            ws = null;
+        } else {
+            console.log('[WS-CLIENT] Already connected, reusing connection');
+            // Reset worklet and all playback state for the new turn.
+            // Without this, playbackStarted stays true from the prior turn,
+            // causing the pre-buffer to be skipped and audio to underrun immediately.
+            if (pcmNode && pcmNode.port) {
+                pcmNode.port.postMessage({ type: 'reset' });
+            }
+            playbackStarted = false;
+            startupBuffer = [];
+            bufferedSamples = 0;
+            pendingBuffer = new Float32Array(0);
+            ws.send(JSON.stringify({
+                type: 'config',
+                session_id: wsSessionId,
+                speaker: currentSpeaker
+            }));
+            return Promise.resolve();
         }
-        playbackStarted = false;
-        startupBuffer = [];
-        bufferedSamples = 0;
-        pendingBuffer = new Float32Array(0);
-        ws.send(JSON.stringify({
-            type: 'config',
-            session_id: wsSessionId,
-            speaker: currentSpeaker
-        }));
-        return Promise.resolve();
     }
 
     if (pcmNode && pcmNode.port) {
@@ -351,13 +382,23 @@ async function connectWebSocket(sessionIdVal, speakerVal) {
 
     await initAudioWorklet();
 
-    ws = new WebSocket(WS_URL);
-    ws.binaryType = "arraybuffer";
+    // Capture socket in a local variable so closures below always reference the
+    // correct instance even if `ws` is reassigned by a concurrent connection attempt.
+    const socket = new WebSocket(WS_URL);
+    socket.binaryType = "arraybuffer";
+    ws = socket;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+        // Guard against stale callbacks from a superseded connection attempt.
+        if (ws !== socket) {
+            if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+                socket.close();
+            }
+            return;
+        }
         console.log("[WS-CLIENT] Connected");
         isConnected = true;
-        ws.send(JSON.stringify({ type: "config", session_id: wsSessionId, speaker: currentSpeaker }));
+        socket.send(JSON.stringify({ type: "config", session_id: wsSessionId, speaker: currentSpeaker }));
         
         // Send any queued messages
         while (pendingMessages.length > 0) {
@@ -368,12 +409,12 @@ async function connectWebSocket(sessionIdVal, speakerVal) {
                 currentAssistantDiv = null;
                 responseComplete = false;
                 _audioGate = true;
-                ws.send(JSON.stringify({ type: 'text', text: msg.text }));
+                socket.send(JSON.stringify({ type: 'text', text: msg.text }));
             }
         }
     };
 
-    ws.onmessage = async (event) => {
+    socket.onmessage = async (event) => {
         if (event.data instanceof ArrayBuffer) {
             handleAudioData(event.data);
             return;
@@ -382,14 +423,16 @@ async function connectWebSocket(sessionIdVal, speakerVal) {
         handleMessage(msg);
     };
 
-    ws.onerror = (err) => console.error("[WS-CLIENT] Error:", err);
-    ws.onclose = () => {
-        console.log("[WS-CLIENT] Disconnected");
-        isConnected = false;
-        isSpeaking = false;
-        // Make sure VAD can resume even if the socket drops mid-response
-        if (window.VoiceState && window.VoiceState.assistantSpeaking) {
-            stopAudio();
+    socket.onerror = (err) => console.error("[WS-CLIENT] Error:", err);
+    socket.onclose = () => {
+        if (ws === socket) {
+            console.log("[WS-CLIENT] Disconnected");
+            isConnected = false;
+            isSpeaking = false;
+            // Make sure VAD can resume even if the socket drops mid-response
+            if (window.VoiceState && window.VoiceState.assistantSpeaking) {
+                stopAudio();
+            }
         }
     };
 }
@@ -520,6 +563,7 @@ async function handleMessage(msg) {
             
             responseComplete = true;
             window.VoiceState.llmStreaming = false;
+            inFlightMessageId = null;  // release the single-flight guard
             
             if (window.VoiceState.tokenBuffer.length > 0) {
                 sendTextToTTS(window.VoiceState.tokenBuffer);
@@ -571,6 +615,7 @@ async function handleMessage(msg) {
             break;
             
         case 'stopped':
+            inFlightMessageId = null;  // release the single-flight guard
             stopAudio();
             currentAssistantDiv = null;
             streamedContent = '';
@@ -578,6 +623,7 @@ async function handleMessage(msg) {
             
         case 'error':
             console.error('[WS-CLIENT] Server error:', msg.error);
+            inFlightMessageId = null;  // release the single-flight guard on error
             stopAudio();
             // Only trigger rate-limit cooldown for actual rate-limit errors,
             // not for empty/spurious error frames which just add unnecessary dead time
@@ -634,13 +680,14 @@ window.wsConversationStart = async function(sessionIdVal, speakerVal) {
         firstAudioTime = 0;
         _audioGate = true;
         
-        // Clear any stale llmStreaming flag left over from a previous turn that
-        // ended via timeout or error rather than a clean 'done' message.  This
-        // prevents the guard in wsConversationSend from incorrectly blocking
-        // the very first send of a new turn.
+        // Clear any stale llmStreaming flag and in-flight guard left over from a
+        // previous turn that ended via timeout or error rather than a clean 'done'
+        // message.  This prevents the guards in wsConversationSend from incorrectly
+        // blocking the very first send of a new turn.
         if (window.VoiceState) {
             window.VoiceState.llmStreaming = false;
         }
+        inFlightMessageId = null;
         
         playbackStarted = false;
         startupBuffer = [];
@@ -657,15 +704,28 @@ window.wsConversationStart = async function(sessionIdVal, speakerVal) {
 
 
 window.wsConversationSend = function(text) {
+    // Single-flight guard: reject if a message is already being processed.
+    if (inFlightMessageId) {
+        console.warn('[WS-CLIENT] Message already in flight, dropping duplicate send');
+        return false;
+    }
+
     if (window.VoiceState.llmStreaming) {
         console.log('[WS-CLIENT] LLM already streaming, preventing request storm');
         return false;
     }
+
+    // Generate a unique ID for this in-flight message.
+    inFlightMessageId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9);
     
     if (!ws || !isConnected) {
         console.log('[WS-CLIENT] Queuing message, waiting for connection');
         pendingMessages.push({ type: 'text', text: text });
-        return false;
+        // Return true: the message is queued and WILL be sent when the socket opens.
+        // Returning true prevents callers from incorrectly falling back to HTTP.
+        return true;
     }
     
     try {
@@ -700,6 +760,7 @@ window.wsConversationSend = function(text) {
         return true;
     } catch (e) {
         console.error('[WS-CLIENT] Send failed:', e);
+        inFlightMessageId = null;  // clear guard so the next attempt can proceed
         return false;
     }
 };
@@ -726,6 +787,7 @@ window.wsConversationDisconnect = function() {
     }
     isConnected = false;
     isSpeaking = false;
+    inFlightMessageId = null;  // release the single-flight guard
     stopAudio();
 };
 
@@ -739,6 +801,7 @@ function cancelLLMStream() {
         
         window.VoiceState.llmStreaming = false;
         window.VoiceState.tokenBuffer = "";
+        inFlightMessageId = null;  // release the single-flight guard
         
         console.log('[WS-CLIENT] LLM stream cancelled');
     } catch (e) {
