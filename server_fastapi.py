@@ -59,6 +59,7 @@ class ConversationSession:
     stop_requested: bool = False
     tts_active: bool = False
     tts_chunks_pending: int = 0
+    tts_abort: bool = False  # abort current TTS generation without ending the session
     loop: Optional[asyncio.AbstractEventLoop] = None
 
 
@@ -250,7 +251,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                 append_silence=False,
                 max_new_tokens=180
             ):
-                if session.stop_requested:
+                if session.stop_requested or session.tts_abort:
                     print(f"[TTS] Stop requested mid-stream after {raw_chunks_received} raw chunks")
                     break
                     
@@ -469,6 +470,10 @@ async def _process_conversation(session: ConversationSession, user_text: str):
         await session.websocket.send_json({"type": "error", "error": "No LLM provider"})
         return
     
+    # Reset per-turn abort flag so a previous drain timeout doesn't block the
+    # TTS worker for this new turn.
+    session.tts_abort = False
+    
     try:
         # Get conversation history
         messages = []
@@ -579,6 +584,18 @@ async def _process_conversation(session: ConversationSession, user_text: str):
         while not session.stop_requested:
             if time.time() > drain_timeout:
                 print("[CONV] TTS drain timeout — sending done anyway")
+                # Signal the TTS worker to abort the current generation so it
+                # stops sending audio frames after we send 'done'. Without this
+                # the worker continues to stream audio to the WebSocket while
+                # the client has already moved on, wasting bandwidth.
+                session.tts_abort = True
+                # Drain the pending queue so no further chunks are picked up.
+                try:
+                    while not session.tts_queue.empty():
+                        session.tts_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                session.tts_chunks_pending = 0
                 break
             queue_empty = session.tts_queue.empty()
             tts_done = not session.tts_active

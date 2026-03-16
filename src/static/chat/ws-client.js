@@ -616,6 +616,14 @@ window.wsConversationStart = async function(sessionIdVal, speakerVal) {
         firstAudioTime = 0;
         _audioGate = true;
         
+        // Clear any stale llmStreaming flag left over from a previous turn that
+        // ended via timeout or error rather than a clean 'done' message.  This
+        // prevents the guard in wsConversationSend from incorrectly blocking
+        // the very first send of a new turn.
+        if (window.VoiceState) {
+            window.VoiceState.llmStreaming = false;
+        }
+        
         playbackStarted = false;
         startupBuffer = [];
         bufferedSamples = 0;
