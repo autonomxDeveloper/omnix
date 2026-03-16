@@ -61,8 +61,19 @@ export class VoiceEngine {
     // TTS buffer flush thresholds
     this.TTS_FLUSH_LENGTH = 80;
     this.TTS_MAX_BUFFER_LENGTH = 300;
+    // Minimum buffer length before a comma/semicolon clause is sent to TTS.
+    // Keeps clause segments long enough to sound natural while still reducing
+    // first-audio latency compared to waiting for sentence-ending punctuation.
+    this.TTS_CLAUSE_FLUSH_MIN_LENGTH = 40;
     // When false, VAD is paused after each turn so the user must type
     this.alwaysListening = options.alwaysListening !== false;
+    // Monotonically incrementing counter – bumped on every cancel/interrupt so
+    // in-flight HTTP TTS callbacks from the previous turn know they are stale
+    // and discard their audio without touching engine state.
+    this._ttsRequestId = 0;
+    // Monotonically incrementing counter for LLM requests so stale onLLMToken /
+    // onLLMEnd callbacks from a cancelled request are silently ignored.
+    this._llmRequestId = 0;
   }
 
   setState(newState) {
@@ -119,6 +130,9 @@ export class VoiceEngine {
     this.ttsProcessing = false;
     this.ignoreAudioChunks = false;
     this.responseFinished = false;
+    // Invalidate all in-flight HTTP TTS and LLM callbacks
+    this._ttsRequestId++;
+    this._llmRequestId++;
   }
 
   onSpeechStart() {
@@ -138,6 +152,9 @@ export class VoiceEngine {
       this.audioOutput.stop();
       this.llm.cancel();
       this.audioInput.resumeVAD();
+      // Invalidate any in-flight HTTP TTS / stale LLM callbacks
+      this._ttsRequestId++;
+      this._llmRequestId++;
       
       this.setState(VoiceState.INTERRUPTED);
       this.accumulatedResponse = '';
@@ -233,21 +250,34 @@ export class VoiceEngine {
     this.onUserMessage(text.trim());
     this.setState(VoiceState.THINKING);
     this.audioInput.pauseVAD();
-    this.ignoreAudioChunks = false;
+    // ignoreAudioChunks is set to true by _cancelOngoingResponse above (if called);
+    // onLLMStart will reset it to false once the new LLM request begins so that
+    // legitimate audio from the new turn is played while any still-in-flight HTTP
+    // TTS requests from the old turn are discarded via _ttsRequestId checks.
     this.llm.sendMessage(text.trim(), this.sessionId, this.speaker);
   }
 
   onLLMStart() {
+    // Capture the current generation counter so onLLMToken / onLLMEnd can
+    // confirm they belong to this request and not a cancelled predecessor.
+    // _llmRequestId itself is only incremented by cancel/interrupt so that
+    // stale callbacks from an aborted request always see a mismatch.
+    this._activeLLMId = this._llmRequestId;
+    console.log(`[VoiceEngine] LLM started (id=${this._activeLLMId})`);
     this.accumulatedResponse = '';
     // Allow audio chunks from this new response; clear any stale-chunk guard
     this.ignoreAudioChunks = false;
   }
 
   onLLMToken(token) {
+    // Discard tokens from a cancelled/replaced LLM request
+    if (this._activeLLMId !== this._llmRequestId) return;
+
     if (!this.hasStartedSpeaking) {
       this.hasStartedSpeaking = true;
       this.setState(VoiceState.AI_SPEAKING);
       this.audioInput.pauseVAD();
+      console.log(`[VoiceEngine] LLM first token received (id=${this._activeLLMId})`);
     }
     
     this.accumulatedResponse += token;
@@ -271,12 +301,30 @@ export class VoiceEngine {
       return;
     }
     
+    // Flush on sentence-ending punctuation for natural speech boundaries.
+    // Also flush on comma/semicolon when the buffer is long enough to produce
+    // a good-sounding clip – this reduces first-audio latency for long sentences.
     const sentenceMatch = this.ttsBuffer.match(/(.+?[.!?])(\s|$)/);
     
     if (sentenceMatch) {
       const sentence = sentenceMatch[1];
       this.ttsBuffer = this.ttsBuffer.slice(sentence.length);
       this.addToTTSQueue(sentence);
+      // Return after flushing one sentence; the clause check below would
+      // otherwise examine the freshly-trimmed remainder before the next token
+      // arrives, potentially splitting it into a very short clip.
+      return;
+    }
+
+    // Flush on clause boundary (comma/semicolon) when the buffer has a reasonable
+    // amount of text – avoids synthesising single words which sound choppy.
+    if (this.ttsBuffer.length > this.TTS_CLAUSE_FLUSH_MIN_LENGTH) {
+      const clauseMatch = this.ttsBuffer.match(/(.+?[,;])(\s|$)/);
+      if (clauseMatch) {
+        const clause = clauseMatch[1];
+        this.ttsBuffer = this.ttsBuffer.slice(clause.length);
+        this.addToTTSQueue(clause);
+      }
     }
   }
 
@@ -284,6 +332,7 @@ export class VoiceEngine {
   addToTTSQueue(text) {
     if (!text || !text.trim()) return;
     this.ttsQueue.push(text);
+    console.log(`[VoiceEngine] TTS queued (queue=${this.ttsQueue.length}): "${text.trim().substring(0, 40)}${text.length > 40 ? '…' : ''}"`);
     this.processTTSQueue();
   }
 
@@ -294,16 +343,22 @@ export class VoiceEngine {
 
     const text = this.ttsQueue.shift();
     this.ttsProcessing = true;
+    // Capture the current TTS generation ID so in-flight HTTP requests can
+    // detect whether they have been superseded by a cancel/interrupt.
+    const requestId = this._ttsRequestId;
 
     if (this.ttsConnected && this.tts.ws && this.tts.ws.readyState === WebSocket.OPEN) {
       this.tts.sendText(text, this.speaker);
       // ttsProcessing cleared in onTTSDone when server responds
     } else {
-      await this._sendTTSHTTP(text);
+      await this._sendTTSHTTP(text, requestId);
     }
   }
 
-  async _sendTTSHTTP(text) {
+  async _sendTTSHTTP(text, requestId) {
+    const startTime = Date.now();
+    const preview = text.trim().substring(0, 40);
+    console.log(`[VoiceEngine] TTS HTTP [req=${requestId}] starting: "${preview}${text.length > 40 ? '…' : ''}"`);
     try {
       const response = await fetch('/api/tts', {
         method: 'POST',
@@ -314,17 +369,29 @@ export class VoiceEngine {
       const data = await response.json();
       
       if (data.success && data.audio) {
-        const audioData = this.base64ToArrayBuffer(data.audio);
-        if (!this.ignoreAudioChunks) {
+        const elapsed = Date.now() - startTime;
+        if (requestId !== this._ttsRequestId) {
+          // A cancel/interrupt happened while this request was in-flight.
+          // Discard the audio to prevent old speech from bleeding into the
+          // next turn and causing the "repeating chunks" symptom.
+          console.log(`[VoiceEngine] TTS HTTP [req=${requestId}] discarding stale audio (${elapsed}ms, current req=${this._ttsRequestId})`);
+        } else {
+          console.log(`[VoiceEngine] TTS HTTP [req=${requestId}] enqueuing audio (${elapsed}ms)`);
+          const audioData = this.base64ToArrayBuffer(data.audio);
           this.audioOutput.enqueue(audioData);
         }
       }
     } catch (e) {
       console.error('[VoiceEngine] HTTP TTS failed:', e);
     } finally {
-      this.ttsProcessing = false;
-      this.processTTSQueue();       // Process next in queue
-      this._tryCompleteResponse();  // Check if turn is fully done
+      if (requestId === this._ttsRequestId) {
+        // Only update engine state for the current, non-cancelled request.
+        this.ttsProcessing = false;
+        this.processTTSQueue();       // Process next in queue
+        this._tryCompleteResponse();  // Check if turn is fully done
+      } else {
+        console.log(`[VoiceEngine] TTS HTTP [req=${requestId}] stale finally – skipping state update (current req=${this._ttsRequestId})`);
+      }
     }
   }
   
@@ -338,6 +405,12 @@ export class VoiceEngine {
   }
 
   onLLMEnd() {
+    // Discard completion from a cancelled/replaced LLM request
+    if (this._activeLLMId !== this._llmRequestId) {
+      console.log(`[VoiceEngine] onLLMEnd ignored – stale LLM id=${this._activeLLMId} (current=${this._llmRequestId})`);
+      return;
+    }
+    console.log(`[VoiceEngine] LLM complete (id=${this._activeLLMId}), flushing ${this.ttsBuffer.length} chars remaining in TTS buffer`);
     if (this.ttsBuffer.trim()) {
       this.addToTTSQueue(this.ttsBuffer);
       this.ttsBuffer = '';
@@ -382,6 +455,11 @@ export class VoiceEngine {
     this.ttsBuffer = '';
     this.responseFinished = false;
     this.hasStartedSpeaking = false;
+    // Invalidate any in-flight HTTP TTS and stale LLM callbacks so they
+    // do not enqueue audio or alter state for the upcoming new turn.
+    this._ttsRequestId++;
+    this._llmRequestId++;
+    console.log(`[VoiceEngine] Cancelled ongoing response (ttsReqId=${this._ttsRequestId}, llmReqId=${this._llmRequestId})`);
   }
 
   /**
@@ -397,6 +475,7 @@ export class VoiceEngine {
     if (this.ttsProcessing || this.ttsQueue.length > 0) return;
     if (this.audioOutput.queueLength() > 0 || this.audioOutput.isPlaying()) return;
 
+    console.log('[VoiceEngine] Response fully complete – transitioning to LISTENING');
     this.responseFinished = false;
     this.hasStartedSpeaking = false;
     this.setState(VoiceState.LISTENING);
