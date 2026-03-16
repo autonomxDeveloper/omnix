@@ -12,6 +12,7 @@ export class VoiceEngine {
     this.onTranscript = options.onTranscript || (() => {});  // kept for external use
     this._onTranscriptCallback = options.onTranscript || (() => {});
     this.onAIResponse = options.onAIResponse || (() => {});
+    this.onUserMessage = options.onUserMessage || (() => {});
     this.onError = options.onError || console.error;
 
     this.state = VoiceState.IDLE;
@@ -207,8 +208,31 @@ export class VoiceEngine {
     }
 
     console.log('[VoiceEngine] Final transcript:', text);
-    
+
+    this.onUserMessage(text);
     this.llm.sendMessage(text, this.sessionId, this.speaker);
+  }
+
+  /**
+   * Send a typed (text) message directly to the LLM, bypassing STT.
+   * Interrupts any ongoing AI speech, displays the user message, and starts
+   * the LLM/TTS pipeline just like a voice transcript would.
+   */
+  sendTypedMessage(text) {
+    if (!text || !text.trim()) return;
+
+    console.log('[VoiceEngine] Typed message:', text.trim());
+
+    // Interrupt any ongoing AI speech/generation
+    if (this.state === VoiceState.AI_SPEAKING || this.state === VoiceState.THINKING) {
+      this._cancelOngoingResponse();
+    }
+
+    this.onUserMessage(text.trim());
+    this.setState(VoiceState.THINKING);
+    this.audioInput.pauseVAD();
+    this.ignoreAudioChunks = false;
+    this.llm.sendMessage(text.trim(), this.sessionId, this.speaker);
   }
 
   onLLMStart() {
@@ -341,6 +365,24 @@ export class VoiceEngine {
   }
 
   /**
+   * Cancel any ongoing LLM/TTS pipeline and reset generation state, without
+   * changing the VoiceState or touching the microphone.  Shared by
+   * sendTypedMessage(), interrupt(), and interruptAI().
+   */
+  _cancelOngoingResponse() {
+    this.llm.cancel();
+    this.tts.cancel();
+    this.audioOutput.stop();
+    this.ttsQueue = [];
+    this.ttsProcessing = false;
+    this.ignoreAudioChunks = true;
+    this.accumulatedResponse = '';
+    this.ttsBuffer = '';
+    this.responseFinished = false;
+    this.hasStartedSpeaking = false;
+  }
+
+  /**
    * Central "are we done?" check.
    * Transitions to LISTENING only when ALL of the following are true:
    *   1. LLM has finished streaming (responseFinished)
@@ -362,17 +404,7 @@ export class VoiceEngine {
   interrupt() {
     if (this.state === VoiceState.AI_SPEAKING || this.state === VoiceState.THINKING) {
       console.log('[VoiceEngine] Interrupt requested');
-      
-      this.ttsQueue = [];
-      this.ttsProcessing = false;
-      this.ignoreAudioChunks = true;
-      this.audioOutput.stop();
-      this.tts.cancel();
-      this.llm.cancel();
-      this.accumulatedResponse = '';
-      this.ttsBuffer = '';
-      this.responseFinished = false;
-      
+      this._cancelOngoingResponse();
       this.setState(VoiceState.LISTENING);
       this.audioInput.resumeVAD();
     }
@@ -388,22 +420,9 @@ export class VoiceEngine {
     if (this.interrupting) return;
     
     this.interrupting = true;
-    
-    this.llm.cancel();
-
-    this.tts.cancel();
-    this.audioOutput.stopAll();
-
-    this.ttsQueue = [];
-    this.ttsProcessing = false;
-    this.ignoreAudioChunks = true;
-    this.ttsBuffer = '';
-    this.responseFinished = false;
-    this.hasStartedSpeaking = false;
-
+    this._cancelOngoingResponse();
     this.setState(VoiceState.LISTENING);
     this.audioInput.resumeVAD();
-
     this.interrupting = false;
   }
 
