@@ -1,8 +1,9 @@
-import { VoiceEngine, VoiceState } from './voiceEngine.js?v=2';
+import { VoiceEngine, VoiceState } from './voiceEngine.js?v=5';
 
 let voiceEngine = null;
 let voiceModeActive = false;
 let newVoiceModeInitialized = false;
+let alwaysListening = true;
 
 const VAD_SILENCE_THRESHOLD = 0.008;
 const VAD_SILENCE_TIMEOUT = 400;
@@ -15,6 +16,7 @@ export function initNewVoiceMode() {
   const conversationToggle = document.getElementById('conversationToggle');
   const exitConversationBtn = document.getElementById('exitConversationBtn');
   const toggleMessagesBtn = document.getElementById('toggleMessagesBtn');
+  const alwaysListeningBtn = document.getElementById('alwaysListeningBtn');
   
   if (!conversationToggle) {
     console.warn('[NewVoiceMode] conversationToggle not found');
@@ -70,6 +72,10 @@ export function initNewVoiceMode() {
         submitConversationInput();
       }
     });
+  }
+
+  if (alwaysListeningBtn) {
+    alwaysListeningBtn.addEventListener('click', toggleAlwaysListening);
   }
 
   if (conversationSendBtn) {
@@ -131,6 +137,7 @@ async function startNewVoiceMode() {
   voiceEngine = new VoiceEngine({
     speaker: speaker,
     sessionId: window.sessionId || null,
+    alwaysListening: alwaysListening,
     onStateChange: handleStateChange,
     onTranscript: handleTranscript,
     onUserMessage: handleUserMessage,
@@ -140,7 +147,9 @@ async function startNewVoiceMode() {
 
   try {
     await voiceEngine.start();
+    updateAlwaysListeningButton();
     updateUIState(VoiceState.LISTENING);
+    await voiceEngine.playGreeting();
     console.log('[NewVoiceMode] Started successfully');
   } catch (error) {
     console.error('[NewVoiceMode] Failed to start:', error);
@@ -192,12 +201,40 @@ async function stopNewVoiceMode() {
     conversationStatusMessage.style.display = 'none';
   }
 
+  // Reset always listening to default for next session
+  alwaysListening = true;
+  updateAlwaysListeningButton();
+
   console.log('[NewVoiceMode] Stopped');
 }
 
 function handleStateChange(state) {
   console.log('[NewVoiceMode] State changed:', state);
   updateUIState(state);
+}
+
+function toggleAlwaysListening() {
+  alwaysListening = !alwaysListening;
+  updateAlwaysListeningButton();
+
+  if (voiceEngine) {
+    voiceEngine.setAlwaysListening(alwaysListening);
+  }
+
+  // Refresh status message to reflect the new mode
+  if (voiceEngine) {
+    updateUIState(voiceEngine.getState());
+  }
+}
+
+function updateAlwaysListeningButton() {
+  const alwaysListeningBtn = document.getElementById('alwaysListeningBtn');
+  if (!alwaysListeningBtn) return;
+  alwaysListeningBtn.classList.toggle('active', alwaysListening);
+  const label = alwaysListeningBtn.querySelector('.auto-label');
+  if (label) {
+    label.textContent = alwaysListening ? 'Auto: ON' : 'Auto: OFF';
+  }
 }
 
 function updateUIState(state) {
@@ -216,7 +253,7 @@ function updateUIState(state) {
         case VoiceState.IDLE:
           innerCircle.classList.add('idle');
           if (conversationStatusMessage) {
-            conversationStatusMessage.textContent = '🎤 Ready to listen';
+            conversationStatusMessage.textContent = alwaysListening ? '🎤 Ready to listen' : '💬 Type to chat';
             conversationStatusMessage.className = 'conversation-status-message listening';
           }
           break;
