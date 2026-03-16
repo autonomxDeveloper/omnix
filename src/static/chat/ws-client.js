@@ -666,8 +666,8 @@ window.wsConversationSend = function(text) {
         window.VoiceState.tokenBuffer = '';
         
         ws.send(JSON.stringify({
-            type: 'chat_stream',
-            message: text
+            type: 'text',
+            text: text
         }));
         
         window.VoiceState.llmStreaming = true;
