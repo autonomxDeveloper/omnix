@@ -1076,8 +1076,13 @@ async function processVADTranscript(text, sttDuration = null) {
         try {
             console.log('[VOICE] Using WebSocket for voice response');
             await window.wsConversationStart(sessionId, ttsSpeaker.value);
-            window.wsConversationSend(text);
-            return;
+            const sent = window.wsConversationSend(text);
+            if (sent) {
+                return;
+            }
+            // wsConversationSend returned false; fall through to REST so the
+            // voice turn is not silently dropped.
+            console.log('[VOICE] wsConversationSend returned false, falling back to HTTP');
         } catch (e) {
             console.log('[VOICE] WebSocket failed, falling back to HTTP:', e);
         }
@@ -1503,8 +1508,16 @@ async function sendConversationMessage() {
         console.log('[VOICE] WebSocket available, attempting FastAPI connection...');
         try {
             await window.wsConversationStart(sessionId, ttsSpeaker.value);
-            window.wsConversationSend(message);
-            return;
+            const sent = window.wsConversationSend(message);
+            if (sent) {
+                // Clear the input so the user can type the next message immediately.
+                conversationInput.value = '';
+                conversationSendBtn.disabled = true;
+                return;
+            }
+            // wsConversationSend returned false (e.g. still streaming or WS closed);
+            // fall through to the REST API so the message is not silently dropped.
+            console.log('[VOICE] wsConversationSend returned false, falling back to HTTP');
         } catch (e) {
             console.log('[VOICE] WebSocket failed, falling back to HTTP:', e);
         }
@@ -1524,8 +1537,12 @@ async function startWebSocketConversation(message, sessionId, speaker, systemPro
         // Start WebSocket connection
         await window.wsConversationStart(sessionId, speaker);
         
-        // Send the message
-        window.wsConversationSend(message);
+        // Send the message; fall back to HTTP if the send fails
+        const sent = window.wsConversationSend(message);
+        if (!sent) {
+            console.log('[VOICE] wsConversationSend returned false, falling back to HTTP');
+            await sendConversationMessageREST(message, totalStartTime, null);
+        }
         
     } catch (error) {
         console.error('[VOICE] WebSocket conversation error:', error);
@@ -1618,8 +1635,11 @@ async function transcribeConversationAudio() {
                     try {
                         console.log('[VOICE] Using WebSocket for voice response');
                         await window.wsConversationStart(sessionId, ttsSpeaker.value);
-                        window.wsConversationSend(data.text);
-                        return;
+                        const sent = window.wsConversationSend(data.text);
+                        if (sent) {
+                            return;
+                        }
+                        console.log('[VOICE] wsConversationSend returned false, falling back to HTTP');
                     } catch (e) {
                         console.log('[VOICE] WebSocket failed, falling back to HTTP:', e);
                     }

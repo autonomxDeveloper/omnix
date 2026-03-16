@@ -548,6 +548,14 @@ async function handleMessage(msg) {
                 updateConversationStatus('Ready to chat');
             }
             
+            // Re-enable the conversation send button so the user can type the
+            // next message immediately after this turn completes.
+            const convSendBtn = document.getElementById('conversationSendBtn');
+            const convInput = document.getElementById('conversationInput');
+            if (convSendBtn && convInput) {
+                convSendBtn.disabled = !convInput.value.trim();
+            }
+            
             currentAssistantDiv = null;
             streamedContent = '';
             break;
