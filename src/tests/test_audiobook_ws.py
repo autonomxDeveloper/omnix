@@ -190,6 +190,7 @@ class TestAudioOutputBuffering:
 
         assert "this.minBufferSize" in content
         assert "this.audioQueue.length < this.minBufferSize" in content
+        assert "_shouldWaitForBuffer" in content, "Must have helper method"
 
     def test_flushing_reset_on_stop(self):
         content = _read_source("src/static/voice/audioOutput.js")

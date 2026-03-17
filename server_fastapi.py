@@ -2311,8 +2311,7 @@ def _generate_audiobook_tts_pcm(text: str, speaker: str = "default",
                 return
 
             if result and result.get('success'):
-                import base64 as _b64
-                raw = _b64.b64decode(result.get('audio', ''))
+                raw = base64.b64decode(result.get('audio', ''))
                 yield raw
 
 
