@@ -789,6 +789,8 @@ let streamingAudioElement = null;
 let streamingShouldShowFullControls = false;
 let voiceProfileSaveTimer = null;
 const AUDIO_EDGE_FADE_MS = 8;
+const MIN_FADE_SAMPLES = 8;
+const MAX_FADE_DIVISOR = 4;
 
 // Combined audio for playback controls
 let combinedAudioBlob = null;
@@ -1548,7 +1550,7 @@ function createWavBufferFromBase64(base64Pcm, sampleRate) {
 
 function applyEdgeFadeToPcmBytes(pcmBytes, sampleRate) {
     const totalSamples = Math.floor(pcmBytes.length / 2);
-    if (totalSamples < 8) return pcmBytes;
+    if (totalSamples < MIN_FADE_SAMPLES) return pcmBytes;
 
     const int16 = new Int16Array(totalSamples);
     const byteView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
@@ -1557,8 +1559,8 @@ function applyEdgeFadeToPcmBytes(pcmBytes, sampleRate) {
     }
 
     const fadeSamples = Math.min(
-        Math.max(8, Math.floor(sampleRate * (AUDIO_EDGE_FADE_MS / 1000))),
-        Math.floor(totalSamples / 4)
+        Math.max(MIN_FADE_SAMPLES, Math.floor(sampleRate * (AUDIO_EDGE_FADE_MS / 1000))),
+        Math.floor(totalSamples / MAX_FADE_DIVISOR)
     );
 
     for (let i = 0; i < fadeSamples; i++) {
