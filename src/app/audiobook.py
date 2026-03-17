@@ -94,11 +94,10 @@ def generate():
     avail = set(shared.custom_voices.keys())
     
     def gen():
-        # Pre-flight: check TTS server is reachable before processing segments
-        try:
-            requests.get(f"{shared.TTS_BASE_URL}/health", timeout=5)
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            yield f"data: {json.dumps({'type': 'error', 'error': 'TTS server is not running. Please start the TTS server and try again.', 'code': 'TTS_UNAVAILABLE'})}\n\n"
+        # Use the configured TTS provider (same as /api/tts endpoint)
+        tts_provider = shared.get_tts_provider()
+        if not tts_provider:
+            yield f"data: {json.dumps({'type': 'error', 'error': 'No TTS provider available. Please check your TTS settings.', 'code': 'TTS_UNAVAILABLE'})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
         
@@ -113,14 +112,21 @@ def generate():
             
             vid = shared.custom_voices.get(v_name, {}).get('voice_clone_id') if v_name else None
             
-            # Pass speaker name so audio.py can resolve it
-            req = {"text": shared.remove_emojis(text), "language": "en", "speaker": v_name}
-            if vid: req["voice_clone_id"] = vid
+            final_speaker = vid if vid else v_name
             
             try:
-                r = requests.post(f"{shared.TTS_BASE_URL}/tts", json=req, timeout=60)
-                if r.status_code == 200 and r.json().get('success'):
-                    yield f"data: {json.dumps({'type': 'audio', 'audio': r.json().get('audio'), 'sample_rate': r.json().get('sample_rate'), 'segment_index': i, 'text': text[:100], 'voice_used': v_name})}\n\n"
+                if hasattr(tts_provider, 'generate_tts'):
+                    result = tts_provider.generate_tts(text=shared.remove_emojis(text), speaker=final_speaker, language="en")
+                elif hasattr(tts_provider, 'generate_audio'):
+                    result = tts_provider.generate_audio(text=shared.remove_emojis(text), speaker=final_speaker, language="en")
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'error': 'TTS provider missing generate method.'})}\n\n"
+                    break
+                
+                if result and result.get('success'):
+                    yield f"data: {json.dumps({'type': 'audio', 'audio': result.get('audio', ''), 'sample_rate': result.get('sample_rate', 24000), 'segment_index': i, 'text': text[:100], 'voice_used': v_name})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'error': result.get('error', 'TTS generation failed')})}\n\n"
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
                 yield f"data: {json.dumps({'type': 'error', 'error': 'TTS server is not running. Please start the TTS server and try again.', 'code': 'TTS_UNAVAILABLE'})}\n\n"
                 break
