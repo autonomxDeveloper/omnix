@@ -1,11 +1,18 @@
 
 
+import os
 import re
+import sys
 import json
 import time
 import requests
 from flask import Blueprint, request, jsonify, Response
 import app.shared as shared
+
+# Make the src/audiobook package importable from within src/app/
+_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
 audiobook_bp = Blueprint('audiobook', __name__)
 
@@ -127,3 +134,188 @@ def detect():
         else: info['suggested_voice'] = next((v for v in avail if info['gender'] in v.lower()), avail[0] if avail else None)
         
     return jsonify({"success": True, "speakers": speakers, "available_voices": avail})
+
+
+# ---------------------------------------------------------------------------
+# Shared LLM helper (same pattern as podcast.py)
+# ---------------------------------------------------------------------------
+
+def _llm_generate(prompt: str) -> str:
+    """Call the configured LLM and return its text response."""
+    cfg = shared.get_provider_config()
+    payload = {
+        "model": cfg.get("model", "local-model"),
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {"Content-Type": "application/json"}
+    if cfg["provider"] in ("openrouter", "cerebras"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    url = (
+        f"{cfg['base_url']}/chat/completions"
+        if cfg["provider"] == "openrouter"
+        else f"{cfg['base_url']}/v1/chat/completions"
+    )
+    r = requests.post(url, json=payload, headers=headers, timeout=120)
+    if r.status_code == 200:
+        return r.json()["choices"][0]["message"]["content"]
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# AI Structuring endpoint
+# ---------------------------------------------------------------------------
+
+@audiobook_bp.route('/api/audiobook/ai-structure', methods=['POST'])
+def ai_structure():
+    """Structure raw text into a directed audiobook script using the LLM."""
+    data = request.get_json() or {}
+    text = data.get("text", "")
+    title = data.get("title", "")
+    book_id = data.get("book_id", "default")
+
+    if not text.strip():
+        return jsonify({"success": False, "error": "No text provided"}), 400
+
+    try:
+        from audiobook.ai.ai_structuring_service import AIStructuringService
+        from audiobook.voice.character_normalizer import CharacterNormalizer
+        from audiobook.voice.character_voice_memory import CharacterVoiceMemory
+        from audiobook.voice.voice_assignment import VoiceAssignment
+
+        normalizer = CharacterNormalizer()
+        memory = CharacterVoiceMemory(
+            book_id,
+            base_dir=os.path.join(shared.DATA_DIR, "audiobooks"),
+        )
+        avail_voices = list(shared.custom_voices.keys())
+
+        service = AIStructuringService(llm_fn=_llm_generate)
+        structured = service.structure(text, title=title)
+
+        # Normalize speaker names and attach persistent voices
+        assignment = VoiceAssignment(
+            available_voices=avail_voices,
+            memory=memory,
+            normalizer=normalizer,
+        )
+        for seg in structured.get("segments", []):
+            for line in seg.get("script", []):
+                line["speaker"] = normalizer.normalize(line.get("speaker", ""))
+                line["voice"] = assignment.get_voice(line["speaker"])
+
+        # Update character list after normalization
+        all_speakers = list({
+            line["speaker"]
+            for seg in structured.get("segments", [])
+            for line in seg.get("script", [])
+        })
+        structured["characters"] = [
+            {"id": re.sub(r'\W+', '_', s.lower()), "name": s}
+            for s in all_speakers
+        ]
+
+        return jsonify({"success": True, "structured_script": structured})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# AI Direction endpoint
+# ---------------------------------------------------------------------------
+
+@audiobook_bp.route('/api/audiobook/direct', methods=['POST'])
+def direct():
+    """Apply AI narration direction (pacing, emotion, emphasis) to a script."""
+    data = request.get_json() or {}
+    script = data.get("script", [])
+    book_id = data.get("book_id", "default")
+
+    if not script:
+        return jsonify({"success": False, "error": "No script provided"}), 400
+
+    try:
+        from audiobook.director.audiobook_director import AudiobookDirector
+        from audiobook.voice.character_normalizer import CharacterNormalizer
+        from audiobook.voice.character_voice_memory import CharacterVoiceMemory
+        from audiobook.voice.voice_assignment import VoiceAssignment
+
+        normalizer = CharacterNormalizer()
+        memory = CharacterVoiceMemory(
+            book_id,
+            base_dir=os.path.join(shared.DATA_DIR, "audiobooks"),
+        )
+        avail_voices = list(shared.custom_voices.keys())
+        assignment = VoiceAssignment(
+            available_voices=avail_voices,
+            memory=memory,
+            normalizer=normalizer,
+        )
+
+        director = AudiobookDirector(llm_fn=_llm_generate)
+
+        # Normalise speaker names before directing
+        normalised_script = [
+            {**line, "speaker": normalizer.normalize(line.get("speaker", ""))}
+            for line in script
+        ]
+
+        directed = director.direct(normalised_script)
+
+        # Attach voices
+        for line in directed:
+            line["voice"] = assignment.get_voice(line["speaker"])
+
+        return jsonify({"success": True, "directed_script": directed})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Voice profile CRUD endpoints
+# ---------------------------------------------------------------------------
+
+@audiobook_bp.route('/api/audiobook/books/<book_id>/voices', methods=['GET'])
+def get_voice_profiles(book_id: str):
+    """Return all stored voice profiles for a book."""
+    try:
+        from audiobook.voice.character_voice_memory import CharacterVoiceMemory
+        memory = CharacterVoiceMemory(
+            book_id,
+            base_dir=os.path.join(shared.DATA_DIR, "audiobooks"),
+        )
+        return jsonify({
+            "success": True,
+            "book_id": book_id,
+            "voices": memory.all_profiles(),
+            "available_voices": list(shared.custom_voices.keys()),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@audiobook_bp.route('/api/audiobook/books/<book_id>/voices', methods=['PUT'])
+def update_voice_profiles(book_id: str):
+    """Bulk-update voice profiles for a book (used by the Voice Panel UI)."""
+    data = request.get_json() or {}
+    voices = data.get("voices", {})
+
+    if not isinstance(voices, dict):
+        return jsonify({"success": False, "error": "voices must be an object"}), 400
+
+    try:
+        from audiobook.voice.character_voice_memory import CharacterVoiceMemory
+        memory = CharacterVoiceMemory(
+            book_id,
+            base_dir=os.path.join(shared.DATA_DIR, "audiobooks"),
+        )
+        for character, profile in voices.items():
+            if isinstance(profile, str):
+                # Allow shorthand: {"Alice": "young_female"}
+                memory.set_voice(character, profile)
+            elif isinstance(profile, dict):
+                memory.update_profile(character, profile)
+        return jsonify({"success": True, "voices": memory.all_profiles()})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
