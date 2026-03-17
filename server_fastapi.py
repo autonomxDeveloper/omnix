@@ -1094,6 +1094,389 @@ async def delete_podcast_episode(ep_id: str):
     return {"success": True}
 
 
+# ============== AUDIOBOOK ENDPOINTS ==============
+import re as _re
+
+
+# ---------------------------------------------------------------------------
+# Inline dialogue parsing helpers (mirrors app/audiobook.py but avoids a
+# Flask import so server_fastapi.py can run without the Flask dependency).
+# ---------------------------------------------------------------------------
+_FEMALE_NAMES = {'sofia', 'emma', 'olivia', 'ava', 'mia', 'charlotte', 'amelia', 'harper', 'evelyn', 'sarah', 'laura', 'kate', 'jessica', 'ciri', 'her', 'anaka'}
+_MALE_NAMES = {'morgan', 'james', 'john', 'robert', 'michael', 'david', 'richard', 'joseph', 'thomas', 'charles', 'nate', 'inigo', 'jinx'}
+
+
+def _detect_gender(name):
+    if not name:
+        return 'neutral'
+    nl = name.lower().strip()
+    if any(w in nl for w in ['ms.', 'mrs.', 'she', 'her', 'woman']):
+        return 'female'
+    if any(w in nl for w in ['mr.', 'he', 'him', 'man']):
+        return 'male'
+    if any(f in nl for f in _FEMALE_NAMES):
+        return 'female'
+    if any(m in nl for m in _MALE_NAMES):
+        return 'male'
+    return 'neutral'
+
+
+def _parse_dialogue(text):
+    segments = []
+    speech_verbs = r'(?:said|asked|replied|whispered|shouted|murmured|answered|added)'
+    thought_pattern = _re.compile(r'([A-Z][A-Za-z\'\-]+)\s+(?:thought|wondered)\s*[,:]*\s*["\']([^"\']+)["\']', _re.IGNORECASE)
+
+    paragraphs = _re.split(r'\n\s*\n', text)
+    if len(paragraphs) <= 2 and '\n' in text:
+        paragraphs = [p for p in text.split('\n') if p.strip()]
+
+    last_speaker = None
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        para_dialogues = []
+        thoughts = [t[1] for t in thought_pattern.findall(para)]
+
+        for m in _re.finditer(r'([A-Z][A-Za-z\'\-]+)\s*:\s*(.+)$', para, _re.MULTILINE):
+            if m.group(2).strip() and not any(t in m.group(2) for t in thoughts):
+                para_dialogues.append({'speaker': m.group(1).strip(), 'text': m.group(2).strip(), 'start': m.start()})
+                last_speaker = m.group(1).strip()
+
+        if not para_dialogues:
+            for m in _re.finditer(r'["\']([^"\']+)["\']\s*,?\s*(?:' + speech_verbs + r')\s+([A-Z][A-Za-z\'\-]+)', para, _re.IGNORECASE):
+                if m.group(1).strip() and not any(t in m.group(1) for t in thoughts):
+                    para_dialogues.append({'speaker': m.group(2).strip(), 'text': m.group(1).strip(), 'start': m.start()})
+                    last_speaker = m.group(2).strip()
+
+        if not para_dialogues:
+            for m in _re.finditer(r'["\']([^"\']+)["\']', para):
+                if m.group(1).strip() and not any(t in m.group(1) for t in thoughts):
+                    para_dialogues.append({'speaker': last_speaker or 'Narrator', 'text': m.group(1).strip(), 'start': m.start()})
+
+        if para_dialogues:
+            para_dialogues.sort(key=lambda x: x.get('start', 0))
+            if para_dialogues[0]['start'] > 5:
+                pre = _re.sub(r'["\'].*?["\']', '', para[:para_dialogues[0]['start']]).strip()
+                if pre:
+                    segments.append({'speaker': 'Narrator', 'text': pre})
+            for d in para_dialogues:
+                segments.append({'speaker': d['speaker'], 'text': d['text']})
+        else:
+            if '"' not in para and "'" not in para:
+                segments.append({'speaker': 'Narrator', 'text': para})
+
+    return segments
+
+
+def _llm_generate_audiobook(prompt: str) -> str:
+    """Call the configured LLM and return its text response (audiobook helper)."""
+    cfg = shared.get_provider_config()
+    payload = {
+        "model": cfg.get("model", "local-model"),
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {"Content-Type": "application/json"}
+    if cfg["provider"] in ("openrouter", "cerebras"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    url = (
+        f"{cfg['base_url']}/chat/completions"
+        if cfg["provider"] == "openrouter"
+        else f"{cfg['base_url']}/v1/chat/completions"
+    )
+    r = requests.post(url, json=payload, headers=headers, timeout=120)
+    if r.status_code == 200:
+        return r.json()["choices"][0]["message"]["content"]
+    return ""
+
+
+@app.post("/api/audiobook/upload")
+async def audiobook_upload(request: Request):
+    """Parse uploaded text or file into dialogue segments."""
+    content_type = request.headers.get("content-type", "")
+    text = None
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        file = form.get("file")
+        if file:
+            raw = await file.read()
+            if file.filename and file.filename.endswith(".pdf"):
+                import PyPDF2, io
+                reader = PyPDF2.PdfReader(io.BytesIO(raw))
+                text = "".join(p.extract_text() + "\n" for p in reader.pages)
+            else:
+                text = raw.decode("utf-8")
+        if not text:
+            text = form.get("text", "")
+    else:
+        data = await request.json()
+        text = data.get("text", "")
+
+    if not text:
+        return JSONResponse({"success": False, "error": "No text"}, status_code=400)
+
+    segs = _parse_dialogue(text)
+    return {
+        "success": True,
+        "segments": segs,
+        "speakers": list({s["speaker"] for s in segs}),
+    }
+
+
+@app.post("/api/audiobook/generate")
+async def audiobook_generate(request: Request):
+    """Generate audiobook audio via SSE stream."""
+    from fastapi.responses import StreamingResponse
+
+    data = await request.json()
+    segments = data.get("segments", [])
+    v_map = data.get("voice_mapping", {})
+    def_v = data.get("default_voices", {})
+    avail = set(shared.custom_voices.keys())
+
+    async def gen():
+        for i, seg in enumerate(segments):
+            speaker = seg.get("speaker")
+            text = seg.get("text", "")
+            if not text.strip():
+                continue
+
+            v_name = v_map.get(speaker)
+            if not v_name:
+                g = _detect_gender(speaker)
+                if g == "female":
+                    v_name = def_v.get("female")
+                elif g == "male":
+                    v_name = def_v.get("male")
+                else:
+                    v_name = def_v.get("narrator")
+
+            vid = (
+                shared.custom_voices.get(v_name, {}).get("voice_clone_id")
+                if v_name
+                else None
+            )
+
+            req_body = {
+                "text": shared.remove_emojis(text),
+                "language": "en",
+                "speaker": v_name,
+            }
+            if vid:
+                req_body["voice_clone_id"] = vid
+
+            try:
+                r = requests.post(
+                    f"{shared.TTS_BASE_URL}/tts", json=req_body, timeout=60
+                )
+                if r.status_code == 200 and r.json().get("success"):
+                    yield (
+                        f"data: {json.dumps({'type': 'audio', 'audio': r.json().get('audio'), 'sample_rate': r.json().get('sample_rate'), 'segment_index': i, 'text': text[:100], 'voice_used': v_name})}\n\n"
+                    )
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+            await asyncio.sleep(0.1)
+
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.post("/api/audiobook/speakers/detect")
+async def audiobook_speakers_detect(request: Request):
+    """Detect speakers in text."""
+    data = await request.json()
+    segs = _parse_dialogue(data.get("text", ""))
+    speakers: dict = {}
+    for s in segs:
+        sp = s.get("speaker")
+        if sp and sp not in speakers:
+            speakers[sp] = {
+                "name": sp,
+                "gender": _detect_gender(sp),
+                "segment_count": 1,
+            }
+        elif sp:
+            speakers[sp]["segment_count"] += 1
+
+    avail = list(shared.custom_voices.keys())
+    for sp, info in speakers.items():
+        match = next(
+            (v for v in avail if sp.lower() in v.lower() or v.lower() in sp.lower()),
+            None,
+        )
+        if match:
+            info["suggested_voice"] = match
+        else:
+            info["suggested_voice"] = next(
+                (v for v in avail if info["gender"] in v.lower()),
+                avail[0] if avail else None,
+            )
+
+    return {"success": True, "speakers": speakers, "available_voices": avail}
+
+
+@app.post("/api/audiobook/ai-structure")
+async def audiobook_ai_structure(request: Request):
+    """Structure raw text into a directed audiobook script using the LLM."""
+    data = await request.json()
+    text = data.get("text", "")
+    title = data.get("title", "")
+    book_id = data.get("book_id", "default")
+
+    if not text.strip():
+        return JSONResponse(
+            {"success": False, "error": "No text provided"}, status_code=400
+        )
+
+    try:
+        from audiobook.ai.ai_structuring_service import AIStructuringService
+        from audiobook.voice.character_normalizer import CharacterNormalizer
+        from audiobook.voice.character_voice_memory import CharacterVoiceMemory
+        from audiobook.voice.voice_assignment import VoiceAssignment
+
+        normalizer = CharacterNormalizer()
+        memory = CharacterVoiceMemory(
+            book_id,
+            base_dir=_os.path.join(shared.DATA_DIR, "audiobooks"),
+        )
+        avail_voices = list(shared.custom_voices.keys())
+
+        loop = asyncio.get_event_loop()
+        service = AIStructuringService(llm_fn=_llm_generate_audiobook)
+        structured = await loop.run_in_executor(
+            None, lambda: service.structure(text, title=title)
+        )
+
+        assignment = VoiceAssignment(
+            available_voices=avail_voices,
+            memory=memory,
+            normalizer=normalizer,
+        )
+        for seg in structured.get("segments", []):
+            for line in seg.get("script", []):
+                line["speaker"] = normalizer.normalize(line.get("speaker", ""))
+                line["voice"] = assignment.get_voice(line["speaker"])
+
+        all_speakers = list(
+            {
+                line["speaker"]
+                for seg in structured.get("segments", [])
+                for line in seg.get("script", [])
+            }
+        )
+        structured["characters"] = [
+            {"id": _re.sub(r"\W+", "_", s.lower()), "name": s} for s in all_speakers
+        ]
+
+        return {"success": True, "structured_script": structured}
+
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/audiobook/direct")
+async def audiobook_direct(request: Request):
+    """Apply AI narration direction (pacing, emotion, emphasis) to a script."""
+    data = await request.json()
+    script = data.get("script", [])
+    book_id = data.get("book_id", "default")
+
+    if not script:
+        return JSONResponse(
+            {"success": False, "error": "No script provided"}, status_code=400
+        )
+
+    try:
+        from audiobook.director.audiobook_director import AudiobookDirector
+        from audiobook.voice.character_normalizer import CharacterNormalizer
+        from audiobook.voice.character_voice_memory import CharacterVoiceMemory
+        from audiobook.voice.voice_assignment import VoiceAssignment
+
+        normalizer = CharacterNormalizer()
+        memory = CharacterVoiceMemory(
+            book_id,
+            base_dir=_os.path.join(shared.DATA_DIR, "audiobooks"),
+        )
+        avail_voices = list(shared.custom_voices.keys())
+        assignment = VoiceAssignment(
+            available_voices=avail_voices,
+            memory=memory,
+            normalizer=normalizer,
+        )
+
+        director = AudiobookDirector(llm_fn=_llm_generate_audiobook)
+
+        normalised_script = [
+            {**line, "speaker": normalizer.normalize(line.get("speaker", ""))}
+            for line in script
+        ]
+
+        loop = asyncio.get_event_loop()
+        directed = await loop.run_in_executor(
+            None, lambda: director.direct(normalised_script)
+        )
+
+        for line in directed:
+            line["voice"] = assignment.get_voice(line["speaker"])
+
+        return {"success": True, "directed_script": directed}
+
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/audiobook/books/{book_id}/voices")
+async def audiobook_get_voice_profiles(book_id: str):
+    """Return all stored voice profiles for a book."""
+    try:
+        from audiobook.voice.character_voice_memory import CharacterVoiceMemory
+
+        memory = CharacterVoiceMemory(
+            book_id,
+            base_dir=_os.path.join(shared.DATA_DIR, "audiobooks"),
+        )
+        return {
+            "success": True,
+            "book_id": book_id,
+            "voices": memory.all_profiles(),
+            "available_voices": list(shared.custom_voices.keys()),
+        }
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.put("/api/audiobook/books/{book_id}/voices")
+async def audiobook_update_voice_profiles(book_id: str, request: Request):
+    """Bulk-update voice profiles for a book (used by the Voice Panel UI)."""
+    data = await request.json()
+    voices = data.get("voices", {})
+
+    if not isinstance(voices, dict):
+        return JSONResponse(
+            {"success": False, "error": "voices must be an object"}, status_code=400
+        )
+
+    try:
+        from audiobook.voice.character_voice_memory import CharacterVoiceMemory
+
+        memory = CharacterVoiceMemory(
+            book_id,
+            base_dir=_os.path.join(shared.DATA_DIR, "audiobooks"),
+        )
+        for character, profile in voices.items():
+            if isinstance(profile, str):
+                memory.set_voice(character, profile)
+            elif isinstance(profile, dict):
+                memory.update_profile(character, profile)
+        return {"success": True, "voices": memory.all_profiles()}
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
 # ============== LLAMACPP ENDPOINTS ==============
 @app.get("/api/llamacpp/server/status")
 async def llamacpp_status():

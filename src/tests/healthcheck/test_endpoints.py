@@ -167,8 +167,10 @@ def main():
     
     # Audiobook
     print("--- Audiobook ---")
-    test_flask_endpoint("POST", "/api/audiobook/upload", "(Flask-only)")
-    test_flask_endpoint("POST", "/api/audiobook/speakers/detect", "(Flask-only)")
+    test_endpoint("POST", "/api/audiobook/upload", {"text": "Hello world"})
+    test_endpoint("POST", "/api/audiobook/speakers/detect", {"text": "\"Hello,\" said Alice."})
+    test_endpoint("POST", "/api/audiobook/ai-structure", {"text": ""}, expected_status=400, note="(empty text → 400)")
+    test_endpoint("POST", "/api/audiobook/direct", {"script": []}, expected_status=400, note="(empty script → 400)")
     print()
     
     # Services
