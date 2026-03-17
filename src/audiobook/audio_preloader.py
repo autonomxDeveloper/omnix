@@ -73,7 +73,7 @@ class AudioPreloader:
         # Wait for pending preload
         if pending_thread is not None:
             logger.debug("Waiting for pending preload of chunk %d", index)
-            pending_thread.join()
+            pending_thread.join(timeout=300)
             with self._lock:
                 audio = self._cache.get(index)
                 self._evict_old(index)
