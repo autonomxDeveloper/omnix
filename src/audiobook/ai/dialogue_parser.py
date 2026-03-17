@@ -11,6 +11,7 @@ import re
 from typing import Callable, Dict, List, Optional, Tuple
 
 from audiobook.ai.speaker_tracker import SpeakerTracker
+from audiobook.constants import NARRATOR
 
 logger = logging.getLogger(__name__)
 
@@ -109,22 +110,33 @@ def _validate_segments(data: List) -> List[Dict]:
     Each valid segment must contain ``speaker`` (str) and ``text`` (str).
     A ``type`` field is added/corrected to be one of ``"dialogue"`` or
     ``"narration"``.  Invalid entries are silently dropped.
+
+    Speakers that are empty, ``None``, or ``"unknown"`` are resolved to
+    :data:`NARRATOR` so that downstream code never sees an unresolved
+    speaker.
     """
+    tracker = SpeakerTracker()
     validated: List[Dict] = []
     for item in data:
         if not isinstance(item, dict):
             continue
         speaker = item.get("speaker")
         text = item.get("text")
-        if not isinstance(speaker, str) or not isinstance(text, str):
+        if not isinstance(text, str) or not text.strip():
             continue
-        if not text.strip():
-            continue
+
+        # Resolve missing / unknown speakers via the tracker
+        if not isinstance(speaker, str) or not speaker.strip() or speaker.strip().lower() == "unknown":
+            speaker = tracker.resolve(None)
+        else:
+            speaker = speaker.strip()
+            tracker.update(speaker)
+
         seg_type = item.get("type", "")
         if seg_type not in VALID_TYPES:
-            seg_type = "narration" if speaker == "Narrator" else "dialogue"
+            seg_type = "narration" if speaker == NARRATOR else "dialogue"
         validated.append({
-            "speaker": speaker.strip(),
+            "speaker": speaker,
             "text": text.strip(),
             "type": seg_type,
         })

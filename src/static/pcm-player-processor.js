@@ -1,3 +1,5 @@
+const MAX_CORRUPTION_COUNT = 5000;
+
 class PCMPlayerProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
@@ -5,6 +7,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
         this.bufferSamples = 0;
         this.chunkOffset = 0;
         this.draining = false;
+        this.corruptionCount = 0;
 
         this.port.onmessage = (event) => {
             const data = event.data;
@@ -15,6 +18,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
                 this.bufferSamples = 0;
                 this.chunkOffset = 0;
                 this.draining = false;
+                this.corruptionCount = 0;
                 return;
             }
 
@@ -42,7 +46,20 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
             const available = chunk.length - this.chunkOffset;
             const toCopy = Math.min(available, needed - written);
 
-            output.set(chunk.subarray(this.chunkOffset, this.chunkOffset + toCopy), written);
+            for (let j = 0; j < toCopy; j++) {
+                let sample = chunk[this.chunkOffset + j];
+
+                // Reject corrupt samples (NaN, Infinity, extreme values)
+                if (!Number.isFinite(sample) || Math.abs(sample) > 5) {
+                    sample = 0;
+                    this.corruptionCount++;
+                }
+
+                // Soft-clip to [-1, 1]
+                sample = Math.max(-1, Math.min(1, sample));
+                output[written + j] = sample;
+            }
+
             written += toCopy;
             this.chunkOffset += toCopy;
             this.bufferSamples -= toCopy;
@@ -51,6 +68,14 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
                 this.buffer.shift();
                 this.chunkOffset = 0;
             }
+        }
+
+        // Reset on sustained corruption to prevent speaker damage
+        if (this.corruptionCount > MAX_CORRUPTION_COUNT) {
+            this.buffer = [];
+            this.bufferSamples = 0;
+            this.chunkOffset = 0;
+            this.corruptionCount = 0;
         }
 
         if (this.draining && this.buffer.length === 0) {

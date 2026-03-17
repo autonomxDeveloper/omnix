@@ -12,7 +12,7 @@ import time
 import uuid
 import logging
 from collections import OrderedDict
-from typing import Dict, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +27,12 @@ class JobStatus:
 class Job:
     """Represents a TTS generation job."""
     def __init__(self, job_id: str, text: str, speaker: str = None,
-                 voice_id: str = None, **kwargs):
+                 voice_id: str = None, chunk_index: int = -1, **kwargs):
         self.job_id = job_id
         self.text = text
         self.speaker = speaker
         self.voice_id = voice_id
+        self.chunk_index = chunk_index
         self.kwargs = kwargs
         self.status = JobStatus.PENDING
         self.result = None
@@ -56,16 +57,18 @@ class JobQueue:
     """
 
     def __init__(self, worker_fn: Callable = None, max_workers: int = 1,
-                 max_cache_size: int = 100):
+                 max_cache_size: int = 100, max_retries: int = 3):
         """
         Args:
             worker_fn: Function(text, speaker, voice_id, **kwargs) -> dict with audio result
             max_workers: Number of background worker threads
             max_cache_size: Max completed jobs to keep in cache
+            max_retries: Max retry attempts for failed jobs
         """
         self._worker_fn = worker_fn
         self._max_workers = max_workers
         self._max_cache_size = max_cache_size
+        self._max_retries = max_retries
 
         self._queue: list = []  # pending jobs
         self._jobs: OrderedDict = OrderedDict()  # all jobs by id
@@ -101,10 +104,11 @@ class JobQueue:
         logger.info("JobQueue stopped")
 
     def enqueue(self, text: str, speaker: str = None, voice_id: str = None,
-                **kwargs) -> str:
+                chunk_index: int = -1, **kwargs) -> str:
         """Add a job to the queue. Returns job_id."""
         job_id = uuid.uuid4().hex
-        job = Job(job_id=job_id, text=text, speaker=speaker, voice_id=voice_id, **kwargs)
+        job = Job(job_id=job_id, text=text, speaker=speaker,
+                  voice_id=voice_id, chunk_index=chunk_index, **kwargs)
 
         with self._condition:
             self._jobs[job_id] = job
@@ -124,6 +128,7 @@ class JobQueue:
             return {
                 "status": job.status,
                 "job_id": job.job_id,
+                "chunk_index": job.chunk_index,
                 "audio": job.result if job.status == JobStatus.COMPLETED else None,
                 "error": job.error if job.status == JobStatus.FAILED else None,
                 "queue_position": self._queue.index(job) if job in self._queue else -1,
@@ -167,30 +172,65 @@ class JobQueue:
             self._process_job(job)
 
     def _process_job(self, job: Job) -> None:
-        """Process a single job using the worker function."""
-        try:
-            if self._worker_fn is None:
-                raise RuntimeError("No worker function configured")
-
-            result = self._worker_fn(
-                job.text, job.speaker, job.voice_id, **job.kwargs
-            )
-
-            with self._lock:
-                job.result = result
-                job.status = JobStatus.COMPLETED
-                job.completed_at = time.time()
-                self._cleanup_old_jobs()
-
-            logger.info("Job %s completed (%.2fs)", job.job_id, job.completed_at - job.created_at)
-
-        except Exception as e:
+        """Process a single job using the worker function (with retry)."""
+        if self._worker_fn is None:
             with self._lock:
                 job.status = JobStatus.FAILED
-                job.error = str(e)
+                job.error = "No worker function configured"
                 job.completed_at = time.time()
+            return
 
-            logger.error("Job %s failed: %s", job.job_id, e)
+        last_err: Optional[Exception] = None
+        for attempt in range(self._max_retries):
+            try:
+                result = self._worker_fn(
+                    job.text, job.speaker, job.voice_id, **job.kwargs
+                )
+
+                with self._lock:
+                    job.result = result
+                    job.status = JobStatus.COMPLETED
+                    job.completed_at = time.time()
+                    self._cleanup_old_jobs()
+
+                logger.info("Job %s completed (%.2fs)", job.job_id, job.completed_at - job.created_at)
+                return
+
+            except Exception as e:
+                last_err = e
+                logger.warning("Job %s attempt %d/%d failed: %s", job.job_id, attempt + 1, self._max_retries, e)
+
+        # All retries exhausted
+        with self._lock:
+            job.status = JobStatus.FAILED
+            job.error = str(last_err)
+            job.completed_at = time.time()
+
+        logger.error("Job %s failed after %d attempts: %s", job.job_id, self._max_retries, last_err)
+
+    def get_ordered_results(self, job_ids: List[str]) -> List[Optional[Dict[str, Any]]]:
+        """Return results for *job_ids* sorted by ``chunk_index``.
+
+        This is used to reassemble chunks in order even when they completed
+        out of order.
+        """
+        with self._lock:
+            results = []
+            for jid in job_ids:
+                job = self._jobs.get(jid)
+                if job is None:
+                    results.append(None)
+                    continue
+                results.append({
+                    "status": job.status,
+                    "job_id": job.job_id,
+                    "chunk_index": job.chunk_index,
+                    "audio": job.result if job.status == JobStatus.COMPLETED else None,
+                    "error": job.error if job.status == JobStatus.FAILED else None,
+                })
+            # Sort by chunk_index so callers can emit in order
+            results.sort(key=lambda r: (r or {}).get("chunk_index", 0))
+            return results
 
     def _cleanup_old_jobs(self) -> None:
         """Remove old completed jobs when cache is full.
