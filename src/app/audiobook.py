@@ -107,7 +107,13 @@ def parse_dialogue(text):
                     segments.append({'speaker': 'Narrator', 'text': post})
         else:
             if '"' not in para and '\u201c' not in para: segments.append({'speaker': 'Narrator', 'text': para})
-            
+
+    # Resolve any remaining "unknown" or empty speakers
+    for seg in segments:
+        sp = seg.get("speaker", "")
+        if not sp or sp.lower() == "unknown":
+            seg["speaker"] = last_speaker or "Narrator"
+
     return segments
 
 @audiobook_bp.route('/api/audiobook/upload', methods=['POST'])
@@ -129,7 +135,13 @@ def upload():
 @audiobook_bp.route('/api/audiobook/generate', methods=['POST'])
 def generate():
     data = request.get_json()
-    segments, v_map, def_v = data.get('segments', []), data.get('voice_mapping', {}), data.get('default_voices', {})
+    segments = data.get('segments', [])
+    v_map = data.get('voice_mapping', {})
+    # voice_map is the canonical single-source-of-truth from the UI
+    voice_map = data.get('voice_map', {})
+    # Merge: voice_map takes precedence over voice_mapping
+    merged_map = {**v_map, **voice_map}
+    def_v = data.get('default_voices', {})
     avail = set(shared.custom_voices.keys())
     
     def gen():
@@ -144,7 +156,7 @@ def generate():
             speaker, text = seg.get('speaker'), seg.get('text', '')
             if not text.strip(): continue
             
-            v_name = v_map.get(speaker)
+            v_name = merged_map.get(speaker)
             if not v_name:
                 g = detect_gender(speaker)
                 v_name = def_v.get('female') if g == 'female' else def_v.get('male') if g == 'male' else def_v.get('narrator')
