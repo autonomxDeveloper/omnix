@@ -63,12 +63,12 @@ def split_sentences(text: str) -> List[str]:
     return sentences if sentences else ['']
 
 
-def chunk_text(text: str, max_chars: int = 500) -> List[str]:
+def chunk_text(text: str, max_chars: int = 300) -> List[str]:
     """Split text into chunks at sentence boundaries.
 
     Args:
         text: Input text to chunk
-        max_chars: Maximum characters per chunk (default 500)
+        max_chars: Maximum characters per chunk (default 300)
 
     Returns:
         List of text chunks, each under max_chars

@@ -1,7 +1,9 @@
 export class RingBuffer {
     constructor(size) {
-        this.buffer = new Float32Array(size);
-        this.size = size;
+        // Default to 256KB (65536 * 4) to prevent buffer overflow on large
+        // or bursty audio streams.
+        this.buffer = new Float32Array(size || 65536 * 4);
+        this.size = this.buffer.length;
         this.readIndex = 0;
         this.writeIndex = 0;
     }

@@ -22,6 +22,41 @@ from ..shared import MODELS_DIR, VOICE_CLONES_DIR
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Audio hardening helpers  (Issue 3 – prevent stream corruption)
+# ---------------------------------------------------------------------------
+
+def _is_valid_audio(audio: np.ndarray) -> bool:
+    """Return *True* if *audio* is a usable waveform array."""
+    if audio is None or len(audio) == 0:
+        return False
+    if np.isnan(audio).any():
+        return False
+    # Silence bug – all-zero / near-zero output
+    if np.max(np.abs(audio)) < 1e-5:
+        return False
+    # Explosion bug – values far outside normal range
+    if np.max(np.abs(audio)) > 5:
+        return False
+    return True
+
+
+def _normalize_audio(audio: np.ndarray) -> bytes:
+    """Normalise a float waveform to 16-bit PCM bytes."""
+    audio = audio.astype(np.float32)
+    audio = np.clip(audio, -1.0, 1.0)
+    audio_int16 = (audio * 32767).astype(np.int16)
+    return audio_int16.tobytes()
+
+
+def _align_bytes(audio_bytes: bytes) -> bytes:
+    """Ensure *audio_bytes* length is a multiple of 2 (16-bit frame boundary)."""
+    remainder = len(audio_bytes) % 2
+    if remainder != 0:
+        audio_bytes = audio_bytes[:-remainder]
+    return audio_bytes
+
+
 @dataclass
 class ModelLoader:
     """Helper class to manage model loading state."""
@@ -325,12 +360,24 @@ class FasterQwen3TTSProvider(BaseTTSProvider):
                     "error": "No audio generated"
                 }
             
-            # Convert to WAV bytes
+            # Validate the raw waveform before encoding
             audio_np = audio_list[0]  # First (and only) audio array
+            if not _is_valid_audio(audio_np):
+                logger.warning("[TTS] Invalid audio detected – retrying once")
+                audio_list, sample_rate = model.generate_voice_clone(**gen_kwargs)
+                if not audio_list or not _is_valid_audio(audio_list[0]):
+                    return {
+                        "success": False,
+                        "error": "Generated audio failed validation (corrupt or silent)"
+                    }
+                audio_np = audio_list[0]
+
+            # Convert to WAV bytes
             wav_bytes = self._numpy_to_wav_bytes(audio_np, sample_rate)
             
             # Calculate duration
             duration = len(audio_np) / sample_rate
+            logger.info("[TTS] generated chunk size=%d bytes, duration=%.2fs", len(wav_bytes), duration)
             
             # Encode as base64
             import base64
@@ -418,9 +465,16 @@ class FasterQwen3TTSProvider(BaseTTSProvider):
                 'append_silence': kwargs.get('append_silence', self._model_config.get('append_silence', True)),
             }
             
-            # Stream generation
+            # Stream generation – validate each chunk before yielding
+            chunk_idx = 0
             for audio_chunk, sr, timing in model.generate_voice_clone_streaming(**gen_kwargs):
+                if not _is_valid_audio(audio_chunk):
+                    logger.warning("[TTS] Skipping corrupt streaming chunk %d", chunk_idx)
+                    chunk_idx += 1
+                    continue
+                logger.info("[TTS] streaming chunk=%d size=%d samples", chunk_idx, len(audio_chunk))
                 yield audio_chunk, sr, timing
+                chunk_idx += 1
                 
         except Exception as e:
             logger.error(f"Error in generate_audio_stream: {e}", exc_info=True)
