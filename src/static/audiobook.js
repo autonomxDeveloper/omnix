@@ -664,6 +664,22 @@ function updateDefaultVoice(gender, voiceId) {
 }
 
 // Generate audiobook with streaming playback
+
+// Streaming playback state
+let streamingPlaybackInProgress = false;
+let streamingAudioIndex = 0;
+let streamingAudioElement = null;
+let streamingShouldShowFullControls = false;
+let voiceProfileSaveTimer = null;
+const AUDIO_EDGE_FADE_MS = 8;
+const MIN_FADE_SAMPLES = 8;
+const MAX_FADE_DIVISOR = 4;
+
+// WebSocket audiobook state
+let audiobookWs = null;
+/** Minimum number of PCM chunks to buffer before starting WebSocket playback */
+const WS_MIN_AUDIO_BUFFER = 3;
+
 async function generateAudiobook() {
     if (audiobookState.segments.length === 0) {
         alert('No segments to generate. Please analyze text first.');
@@ -728,7 +744,6 @@ async function generateAudiobookWS() {
         let audioQueue = [];
         let playing = false;
         let finished = false;
-        const MIN_BUFFER = 3;
         
         async function ensureCtx() {
             if (!audioCtx) {
@@ -754,7 +769,7 @@ async function generateAudiobookWS() {
             }
             
             // Buffer before first play
-            if (!finished && audioQueue.length < MIN_BUFFER) {
+            if (!finished && audioQueue.length < WS_MIN_AUDIO_BUFFER) {
                 return;
             }
             

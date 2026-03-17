@@ -34,11 +34,22 @@ export class AudioOutput {
     console.log(`[AudioOutput] Enqueued chunk (queue=${this.audioQueue.length})`);
 
     // Wait for minimum buffer before starting playback (avoids choppy audio)
-    if (!this._flushing && this.minBufferSize > 0 && this.audioQueue.length < this.minBufferSize && !this.playing) {
+    if (this._shouldWaitForBuffer()) {
       return;
     }
 
     this.playNext();
+  }
+
+  /**
+   * Returns true when buffering is active and we haven't accumulated enough
+   * chunks yet.  Once playback is already in progress we never hold back.
+   */
+  _shouldWaitForBuffer() {
+    if (this._flushing) return false;
+    if (this.minBufferSize <= 0) return false;
+    if (this.playing) return false;
+    return this.audioQueue.length < this.minBufferSize;
   }
 
   /**
