@@ -1192,13 +1192,13 @@ def _parse_dialogue(text):
                 # Narration gap between this dialogue and the next
                 if i < len(para_dialogues) - 1:
                     gap_text = para[spans[i][1]:spans[i + 1][0]]
-                    gap_text = _re.sub(r'["\u201c].*?["\u201d]', '', gap_text).strip().strip('.,;: ')
+                    gap_text = _re.sub(r'["\u201c].*?["\u201d]', '', gap_text).strip('.,;: \t\n')
                     if gap_text:
                         segments.append({'speaker': 'Narrator', 'text': gap_text})
 
             # Narration after last dialogue
             if spans[-1][1] < len(para):
-                post = _re.sub(r'["\u201c].*?["\u201d]', '', para[spans[-1][1]:]).strip().strip('.,;: ')
+                post = _re.sub(r'["\u201c].*?["\u201d]', '', para[spans[-1][1]:]).strip('.,;: \t\n')
                 if post:
                     segments.append({'speaker': 'Narrator', 'text': post})
         else:
