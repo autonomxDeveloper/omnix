@@ -688,6 +688,206 @@ async function generateAudiobook() {
     
     updateProgress(0, 'Starting generation...');
     
+    // Try WebSocket first, fall back to SSE
+    try {
+        await generateAudiobookWS();
+    } catch (wsError) {
+        console.warn('[AUDIOBOOK] WebSocket generation failed, falling back to SSE:', wsError);
+        await generateAudiobookSSE();
+    }
+    
+    audiobookState.isGenerating = false;
+    if (audiobookGenerateBtn) {
+        audiobookGenerateBtn.disabled = false;
+        audiobookGenerateBtn.textContent = 'Generate Audiobook';
+    }
+}
+
+/**
+ * Generate audiobook via WebSocket — streams raw PCM (no base64, no WAV header).
+ * Uses the /ws/audiobook endpoint for low-latency, high-quality streaming.
+ */
+async function generateAudiobookWS() {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/audiobook`;
+    
+    return new Promise((resolve, reject) => {
+        let ws;
+        try {
+            ws = new WebSocket(wsUrl);
+        } catch (e) {
+            reject(e);
+            return;
+        }
+        ws.binaryType = 'arraybuffer';
+        audiobookWs = ws;
+        
+        // Create a lightweight AudioOutput instance for PCM playback
+        // (uses the same AudioOutput class as voice mode)
+        let audioCtx = null;
+        let audioQueue = [];
+        let playing = false;
+        let finished = false;
+        const MIN_BUFFER = 3;
+        
+        async function ensureCtx() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                    latencyHint: 'interactive'
+                });
+            }
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
+        }
+        
+        async function playNextChunk() {
+            if (playing) return;
+            if (audioQueue.length === 0) {
+                if (finished) {
+                    updateStreamingStatus('Playback complete!');
+                    streamingShouldShowFullControls = true;
+                    streamingPlaybackInProgress = false;
+                    resolve();
+                }
+                return;
+            }
+            
+            // Buffer before first play
+            if (!finished && audioQueue.length < MIN_BUFFER) {
+                return;
+            }
+            
+            await ensureCtx();
+            playing = true;
+            streamingPlaybackInProgress = true;
+            
+            const chunk = audioQueue.shift();
+            try {
+                const pcm16 = new Int16Array(chunk);
+                const float32 = new Float32Array(pcm16.length);
+                for (let i = 0; i < pcm16.length; i++) {
+                    float32[i] = pcm16[i] / 32768.0;
+                }
+                
+                const audioBuffer = audioCtx.createBuffer(1, float32.length, 24000);
+                audioBuffer.getChannelData(0).set(float32);
+                
+                const source = audioCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioCtx.destination);
+                
+                source.onended = () => {
+                    playing = false;
+                    playNextChunk();
+                };
+                
+                source.start();
+            } catch (err) {
+                console.error('[AUDIOBOOK-WS] Playback error:', err);
+                playing = false;
+                playNextChunk();
+            }
+        }
+        
+        const timeout = setTimeout(() => {
+            if (ws.readyState !== WebSocket.OPEN) {
+                ws.close();
+                reject(new Error('WebSocket connection timeout'));
+            }
+        }, 5000);
+        
+        ws.onopen = () => {
+            clearTimeout(timeout);
+            console.log('[AUDIOBOOK-WS] Connected');
+            
+            // Send start message with segments
+            ws.send(JSON.stringify({
+                type: 'start',
+                segments: audiobookState.segments,
+                voice_mapping: audiobookState.voiceMapping,
+                default_voices: audiobookState.defaultVoices
+            }));
+        };
+        
+        ws.onmessage = (event) => {
+            if (event.data instanceof ArrayBuffer) {
+                // Raw PCM int16 bytes — enqueue for playback
+                audioQueue.push(event.data);
+                playNextChunk();
+            } else {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    switch (data.type) {
+                        case 'start':
+                            updateStreamingStatus('Streaming audio...');
+                            break;
+                            
+                        case 'segment': {
+                            const idx = data.index;
+                            audiobookState.currentSegment = idx + 1;
+                            const percent = Math.round((audiobookState.currentSegment / audiobookState.totalSegments) * 100);
+                            updateProgress(percent, `Generated ${audiobookState.currentSegment}/${audiobookState.totalSegments} segments`);
+                            
+                            // Update segment info
+                            if (idx < audiobookState.segments.length) {
+                                const seg = audiobookState.segments[idx];
+                                const infoEl = document.getElementById('audiobook-segment-info');
+                                if (infoEl) {
+                                    infoEl.innerHTML = `
+                                        <p><strong>Speaker:</strong> ${seg.speaker || 'Unknown'}</p>
+                                        <p><strong>Text:</strong> ${(seg.text || '').substring(0, 100)}</p>
+                                    `;
+                                }
+                            }
+                            break;
+                        }
+                            
+                        case 'done':
+                            updateProgress(100, 'Generation complete!');
+                            audiobookState.isGenerating = false;
+                            finished = true;
+                            // Flush remaining buffered chunks
+                            playNextChunk();
+                            ws.close();
+                            break;
+                            
+                        case 'error':
+                            console.error('[AUDIOBOOK-WS] Server error:', data.message);
+                            updateProgress(-1, `Error: ${data.message}`);
+                            finished = true;
+                            ws.close();
+                            reject(new Error(data.message));
+                            break;
+                    }
+                } catch (e) {
+                    console.error('[AUDIOBOOK-WS] Parse error:', e);
+                }
+            }
+        };
+        
+        ws.onerror = (err) => {
+            clearTimeout(timeout);
+            console.error('[AUDIOBOOK-WS] WebSocket error:', err);
+            reject(new Error('WebSocket error'));
+        };
+        
+        ws.onclose = () => {
+            audiobookWs = null;
+            if (!finished) {
+                // Unexpected close
+                reject(new Error('WebSocket closed unexpectedly'));
+            }
+        };
+    });
+}
+
+/**
+ * Generate audiobook via SSE (legacy fallback).
+ * Uses /api/audiobook/generate with base64-encoded audio.
+ */
+async function generateAudiobookSSE() {
     try {
         const response = await fetch('/api/audiobook/generate', {
             method: 'POST',
@@ -771,26 +971,10 @@ async function generateAudiobook() {
         }
         
     } catch (error) {
-        console.error('Generation error:', error);
+        console.error('SSE generation error:', error);
         updateProgress(-1, `Error: ${error.message}`);
-    } finally {
-        audiobookState.isGenerating = false;
-        if (audiobookGenerateBtn) {
-            audiobookGenerateBtn.disabled = false;
-            audiobookGenerateBtn.textContent = 'Generate Audiobook';
-        }
     }
 }
-
-// Streaming playback state
-let streamingPlaybackInProgress = false;
-let streamingAudioIndex = 0;
-let streamingAudioElement = null;
-let streamingShouldShowFullControls = false;
-let voiceProfileSaveTimer = null;
-const AUDIO_EDGE_FADE_MS = 8;
-const MIN_FADE_SAMPLES = 8;
-const MAX_FADE_DIVISOR = 4;
 
 // Combined audio for playback controls
 let combinedAudioBlob = null;
@@ -957,6 +1141,15 @@ function stopStreamingAudio() {
     streamingPlaybackInProgress = false;
     streamingShouldShowFullControls = false;
     streamingAudioIndex = 0;
+    
+    // Close WebSocket if open
+    if (audiobookWs) {
+        try {
+            audiobookWs.send(JSON.stringify({ type: 'stop' }));
+            audiobookWs.close();
+        } catch (e) {}
+        audiobookWs = null;
+    }
     
     if (streamingAudioElement) {
         streamingAudioElement.pause();
