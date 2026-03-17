@@ -669,7 +669,7 @@ async function generateAudiobook() {
                             } else if (data.type === 'error') {
                                 console.error('Audiobook error:', data.error);
                                 const errorMsg = data.error || 'Unknown error';
-                                if (errorMsg.toLowerCase().includes('tts server is not running')) {
+                                if (data.code === 'TTS_UNAVAILABLE') {
                                     updateProgress(-1, 'TTS server is not running. Please start the TTS server (e.g. chatterbox_tts_server.py) and try again.');
                                     stopStreamingAudio();
                                 } else {
