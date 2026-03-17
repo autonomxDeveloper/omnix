@@ -5,13 +5,13 @@ from typing import List, Dict, Optional
 VALID_EMOTIONS = {"neutral", "happy", "sad", "angry", "fear", "panic", "whisper", "excited"}
 
 _KEYWORD_EMOTIONS: List[tuple] = [
-    ({"help", "run", "danger", "attack", "flee"}, "fear"),
-    ({"!", "scream", "shout", "yell"}, "panic"),
-    ({"whisper", "quietly", "softly", "hush"}, "whisper"),
-    ({"laugh", "smile", "joy", "wonderful", "great"}, "happy"),
+    ({"wonderful", "great", "laugh", "smile", "joy"}, "happy"),
+    ({"amazing", "incredible", "exciting", "wow"}, "excited"),
     ({"sorry", "tears", "weep", "cry", "miss", "lost"}, "sad"),
     ({"angry", "furious", "rage", "hate", "never"}, "angry"),
-    ({"amazing", "incredible", "exciting", "wow"}, "excited"),
+    ({"whisper", "quietly", "softly", "hush"}, "whisper"),
+    ({"help", "run", "danger", "attack", "flee"}, "fear"),
+    ({"scream", "shout", "yell", "panic"}, "panic"),
 ]
 
 

@@ -18,14 +18,19 @@ let audiobookState = {
     isPlaying: false,
     isGenerating: false,
     currentSegment: 0,
-    totalSegments: 0
+    totalSegments: 0,
+    bookId: null,           // persistent book identifier
+    directedScript: null,   // result of AI Director
+    structuredScript: null  // result of AI Structuring
 };
 
 // DOM elements (initialized in initAudiobook)
 let audiobookModal, audiobookText, audiobookFile, audiobookAnalyzeBtn;
+let audiobookAiStructureBtn, audiobookDirectBtn, audiobookAiStatus;
 let audiobookSpeakersSection, audiobookSpeakersList, audiobookGenerateBtn;
 let audiobookProgress, audiobookProgressBar, audiobookProgressText;
 let audiobookPlayer, audiobookAudio;
+let audiobookVoicePanel, audiobookVoicePanelList;
 
 // Initialize audiobook feature
 function initAudiobook() {
@@ -34,6 +39,9 @@ function initAudiobook() {
     audiobookText = document.getElementById('audiobook-text');
     audiobookFile = document.getElementById('audiobook-file');
     audiobookAnalyzeBtn = document.getElementById('audiobook-analyze-btn');
+    audiobookAiStructureBtn = document.getElementById('audiobook-ai-structure-btn');
+    audiobookDirectBtn = document.getElementById('audiobook-direct-btn');
+    audiobookAiStatus = document.getElementById('audiobook-ai-status');
     audiobookSpeakersSection = document.getElementById('audiobook-speakers-section');
     audiobookSpeakersList = document.getElementById('audiobook-speakers-list');
     audiobookGenerateBtn = document.getElementById('audiobook-generate-btn');
@@ -42,16 +50,22 @@ function initAudiobook() {
     audiobookProgressText = document.getElementById('audiobook-progress-text');
     audiobookPlayer = document.getElementById('audiobook-player');
     audiobookAudio = document.getElementById('audiobook-audio');
+    audiobookVoicePanel = document.getElementById('audiobook-voice-panel');
+    audiobookVoicePanelList = document.getElementById('audiobook-voice-panel-list');
     
     // Set up event listeners
     if (audiobookAnalyzeBtn) {
         audiobookAnalyzeBtn.addEventListener('click', analyzeAudiobookText);
     }
-    
+    if (audiobookAiStructureBtn) {
+        audiobookAiStructureBtn.addEventListener('click', aiStructureAudiobookText);
+    }
+    if (audiobookDirectBtn) {
+        audiobookDirectBtn.addEventListener('click', aiDirectScript);
+    }
     if (audiobookGenerateBtn) {
         audiobookGenerateBtn.addEventListener('click', generateAudiobook);
     }
-    
     if (audiobookFile) {
         audiobookFile.addEventListener('change', handleAudiobookFileUpload);
     }
@@ -96,7 +110,10 @@ function resetAudiobookState() {
         isPlaying: false,
         isGenerating: false,
         currentSegment: 0,
-        totalSegments: 0
+        totalSegments: 0,
+        bookId: audiobookState.bookId,  // preserve book ID across resets
+        directedScript: null,
+        structuredScript: null
     };
     
     if (audiobookText) audiobookText.value = '';
@@ -104,6 +121,9 @@ function resetAudiobookState() {
     if (audiobookSpeakersSection) audiobookSpeakersSection.style.display = 'none';
     if (audiobookProgress) audiobookProgress.style.display = 'none';
     if (audiobookPlayer) audiobookPlayer.style.display = 'none';
+    if (audiobookAiStatus) audiobookAiStatus.style.display = 'none';
+    if (audiobookDirectBtn) audiobookDirectBtn.style.display = 'none';
+    if (audiobookVoicePanel) audiobookVoicePanel.style.display = 'none';
 }
 
 // Handle file upload
@@ -182,6 +202,224 @@ async function analyzeAudiobookText() {
         audiobookAnalyzeBtn.disabled = false;
         audiobookAnalyzeBtn.textContent = 'Analyze Text';
     }
+}
+
+// AI Structure: use LLM to parse dialogue intelligently
+async function aiStructureAudiobookText() {
+    const text = audiobookText ? audiobookText.value.trim() : '';
+    if (!text) {
+        alert('Please enter or upload some text first');
+        return;
+    }
+
+    if (!audiobookState.bookId) {
+        audiobookState.bookId = 'book_' + Date.now();
+    }
+
+    _setAiStatus('🤖 AI structuring text — this may take a moment…');
+    if (audiobookAiStructureBtn) {
+        audiobookAiStructureBtn.disabled = true;
+        audiobookAiStructureBtn.textContent = '⏳ Structuring…';
+    }
+
+    try {
+        const response = await fetch('/api/audiobook/ai-structure', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: text,
+                title: '',
+                book_id: audiobookState.bookId
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            audiobookState.structuredScript = data.structured_script;
+            audiobookState.text = text;
+
+            // Flatten all script lines across scenes into segments
+            const allLines = [];
+            for (const seg of (data.structured_script.segments || [])) {
+                for (const line of (seg.script || [])) {
+                    allLines.push(line);
+                    // Persist voice mapping from AI
+                    if (line.voice && line.speaker) {
+                        audiobookState.voiceMapping[line.speaker] = line.voice;
+                    }
+                }
+            }
+            audiobookState.segments = allLines;
+
+            _setAiStatus(`✅ AI structured ${allLines.length} lines across ${(data.structured_script.segments || []).length} scene(s).`);
+
+            // Show AI Direct button
+            if (audiobookDirectBtn) audiobookDirectBtn.style.display = '';
+
+            // Build speaker list from structured characters
+            const speakers = (data.structured_script.characters || []).map(c => c.name);
+            await displaySpeakers(speakers, allLines);
+
+            // Load persistent voice profiles into the Voice Panel
+            await loadVoicePanel(audiobookState.bookId);
+        } else {
+            _setAiStatus('❌ AI structuring failed: ' + (data.error || 'unknown error'));
+        }
+    } catch (error) {
+        _setAiStatus('❌ Error: ' + error.message);
+    } finally {
+        if (audiobookAiStructureBtn) {
+            audiobookAiStructureBtn.disabled = false;
+            audiobookAiStructureBtn.textContent = '🤖 AI Structure';
+        }
+    }
+}
+
+// AI Direct: apply pacing, emotion, emphasis to current segments
+async function aiDirectScript() {
+    const script = audiobookState.segments;
+    if (!script || script.length === 0) {
+        alert('Please analyze or AI-structure the text first.');
+        return;
+    }
+
+    if (!audiobookState.bookId) {
+        audiobookState.bookId = 'book_' + Date.now();
+    }
+
+    _setAiStatus('🎬 AI Director applying pacing & emotion…');
+    if (audiobookDirectBtn) {
+        audiobookDirectBtn.disabled = true;
+        audiobookDirectBtn.textContent = '⏳ Directing…';
+    }
+
+    try {
+        const response = await fetch('/api/audiobook/direct', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                script: script,
+                book_id: audiobookState.bookId
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            audiobookState.directedScript = data.directed_script;
+            audiobookState.segments = data.directed_script;
+
+            // Update voice mappings from directed output
+            for (const line of data.directed_script) {
+                if (line.voice && line.speaker) {
+                    audiobookState.voiceMapping[line.speaker] = line.voice;
+                }
+            }
+
+            const emotions = [...new Set(data.directed_script.map(l => l.emotion).filter(Boolean))];
+            _setAiStatus(`✅ AI Director applied. Emotions detected: ${emotions.join(', ') || 'neutral'}.`);
+        } else {
+            _setAiStatus('❌ AI Direction failed: ' + (data.error || 'unknown error'));
+        }
+    } catch (error) {
+        _setAiStatus('❌ Error: ' + error.message);
+    } finally {
+        if (audiobookDirectBtn) {
+            audiobookDirectBtn.disabled = false;
+            audiobookDirectBtn.textContent = '🎬 AI Direct';
+        }
+    }
+}
+
+// Load Voice Identity Memory panel for the current book
+async function loadVoicePanel(bookId) {
+    if (!audiobookVoicePanel || !audiobookVoicePanelList || !bookId) return;
+
+    try {
+        const response = await fetch(`/api/audiobook/books/${encodeURIComponent(bookId)}/voices`);
+        const data = await response.json();
+        if (!data.success) return;
+
+        const profiles = data.voices || {};
+        const availableVoices = data.available_voices || [];
+
+        if (Object.keys(profiles).length === 0) {
+            audiobookVoicePanel.style.display = 'none';
+            return;
+        }
+
+        let html = '';
+        for (const [character, profile] of Object.entries(profiles)) {
+            const currentVoice = (typeof profile === 'object' ? profile.voice : profile) || '';
+            html += `<div class="voice-panel-row">`;
+            html += `<span class="voice-panel-character">${_escapeHtml(character)}</span>`;
+            html += `<select class="voice-panel-select" data-character="${_escapeHtml(character)}"
+                         onchange="updateVoicePanelEntry('${_escapeHtml(character)}', this.value)">`;
+            html += `<option value="">-- Auto --</option>`;
+            availableVoices.forEach(v => {
+                const sel = v === currentVoice ? 'selected' : '';
+                html += `<option value="${v}" ${sel}>${v}</option>`;
+            });
+            html += `</select></div>`;
+        }
+
+        audiobookVoicePanelList.innerHTML = html;
+        audiobookVoicePanel.style.display = 'block';
+    } catch (e) {
+        console.error('[AUDIOBOOK] Voice panel load error:', e);
+    }
+}
+
+// Update a single voice panel entry (does not auto-save)
+function updateVoicePanelEntry(character, voice) {
+    audiobookState.voiceMapping[character] = voice || undefined;
+}
+
+// Save all voice panel entries to the server
+async function saveVoiceProfiles() {
+    const bookId = audiobookState.bookId;
+    if (!bookId) return;
+
+    const selects = audiobookVoicePanelList
+        ? audiobookVoicePanelList.querySelectorAll('.voice-panel-select')
+        : [];
+    const voices = {};
+    selects.forEach(sel => {
+        const char = sel.dataset.character;
+        const voice = sel.value;
+        if (char && voice) voices[char] = voice;
+    });
+
+    try {
+        const response = await fetch(`/api/audiobook/books/${encodeURIComponent(bookId)}/voices`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voices })
+        });
+        const data = await response.json();
+        if (data.success) {
+            _setAiStatus('💾 Voice profiles saved.');
+        }
+    } catch (e) {
+        console.error('[AUDIOBOOK] Save voice profiles error:', e);
+    }
+}
+
+// Internal: show/hide AI status message
+function _setAiStatus(msg) {
+    if (!audiobookAiStatus) return;
+    audiobookAiStatus.textContent = msg;
+    audiobookAiStatus.style.display = msg ? 'block' : 'none';
+}
+
+// Internal: escape HTML for safe attribute/text insertion
+function _escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }
 
 // Display speakers for voice assignment
