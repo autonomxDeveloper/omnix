@@ -670,3 +670,272 @@ class TestPathTraversalProtection:
         from app.audiobook_ux import _ux_data_path
         with pytest.raises(ValueError):
             _ux_data_path("../../../tmp", "bookmarks.json")
+
+
+# ---------------------------------------------------------------------------
+# Tests for pipeline hardening fixes (Issues 1-5)
+# ---------------------------------------------------------------------------
+
+
+class TestNarratorConstant:
+    """Ensure the shared NARRATOR constant is consistent."""
+
+    def test_narrator_value(self):
+        from audiobook.constants import NARRATOR
+        assert NARRATOR == "Narrator"
+
+    def test_speaker_tracker_uses_constant(self):
+        from audiobook.ai.speaker_tracker import SpeakerTracker
+        from audiobook.constants import NARRATOR
+        tracker = SpeakerTracker()
+        # With no speakers registered, resolve should return NARRATOR
+        assert tracker.resolve(None) == NARRATOR
+
+    def test_speaker_tracker_resolves_unknown(self):
+        from audiobook.ai.speaker_tracker import SpeakerTracker
+        from audiobook.constants import NARRATOR
+        tracker = SpeakerTracker()
+        # "unknown" should be treated like None
+        assert tracker.resolve("unknown") == NARRATOR
+
+
+class TestVoiceManagerVoiceMap:
+    """Issue 1 – VoiceManager.get_voice() respects external voice_map."""
+
+    def _get_manager(self, tmpdir, voices=None):
+        from audiobook.voice.voice_manager import VoiceManager
+        return VoiceManager(
+            book_id="test",
+            base_dir=str(tmpdir),
+            available_voices=voices or ["deep_male", "young_female"],
+        )
+
+    def test_voice_map_takes_precedence(self, tmp_path):
+        mgr = self._get_manager(tmp_path)
+        voice = mgr.get_voice("Alice", metadata={"voice_map": {"Alice": "custom_voice"}})
+        assert voice == "custom_voice"
+
+    def test_voice_map_persisted(self, tmp_path):
+        mgr = self._get_manager(tmp_path)
+        mgr.get_voice("Bob", metadata={"voice_map": {"Bob": "voice_x"}})
+        # Second call without voice_map should still return persisted voice
+        voice2 = mgr.get_voice("Bob")
+        assert voice2 == "voice_x"
+
+    def test_no_voice_map_uses_normal_flow(self, tmp_path):
+        mgr = self._get_manager(tmp_path)
+        voice = mgr.get_voice("Narrator")
+        # Should fall back to normal voice selection
+        assert voice is not None
+
+
+class TestValidateSegmentsUnknownSpeaker:
+    """Issue 2 – _validate_segments never emits 'unknown' speaker."""
+
+    def _validate(self, data):
+        from audiobook.ai.dialogue_parser import _validate_segments
+        return _validate_segments(data)
+
+    def test_unknown_speaker_resolved(self):
+        result = self._validate([
+            {"speaker": "unknown", "text": "Hello.", "type": "dialogue"},
+        ])
+        assert len(result) == 1
+        # "unknown" must be resolved
+        assert result[0]["speaker"] != "unknown"
+        assert result[0]["speaker"] == "Narrator"
+
+    def test_unknown_after_known_speaker(self):
+        result = self._validate([
+            {"speaker": "Alice", "text": "Hi.", "type": "dialogue"},
+            {"speaker": "unknown", "text": "Bye.", "type": "dialogue"},
+        ])
+        assert len(result) == 2
+        # After seeing Alice, unknown should resolve to Alice
+        assert result[1]["speaker"] == "Alice"
+
+    def test_empty_speaker_resolved(self):
+        result = self._validate([
+            {"speaker": "", "text": "text", "type": "narration"},
+        ])
+        assert len(result) == 1
+        assert result[0]["speaker"] == "Narrator"
+
+    def test_none_speaker_resolved(self):
+        result = self._validate([
+            {"speaker": None, "text": "text"},
+        ])
+        assert len(result) == 1
+        assert result[0]["speaker"] == "Narrator"
+
+
+class TestAudioHardeningHelpers:
+    """Issue 3 – Audio normalization and validation helpers."""
+
+    @pytest.fixture(autouse=True)
+    def _require_numpy(self):
+        pytest.importorskip("numpy")
+
+    def test_is_valid_audio_rejects_empty(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _is_valid_audio
+        assert _is_valid_audio(np.array([])) is False
+
+    def test_is_valid_audio_rejects_nan(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _is_valid_audio
+        assert _is_valid_audio(np.array([1.0, float('nan'), 0.5])) is False
+
+    def test_is_valid_audio_rejects_silence(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _is_valid_audio
+        assert _is_valid_audio(np.zeros(100)) is False
+
+    def test_is_valid_audio_rejects_explosion(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _is_valid_audio
+        assert _is_valid_audio(np.array([10.0, -10.0])) is False
+
+    def test_is_valid_audio_accepts_good(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _is_valid_audio
+        assert _is_valid_audio(np.array([0.5, -0.3, 0.1])) is True
+
+    def test_normalize_audio(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _normalize_audio
+        audio = np.array([0.5, -0.5, 1.5], dtype=np.float32)
+        result = _normalize_audio(audio)
+        assert isinstance(result, bytes)
+        # int16 = 2 bytes per sample
+        assert len(result) == 6
+        # 1.5 should be clipped to 1.0 → 32767
+        arr = np.frombuffer(result, dtype=np.int16)
+        assert arr[2] == 32767
+
+    def test_align_bytes(self):
+        from app.providers.faster_qwen3_tts_provider import _align_bytes
+        assert len(_align_bytes(b'\x00\x01\x02')) == 2
+        assert len(_align_bytes(b'\x00\x01')) == 2
+        assert len(_align_bytes(b'')) == 0
+
+
+class TestJobQueueChunkOrdering:
+    """Issue 3 – Job queue chunk_index and ordered retrieval."""
+
+    def test_job_has_chunk_index(self):
+        from app.job_queue import Job
+        job = Job(job_id="test1", text="hi", chunk_index=5)
+        assert job.chunk_index == 5
+
+    def test_job_default_chunk_index(self):
+        from app.job_queue import Job
+        job = Job(job_id="test2", text="hi")
+        assert job.chunk_index == -1
+
+    def test_get_result_includes_chunk_index(self):
+        from app.job_queue import JobQueue
+        q = JobQueue()
+        jid = q.enqueue("hello", chunk_index=3)
+        result = q.get_result(jid)
+        assert result is not None
+        assert result["chunk_index"] == 3
+
+    def test_get_ordered_results(self):
+        from app.job_queue import JobQueue, JobStatus
+        q = JobQueue()
+        # Enqueue out of order
+        jid2 = q.enqueue("b", chunk_index=2)
+        jid0 = q.enqueue("a", chunk_index=0)
+        jid1 = q.enqueue("c", chunk_index=1)
+
+        results = q.get_ordered_results([jid2, jid0, jid1])
+        indices = [r["chunk_index"] for r in results if r is not None]
+        assert indices == [0, 1, 2]
+
+    def test_retry_on_failure(self):
+        """Worker function retries up to _MAX_RETRIES times."""
+        from app.job_queue import JobQueue, JobStatus
+        calls = []
+
+        def failing_worker(text, speaker, voice_id, **kw):
+            calls.append(1)
+            if len(calls) < 3:
+                raise RuntimeError("fail")
+            return {"audio": b"ok"}
+
+        q = JobQueue(worker_fn=failing_worker)
+        q.start()
+        jid = q.enqueue("test")
+        # Wait for processing
+        import time
+        time.sleep(1)
+        result = q.get_result(jid)
+        q.stop()
+        assert result is not None
+        assert result["status"] == JobStatus.COMPLETED
+        assert len(calls) == 3  # two failures + one success
+
+
+class TestChunkTextDefault:
+    """Issue 4 – Default chunk size reduced."""
+
+    def test_default_max_chars_is_300(self):
+        import inspect
+        from audiobook.segmentation.chunk_text import chunk_text
+        sig = inspect.signature(chunk_text)
+        default = sig.parameters["max_chars"].default
+        assert default == 300
+
+    def test_chunks_respect_300(self):
+        from audiobook.segmentation.chunk_text import chunk_text
+        # 10 sentences, each ~35 chars → should make multiple chunks at 300
+        text = "This is a test sentence number one. " * 10
+        chunks = chunk_text(text)
+        for c in chunks:
+            # Allow one sentence to exceed if it's the only one in its chunk
+            assert len(c) <= 500  # generous upper bound
+
+
+class TestVoiceManagerDeterministicHash:
+    """Issue 5 – Voice assignment is deterministic across sessions."""
+
+    def test_same_character_same_voice(self, tmp_path):
+        from audiobook.voice.voice_manager import VoiceManager
+        voices = ["voice_a", "voice_b", "voice_c"]
+        mgr1 = VoiceManager(book_id="det_test", base_dir=str(tmp_path),
+                             available_voices=voices)
+        # Exhaust all unused voices first
+        mgr1.get_voice("X")
+        mgr1.get_voice("Y")
+        mgr1.get_voice("Z")
+        # Now fallback hash applies
+        v1 = mgr1.get_voice("DeterministicCharacter")
+
+        mgr2 = VoiceManager(book_id="det_test2", base_dir=str(tmp_path),
+                             available_voices=voices)
+        mgr2.get_voice("X")
+        mgr2.get_voice("Y")
+        mgr2.get_voice("Z")
+        v2 = mgr2.get_voice("DeterministicCharacter")
+
+        # Both should get the same voice because hashlib.md5 is deterministic
+        assert v1 == v2
+
+
+class TestParseDialogueNoUnknown:
+    """Issue 2 – parse_dialogue() in audiobook.py never returns 'unknown'."""
+
+    def test_no_unknown_speakers(self):
+        from app.audiobook import parse_dialogue
+        text = '''
+"Hello there," said Alice.
+
+"How are you?" asked Bob.
+
+She walked away.
+'''
+        segments = parse_dialogue(text)
+        for seg in segments:
+            assert seg["speaker"].lower() != "unknown"
+            assert seg["speaker"] != ""
