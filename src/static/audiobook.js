@@ -398,6 +398,9 @@ async function saveVoiceProfiles() {
     const saveBtn = audiobookVoicePanel
         ? audiobookVoicePanel.querySelector('.voice-panel-save-btn')
         : null;
+    const resetBtn = () => {
+        if (saveBtn) { saveBtn.textContent = '💾 Save Voice Profiles'; saveBtn.disabled = false; }
+    };
     if (saveBtn) {
         saveBtn.disabled = true;
         saveBtn.textContent = '⏳ Saving…';
@@ -414,16 +417,16 @@ async function saveVoiceProfiles() {
             _setAiStatus('💾 Voice profiles saved.');
             if (saveBtn) {
                 saveBtn.textContent = '✅ Saved!';
-                setTimeout(() => { saveBtn.textContent = '💾 Save Voice Profiles'; saveBtn.disabled = false; }, 2000);
+                setTimeout(resetBtn, 2000);
             }
         } else {
             _setAiStatus('❌ Failed to save voice profiles: ' + (data.error || 'unknown error'));
-            if (saveBtn) { saveBtn.textContent = '💾 Save Voice Profiles'; saveBtn.disabled = false; }
+            resetBtn();
         }
     } catch (e) {
         console.error('[AUDIOBOOK] Save voice profiles error:', e);
         _setAiStatus('❌ Error saving voice profiles: ' + e.message);
-        if (saveBtn) { saveBtn.textContent = '💾 Save Voice Profiles'; saveBtn.disabled = false; }
+        resetBtn();
     }
 }
 
