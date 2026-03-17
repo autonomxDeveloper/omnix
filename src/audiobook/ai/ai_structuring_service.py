@@ -18,6 +18,12 @@ Rules:
 - Dialogue must be assigned to the speaking character by name.
 - If the speaker of a quoted line cannot be determined, use "Narrator".
 - Maintain strict chronological order.
+- IMPORTANT: When a line contains both quoted dialogue AND narration (such as attribution tags like "said Tom" or action descriptions like "raising his coffee mug"), you MUST split them into separate entries. The quoted dialogue goes to the character, and the surrounding narration goes to "Narrator".
+  Example input: "Heartless," said Tom, raising his coffee mug. "We're loyal customers."
+  Correct output:
+    {{"speaker": "Tom", "text": "Heartless,"}},
+    {{"speaker": "Narrator", "text": "said Tom, raising his coffee mug."}},
+    {{"speaker": "Tom", "text": "We're loyal customers."}}
 
 Return ONLY valid JSON with this exact format:
 {{

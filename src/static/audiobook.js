@@ -216,7 +216,7 @@ async function aiStructureAudiobookText() {
         audiobookState.bookId = 'book_' + Date.now();
     }
 
-    _setAiStatus('🤖 AI structuring text — this may take a moment…');
+    _setAiStatus('🤖 AI structuring text — this may take a moment…', true);
     if (audiobookAiStructureBtn) {
         audiobookAiStructureBtn.disabled = true;
         audiobookAiStructureBtn.textContent = '⏳ Structuring…';
@@ -288,7 +288,7 @@ async function aiDirectScript() {
         audiobookState.bookId = 'book_' + Date.now();
     }
 
-    _setAiStatus('🎬 AI Director applying pacing & emotion…');
+    _setAiStatus('🎬 AI Director applying pacing & emotion…', true);
     if (audiobookDirectBtn) {
         audiobookDirectBtn.disabled = true;
         audiobookDirectBtn.textContent = '⏳ Directing…';
@@ -379,7 +379,10 @@ function updateVoicePanelEntry(character, voice) {
 // Save all voice panel entries to the server
 async function saveVoiceProfiles() {
     const bookId = audiobookState.bookId;
-    if (!bookId) return;
+    if (!bookId) {
+        _setAiStatus('⚠️ No book loaded — please AI-structure your text first.');
+        return;
+    }
 
     const selects = audiobookVoicePanelList
         ? audiobookVoicePanelList.querySelectorAll('.voice-panel-select')
@@ -391,6 +394,18 @@ async function saveVoiceProfiles() {
         if (char && voice) voices[char] = voice;
     });
 
+    // Find the save button and show saving state
+    const saveBtn = audiobookVoicePanel
+        ? audiobookVoicePanel.querySelector('.voice-panel-save-btn')
+        : null;
+    const resetBtn = () => {
+        if (saveBtn) { saveBtn.textContent = '💾 Save Voice Profiles'; saveBtn.disabled = false; }
+    };
+    if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.textContent = '⏳ Saving…';
+    }
+
     try {
         const response = await fetch(`/api/audiobook/books/${encodeURIComponent(bookId)}/voices`, {
             method: 'PUT',
@@ -400,17 +415,35 @@ async function saveVoiceProfiles() {
         const data = await response.json();
         if (data.success) {
             _setAiStatus('💾 Voice profiles saved.');
+            if (saveBtn) {
+                saveBtn.textContent = '✅ Saved!';
+                setTimeout(resetBtn, 2000);
+            }
+        } else {
+            _setAiStatus('❌ Failed to save voice profiles: ' + (data.error || 'unknown error'));
+            resetBtn();
         }
     } catch (e) {
         console.error('[AUDIOBOOK] Save voice profiles error:', e);
+        _setAiStatus('❌ Error saving voice profiles: ' + e.message);
+        resetBtn();
     }
 }
 
-// Internal: show/hide AI status message
-function _setAiStatus(msg) {
+// Internal: show/hide AI status message with optional progress bar
+function _setAiStatus(msg, showProgress) {
     if (!audiobookAiStatus) return;
-    audiobookAiStatus.textContent = msg;
-    audiobookAiStatus.style.display = msg ? 'block' : 'none';
+    if (!msg) {
+        audiobookAiStatus.style.display = 'none';
+        audiobookAiStatus.innerHTML = '';
+        return;
+    }
+    let html = `<span>${_escapeHtml(msg)}</span>`;
+    if (showProgress) {
+        html += `<div class="ai-status-progress"><div class="ai-status-progress-bar"></div></div>`;
+    }
+    audiobookAiStatus.innerHTML = html;
+    audiobookAiStatus.style.display = 'block';
 }
 
 // Internal: escape HTML for safe attribute/text insertion

@@ -4651,3 +4651,25 @@ pre:hover .code-copy-btn {
     border-radius: 4px;
     padding: 3px 6px;
 }
+
+/* AI Status Progress Bar (indeterminate) */
+.ai-status-progress {
+    margin-top: 8px;
+    height: 4px;
+    background: var(--border, #2a2a3e);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.ai-status-progress-bar {
+    width: 30%;
+    height: 100%;
+    background: var(--accent, #7c6af7);
+    border-radius: 2px;
+    animation: ai-status-slide 1.5s ease-in-out infinite;
+}
+
+@keyframes ai-status-slide {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+}
