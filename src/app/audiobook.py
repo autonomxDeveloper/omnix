@@ -98,7 +98,7 @@ def generate():
         try:
             requests.get(f"{shared.TTS_BASE_URL}/health", timeout=5)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            yield f"data: {json.dumps({'type': 'error', 'error': 'TTS server is not running. Please start the TTS server and try again.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'error': 'TTS server is not running. Please start the TTS server and try again.', 'code': 'TTS_UNAVAILABLE'})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
         
@@ -122,7 +122,7 @@ def generate():
                 if r.status_code == 200 and r.json().get('success'):
                     yield f"data: {json.dumps({'type': 'audio', 'audio': r.json().get('audio'), 'sample_rate': r.json().get('sample_rate'), 'segment_index': i, 'text': text[:100], 'voice_used': v_name})}\n\n"
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-                yield f"data: {json.dumps({'type': 'error', 'error': 'TTS server is not running. Please start the TTS server and try again.'})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'error': 'TTS server is not running. Please start the TTS server and try again.', 'code': 'TTS_UNAVAILABLE'})}\n\n"
                 break
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
