@@ -3,6 +3,7 @@ export class TTSClient {
     this.onAudioChunk = onAudioChunk;
     this.onDone = onDone;
     this.onStart = onStart;
+    this.onSegment = null;  // optional: called with segment index on each segment
     this.ws = null;
     this.connected = false;
     this.connecting = false;
@@ -80,6 +81,12 @@ export class TTSClient {
                   }
                   break;
                   
+                case 'segment':
+                  if (this.onSegment) {
+                    this.onSegment(data.index);
+                  }
+                  break;
+                  
                 case 'error':
                   console.error('[TTSClient] Server error:', data.error);
                   if (this.onDone) {
@@ -130,6 +137,42 @@ export class TTSClient {
       text: text,
       voice: voice
     }));
+  }
+
+  /**
+   * Start an audiobook TTS session over WebSocket.
+   *
+   * Accepts either structured segments or plain text.
+   *
+   * @param {Object} opts
+   * @param {string} [opts.text]            - plain text (for simple mode)
+   * @param {Array}  [opts.segments]        - structured audiobook segments
+   * @param {Object} [opts.voice_mapping]   - speaker → voice name map
+   * @param {Object} [opts.voice_map]       - alternative voice map (takes priority)
+   * @param {Object} [opts.default_voices]  - fallback voices per gender
+   */
+  async speakAudiobook(opts = {}) {
+    await this.connect();
+
+    const payload = { type: 'start' };
+
+    if (opts.segments) {
+      payload.segments = opts.segments;
+    }
+    if (opts.text) {
+      payload.text = opts.text;
+    }
+    if (opts.voice_mapping) {
+      payload.voice_mapping = opts.voice_mapping;
+    }
+    if (opts.voice_map) {
+      payload.voice_map = opts.voice_map;
+    }
+    if (opts.default_voices) {
+      payload.default_voices = opts.default_voices;
+    }
+
+    this.ws.send(JSON.stringify(payload));
   }
 
   disconnect() {
