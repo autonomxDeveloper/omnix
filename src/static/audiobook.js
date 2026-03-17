@@ -668,7 +668,13 @@ async function generateAudiobook() {
                                 
                             } else if (data.type === 'error') {
                                 console.error('Audiobook error:', data.error);
-                                updateProgress(-1, `Error: ${data.error}`);
+                                const errorMsg = data.error || 'Unknown error';
+                                if (errorMsg.toLowerCase().includes('tts server is not running')) {
+                                    updateProgress(-1, 'TTS server is not running. Please start the TTS server (e.g. chatterbox_tts_server.py) and try again.');
+                                    stopStreamingAudio();
+                                } else {
+                                    updateProgress(-1, `Error: ${errorMsg}`);
+                                }
                             }
                         } catch (e) {
                             console.error('Parse error:', e);

@@ -94,6 +94,14 @@ def generate():
     avail = set(shared.custom_voices.keys())
     
     def gen():
+        # Pre-flight: check TTS server is reachable before processing segments
+        try:
+            requests.get(f"{shared.TTS_BASE_URL}/health", timeout=5)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            yield f"data: {json.dumps({'type': 'error', 'error': 'TTS server is not running. Please start the TTS server and try again.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        
         for i, seg in enumerate(segments):
             speaker, text = seg.get('speaker'), seg.get('text', '')
             if not text.strip(): continue
@@ -113,7 +121,11 @@ def generate():
                 r = requests.post(f"{shared.TTS_BASE_URL}/tts", json=req, timeout=60)
                 if r.status_code == 200 and r.json().get('success'):
                     yield f"data: {json.dumps({'type': 'audio', 'audio': r.json().get('audio'), 'sample_rate': r.json().get('sample_rate'), 'segment_index': i, 'text': text[:100], 'voice_used': v_name})}\n\n"
-            except Exception as e: yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                yield f"data: {json.dumps({'type': 'error', 'error': 'TTS server is not running. Please start the TTS server and try again.'})}\n\n"
+                break
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
             time.sleep(0.1)
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
     return Response(gen(), mimetype='text/event-stream')
