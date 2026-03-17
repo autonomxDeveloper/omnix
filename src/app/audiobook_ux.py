@@ -24,11 +24,25 @@ audiobook_ux_bp = Blueprint('audiobook_ux', __name__)
 # Data persistence helpers
 # ──────────────────────────────────────────────────────────────────
 
+_SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_\-]+$')
+
+
+def _sanitize_id(value: str) -> str:
+    """Sanitize a user-supplied identifier to prevent path traversal."""
+    if not value or not _SAFE_ID_RE.match(value):
+        raise ValueError(f"Invalid identifier: {value!r}")
+    return value
+
+
 def _ux_data_path(user_id: str, filename: str) -> str:
-    """Return path to a UX data file for a user."""
-    path = os.path.join(shared.DATA_DIR, "audiobooks", "ux", user_id)
-    os.makedirs(path, exist_ok=True)
-    return os.path.join(path, filename)
+    """Return path to a UX data file for a user (safe from path traversal)."""
+    safe_user = _sanitize_id(user_id)
+    base = os.path.abspath(os.path.join(shared.DATA_DIR, "audiobooks", "ux"))
+    user_path = os.path.abspath(os.path.join(base, safe_user))
+    if not user_path.startswith(base + os.sep) and user_path != base:
+        raise ValueError("Path traversal attempted")
+    os.makedirs(user_path, exist_ok=True)
+    return os.path.join(user_path, filename)
 
 
 def _load_json(path: str) -> Any:
@@ -74,6 +88,11 @@ def create_bookmark():
         return jsonify({"success": False, "error": "book_id is required"}), 400
     if position is None:
         return jsonify({"success": False, "error": "position is required"}), 400
+
+    try:
+        _sanitize_id(user_id)
+    except ValueError:
+        return jsonify({"success": False, "error": "Invalid user_id"}), 400
 
     try:
         position = float(position)
@@ -154,6 +173,11 @@ def save_progress():
         return jsonify({"success": False, "error": "last_position is required"}), 400
 
     try:
+        _sanitize_id(user_id)
+    except ValueError:
+        return jsonify({"success": False, "error": "Invalid user_id"}), 400
+
+    try:
         last_position = float(last_position)
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "last_position must be a number"}), 400
@@ -204,6 +228,11 @@ def save_playback_state():
 
     if not book_id:
         return jsonify({"success": False, "error": "book_id is required"}), 400
+
+    try:
+        _sanitize_id(user_id)
+    except ValueError:
+        return jsonify({"success": False, "error": "Invalid user_id"}), 400
 
     speed = data.get("speed")
     voice = data.get("voice")

@@ -632,3 +632,38 @@ class TestChapterDetection:
     def test_empty_text(self):
         result = self._detect("")
         assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# #11  Path Traversal Protection
+# ---------------------------------------------------------------------------
+
+class TestPathTraversalProtection:
+    def test_sanitize_id_valid(self):
+        from app.audiobook_ux import _sanitize_id
+        assert _sanitize_id("user_123") == "user_123"
+        assert _sanitize_id("default") == "default"
+        assert _sanitize_id("my-book-id") == "my-book-id"
+
+    def test_sanitize_id_rejects_traversal(self):
+        from app.audiobook_ux import _sanitize_id
+        with pytest.raises(ValueError):
+            _sanitize_id("../../../etc")
+        with pytest.raises(ValueError):
+            _sanitize_id("user/../../root")
+        with pytest.raises(ValueError):
+            _sanitize_id("")
+        with pytest.raises(ValueError):
+            _sanitize_id("user id with spaces")
+
+    def test_ux_data_path_safe(self):
+        from app.audiobook_ux import _ux_data_path
+        # Should work for safe ids
+        path = _ux_data_path("test_user", "bookmarks.json")
+        assert "test_user" in path
+        assert path.endswith("bookmarks.json")
+
+    def test_ux_data_path_rejects_traversal(self):
+        from app.audiobook_ux import _ux_data_path
+        with pytest.raises(ValueError):
+            _ux_data_path("../../../tmp", "bookmarks.json")
