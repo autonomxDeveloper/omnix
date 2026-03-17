@@ -15,13 +15,16 @@ class TextSegmenter:
 
     def segment(self, text: str) -> List[str]:
         """Split text into segments respecting natural boundaries."""
+        if not text:
+            return [text]
+
         # Try chapter-level splits first
         chapter_splits = self._split_by_chapters(text)
         if len(chapter_splits) > 1:
             return self._enforce_max_size(chapter_splits)
 
-        # Fall back to paragraph grouping
-        return self._split_by_paragraphs(text)
+        # Fall back to paragraph grouping, then sentence grouping
+        return self._enforce_max_size(self._split_by_paragraphs(text))
 
     def _split_by_chapters(self, text: str) -> List[str]:
         parts = self.CHAPTER_PATTERN.split(text)
@@ -57,11 +60,37 @@ class TextSegmenter:
 
         return segments if segments else [text]
 
+    def _split_by_sentences(self, text: str) -> List[str]:
+        """Split a single long block by sentence boundaries."""
+        sentence_ends = re.compile(r'(?<=[.!?])\s+')
+        sentences = sentence_ends.split(text)
+        segments: List[str] = []
+        chunk = ""
+
+        for sentence in sentences:
+            if not sentence.strip():
+                continue
+            if chunk and len(chunk) + len(sentence) + 1 > self.MAX_CHARS:
+                segments.append(chunk)
+                chunk = sentence
+            else:
+                chunk = (chunk + " " + sentence).strip() if chunk else sentence
+
+        if chunk:
+            segments.append(chunk)
+
+        return segments if segments else [text]
+
     def _enforce_max_size(self, segments: List[str]) -> List[str]:
         result: List[str] = []
         for seg in segments:
             if len(seg) <= self.MAX_CHARS:
                 result.append(seg)
             else:
-                result.extend(self._split_by_paragraphs(seg))
+                # Try paragraph split first, then sentence split
+                sub = self._split_by_paragraphs(seg)
+                if len(sub) > 1:
+                    result.extend(self._enforce_max_size(sub))
+                else:
+                    result.extend(self._split_by_sentences(seg))
         return result

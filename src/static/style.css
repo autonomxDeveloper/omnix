@@ -4583,3 +4583,71 @@ pre:hover .code-copy-btn {
     justify-content: flex-end;
     margin-top: 8px;
 }
+
+/* ---------------------------------------------------------------
+   AI Audiobook Director — new UI elements
+--------------------------------------------------------------- */
+.audiobook-action-buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+}
+
+.audiobook-action-buttons .btn-primary,
+.audiobook-action-buttons .btn-secondary {
+    flex: 0 0 auto;
+}
+
+/* Voice Identity Memory Panel */
+.audiobook-voice-panel {
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: var(--bg-secondary, #1a1a2e);
+    border-radius: 8px;
+    border: 1px solid var(--border, #2a2a3e);
+}
+
+.audiobook-voice-panel h5 {
+    margin: 0 0 6px 0;
+    font-size: 0.9rem;
+    color: var(--text-primary, #e0e0e0);
+}
+
+.voice-panel-hint {
+    font-size: 0.75rem;
+    color: var(--text-secondary, #888);
+    margin: 0 0 10px 0;
+}
+
+.voice-panel-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border, #2a2a3e);
+}
+
+.voice-panel-row:last-of-type {
+    border-bottom: none;
+}
+
+.voice-panel-character {
+    flex: 0 0 120px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent, #7c6af7);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.voice-panel-select {
+    flex: 1;
+    font-size: 0.8rem;
+    background: var(--bg-primary, #0f0f23);
+    color: var(--text-primary, #e0e0e0);
+    border: 1px solid var(--border, #2a2a3e);
+    border-radius: 4px;
+    padding: 3px 6px;
+}

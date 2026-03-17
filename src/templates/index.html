@@ -1036,13 +1036,29 @@ Sofia: What a beautiful evening!
 Morgan: Indeed, it reminds me of home."></textarea>
                         </div>
                     </div>
-                    <button id="audiobook-analyze-btn" class="btn-primary">Analyze Text</button>
+                    <div class="audiobook-action-buttons">
+                        <button id="audiobook-analyze-btn" class="btn-primary">Analyze Text</button>
+                        <button id="audiobook-ai-structure-btn" class="btn-secondary" title="Use AI to intelligently parse dialogue, detect speakers and assign voices">🤖 AI Structure</button>
+                        <button id="audiobook-direct-btn" class="btn-secondary" style="display:none;" title="Apply AI narration direction: pacing, emotion, emphasis">🎬 AI Direct</button>
+                    </div>
                 </div>
-                
+
+                <!-- AI Structure Status -->
+                <div id="audiobook-ai-status" style="display:none; margin: 8px 0; padding: 8px 12px; background: var(--bg-secondary, #1a1a2e); border-radius: 6px; font-size: 0.85rem; color: var(--text-secondary, #aaa);"></div>
+
                 <!-- Speakers Section -->
                 <div id="audiobook-speakers-section" class="audiobook-speakers-section" style="display: none;">
                     <h4>2. Assign Voices</h4>
                     <div id="audiobook-speakers-list"></div>
+
+                    <!-- Voice Identity Memory Panel -->
+                    <div id="audiobook-voice-panel" class="audiobook-voice-panel" style="display:none;">
+                        <h5>🎭 Character Voice Identity</h5>
+                        <p class="voice-panel-hint">Voice assignments are saved per book and reused across sessions and segments.</p>
+                        <div id="audiobook-voice-panel-list"></div>
+                        <button class="btn-secondary" style="margin-top:8px; font-size:0.8rem;" onclick="saveVoiceProfiles()">💾 Save Voice Profiles</button>
+                    </div>
+
                     <button id="audiobook-generate-btn" class="btn-primary" style="margin-top: 16px;">Generate Audiobook</button>
                 </div>
                 
