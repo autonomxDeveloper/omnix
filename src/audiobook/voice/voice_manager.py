@@ -164,5 +164,5 @@ class VoiceManager:
 
         # 4. Deterministic hash-based fallback (stable across sessions)
         key = character_name or traits.get("tone", "")
-        idx = int(hashlib.md5(key.encode()).hexdigest(), 16) % len(self._available_voices)
+        idx = int(hashlib.sha256(key.encode()).hexdigest(), 16) % len(self._available_voices)
         return self._available_voices[idx]
