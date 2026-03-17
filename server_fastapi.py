@@ -2245,12 +2245,226 @@ async def tts_stream_cancel():
     return {"success": True, "message": "TTS stream cancellation requested"}
 
 
+# ============== AUDIOBOOK WEBSOCKET ==============
+
+# Semaphore allows up to 2 concurrent TTS generations (instead of a single Lock)
+_audiobook_tts_semaphore = threading.Semaphore(2)
+
+AUDIOBOOK_FRAME_SIZE = 2400  # 100ms at 24kHz
+
+
+def _generate_audiobook_tts_pcm(text: str, speaker: str = "default",
+                                 language: str = "en"):
+    """Yield raw PCM int16 bytes for *text*.
+
+    CRITICAL contract:
+      - NO base64
+      - NO WAV header
+      - RAW PCM int16 bytes ONLY
+      - Consistent sample rate (24000)
+    """
+    provider = shared.get_tts_provider()
+    if not provider:
+        return
+
+    with _audiobook_tts_semaphore:
+        if hasattr(provider, 'generate_audio_stream'):
+            buffer = np.array([], dtype=np.float32)
+
+            for audio_chunk, sample_rate, _ in provider.generate_audio_stream(
+                text=text,
+                speaker=speaker,
+                language=language,
+                chunk_size=1024,
+            ):
+                if audio_chunk is None or len(audio_chunk) == 0:
+                    continue
+
+                audio = np.asarray(audio_chunk, dtype=np.float32)
+                if audio.ndim > 1:
+                    audio = audio.mean(axis=1)
+
+                audio = np.clip(audio * 0.85, -1.0, 1.0)
+                buffer = np.concatenate([buffer, audio])
+
+                # Emit fixed-size frames
+                while len(buffer) >= AUDIOBOOK_FRAME_SIZE:
+                    frame = buffer[:AUDIOBOOK_FRAME_SIZE]
+                    buffer = buffer[AUDIOBOOK_FRAME_SIZE:]
+                    pcm_int16 = (frame * 32767).astype(np.int16).tobytes()
+                    yield pcm_int16
+
+            # Flush remainder
+            if len(buffer) > 0:
+                if len(buffer) < AUDIOBOOK_FRAME_SIZE:
+                    buffer = np.pad(buffer, (0, AUDIOBOOK_FRAME_SIZE - len(buffer)))
+                pcm_int16 = (buffer * 32767).astype(np.int16).tobytes()
+                yield pcm_int16
+
+        else:
+            # Fallback: batch generation → single PCM blob
+            if hasattr(provider, 'generate_tts'):
+                result = provider.generate_tts(text=text, speaker=speaker, language=language)
+            elif hasattr(provider, 'generate_audio'):
+                result = provider.generate_audio(text=text, speaker=speaker, language=language)
+            else:
+                return
+
+            if result and result.get('success'):
+                import base64 as _b64
+                raw = _b64.b64decode(result.get('audio', ''))
+                yield raw
+
+
+def _split_into_paragraphs(text: str, max_chars: int = 500) -> list:
+    """Split long text into manageable paragraphs for TTS streaming.
+
+    Uses the existing ``chunk_text`` utility when available, otherwise
+    falls back to simple paragraph splitting.
+    """
+    try:
+        from audiobook.segmentation.chunk_text import chunk_text
+        return chunk_text(text, max_chars=max_chars)
+    except ImportError:
+        # Simple fallback: split on blank lines, then hard-limit
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        if not paragraphs:
+            paragraphs = [text]
+        result = []
+        for p in paragraphs:
+            while len(p) > max_chars:
+                split_at = p.rfind('. ', 0, max_chars)
+                if split_at == -1:
+                    split_at = max_chars
+                else:
+                    split_at += 1  # include the period
+                result.append(p[:split_at].strip())
+                p = p[split_at:].strip()
+            if p:
+                result.append(p)
+        return result if result else [text]
+
+
+@app.websocket("/ws/audiobook")
+async def websocket_audiobook(websocket: WebSocket):
+    """WebSocket endpoint for audiobook TTS streaming.
+
+    Protocol
+    --------
+    Client → Server  (JSON):
+        {"type": "start", "segments": [...], "voice_mapping": {...},
+         "default_voices": {...}}
+        *or*  {"type": "start", "text": "plain text"}
+        {"type": "stop"}
+
+    Server → Client  (JSON):
+        {"type": "start"}
+        {"type": "segment", "index": i}
+        {"type": "done"}
+        {"type": "error", "message": "..."}
+
+    Server → Client  (binary):
+        Raw PCM int16 bytes at 24 000 Hz, mono
+    """
+    await websocket.accept()
+    loop = asyncio.get_event_loop()
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            if not raw:
+                break
+
+            data = json.loads(raw)
+            msg_type = data.get("type", "")
+
+            if msg_type == "stop":
+                await websocket.send_json({"type": "stopped"})
+                break
+
+            if msg_type == "start":
+                segments = data.get("segments")
+                voice_mapping = data.get("voice_mapping", {})
+                voice_map = data.get("voice_map", {})
+                merged_map = {**voice_mapping, **voice_map}
+                default_voices = data.get("default_voices", {})
+                plain_text = data.get("text")
+
+                await websocket.send_json({"type": "start"})
+
+                if segments:
+                    # Segment-based generation (structured audiobook)
+                    for i, seg in enumerate(segments):
+                        speaker_name = seg.get("speaker", "Narrator")
+                        seg_text = seg.get("text", "")
+                        if not seg_text.strip():
+                            continue
+
+                        # Resolve voice
+                        v_name = merged_map.get(speaker_name)
+                        if not v_name:
+                            g = _detect_gender(speaker_name)
+                            if g == "female":
+                                v_name = default_voices.get("female")
+                            elif g == "male":
+                                v_name = default_voices.get("male")
+                            else:
+                                v_name = default_voices.get("narrator")
+
+                        vid = (
+                            shared.custom_voices.get(v_name, {}).get("voice_clone_id")
+                            if v_name else None
+                        )
+                        final_speaker = vid if vid else (v_name or "default")
+
+                        await websocket.send_json({"type": "segment", "index": i})
+
+                        # Split long segments into manageable paragraphs
+                        paragraphs = _split_into_paragraphs(
+                            shared.remove_emojis(seg_text)
+                        )
+                        for para in paragraphs:
+                            def _gen_para(p=para, s=final_speaker):
+                                return list(_generate_audiobook_tts_pcm(p, speaker=s))
+
+                            chunks = await loop.run_in_executor(None, _gen_para)
+                            for chunk in chunks:
+                                await websocket.send_bytes(chunk)
+
+                elif plain_text:
+                    # Plain text mode — split into paragraphs
+                    paragraphs = _split_into_paragraphs(
+                        shared.remove_emojis(plain_text)
+                    )
+                    for idx, para in enumerate(paragraphs):
+                        await websocket.send_json({"type": "segment", "index": idx})
+
+                        def _gen_plain(p=para):
+                            return list(_generate_audiobook_tts_pcm(p))
+
+                        chunks = await loop.run_in_executor(None, _gen_plain)
+                        for chunk in chunks:
+                            await websocket.send_bytes(chunk)
+
+                await websocket.send_json({"type": "done"})
+
+    except WebSocketDisconnect:
+        print("[WS-AUDIOBOOK] Client disconnected")
+    except Exception as e:
+        print(f"[WS-AUDIOBOOK] Error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+
+
 # ============== MAIN ==============
 if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("Omnix FastAPI Server - Ultra Low Latency")
     print("=" * 50)
     print(f"WebSocket: ws://{HOST}:{PORT}/ws/conversation")
+    print(f"WebSocket: ws://{HOST}:{PORT}/ws/audiobook")
     print("=" * 50 + "\n")
     
     uvicorn.run(

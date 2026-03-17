@@ -16,8 +16,9 @@ import app.shared as shared
 
 audio_bp = Blueprint('audio', __name__)
 
-# Global lock to prevent CUDA OOM
-_generation_lock = threading.Lock()
+# Semaphore allows up to 2 concurrent TTS generations (replaces single Lock
+# to reduce head-of-line blocking while still limiting CUDA memory pressure)
+_generation_semaphore = threading.Semaphore(2)
 
 # Global waiter counter with lock
 _waiter_lock = threading.Lock()
@@ -144,7 +145,13 @@ def tts():
 
 @audio_bp.route('/api/tts/stream', methods=['POST'])
 def tts_stream():
-    """Legacy streaming endpoint - returns raw audio data directly."""
+    """Legacy streaming endpoint - returns raw audio data directly.
+
+    .. deprecated::
+        Prefer the ``/ws/audiobook`` WebSocket endpoint for audiobook TTS.
+        This HTTP endpoint encodes audio inline and is kept only for backward
+        compatibility with the chat subsystem.
+    """
     data = request.get_json()
     text = shared.remove_emojis(data.get('text', ''))
     if not text:
@@ -202,7 +209,13 @@ def tts_stream():
 
 @audio_bp.route('/api/tts/stream/server-sent-events', methods=['POST'])
 def tts_stream_sse():
-    """SSE streaming endpoint with proper JSON format."""
+    """SSE streaming endpoint with proper JSON format.
+
+    .. deprecated::
+        Prefer the ``/ws/audiobook`` WebSocket endpoint for audiobook TTS.
+        This SSE endpoint uses base64-encoded audio and is kept only for
+        backward compatibility with the chat subsystem.
+    """
     global _generation_waiters
     
     # --- Validation (same as /tts) --- 
@@ -258,7 +271,7 @@ def tts_stream_sse():
         t0 = time.time()
         try:
             # Acquire global lock (blocks if another generation is running)
-            with _generation_lock:
+            with _generation_semaphore:
                 # Check cancellation before starting
                 if stop_event.is_set():
                     return

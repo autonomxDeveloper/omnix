@@ -7,6 +7,14 @@ export class AudioOutput {
     this.onPlaybackStart = null;
     this.onPlaybackEnd = null;
     this.hasPlayedSomething = false;
+    /**
+     * Minimum number of chunks to buffer before starting playback.
+     * Prevents choppy audio when chunks arrive just-in-time.
+     * Set to 0 to disable buffering (play immediately).
+     */
+    this.minBufferSize = 3;
+    /** When true, flush / play everything regardless of buffer level. */
+    this._flushing = false;
   }
 
   async initContext() {
@@ -24,6 +32,20 @@ export class AudioOutput {
   enqueue(chunk) {
     this.audioQueue.push(chunk);
     console.log(`[AudioOutput] Enqueued chunk (queue=${this.audioQueue.length})`);
+
+    // Wait for minimum buffer before starting playback (avoids choppy audio)
+    if (!this._flushing && this.minBufferSize > 0 && this.audioQueue.length < this.minBufferSize && !this.playing) {
+      return;
+    }
+
+    this.playNext();
+  }
+
+  /**
+   * Signal that no more chunks will arrive — flush whatever is buffered.
+   */
+  flush() {
+    this._flushing = true;
     this.playNext();
   }
 
@@ -184,6 +206,7 @@ export class AudioOutput {
   stop() {
     this.audioQueue = [];
     this.hasPlayedSomething = false;
+    this._flushing = false;
     
     if (this.currentAudio) {
       try {
@@ -215,10 +238,12 @@ export class AudioOutput {
     this.audioQueue = [];
     this.playing = false;
     this.hasPlayedSomething = false;
+    this._flushing = false;
   }
 
   clear() {
     this.audioQueue = [];
+    this._flushing = false;
   }
 }
 
