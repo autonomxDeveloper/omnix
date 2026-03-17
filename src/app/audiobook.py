@@ -30,7 +30,7 @@ def detect_gender(name):
 
 def parse_dialogue(text):
     segments = []
-    speech_verbs = r'(?:said|asked|replied|whispered|shouted|murmured|answered|added)'
+    speech_verbs = r'(?:said|asked|replied|whispered|shouted|murmured|answered|added|insisted|demanded|muttered|sighed|groaned|exclaimed|called|declared|continued|suggested|offered|responded)'
     thought_pattern = re.compile(r'([A-Z][A-Za-z\'\-]+)\s+(?:thought|wondered)\s*[,:]*\s*["\']([^"\']+)["\']', re.IGNORECASE)
     
     paragraphs = re.split(r'\n\s*\n', text)
@@ -46,28 +46,67 @@ def parse_dialogue(text):
         
         for m in re.finditer(r'([A-Z][A-Za-z\'\-]+)\s*:\s*(.+)$', para, re.MULTILINE):
             if m.group(2).strip() and not any(t in m.group(2) for t in thoughts):
-                para_dialogues.append({'speaker': m.group(1).strip(), 'text': m.group(2).strip(), 'start': m.start()})
+                para_dialogues.append({'speaker': m.group(1).strip(), 'text': m.group(2).strip(), 'start': m.start(), 'end': m.end()})
                 last_speaker = m.group(1).strip()
                 
         if not para_dialogues:
-            for m in re.finditer(r'["\']([^"\']+)["\']\s*,?\s*(?:' + speech_verbs + r')\s+([A-Z][A-Za-z\'\-]+)', para, re.IGNORECASE):
+            matched_spans = []
+            # Pattern: "dialogue," verb Speaker  (e.g. "Heartless," said Tom)
+            for m in re.finditer(r'["\u201c]([^"\u201d]+)["\u201d]\s*,?\s*(?:' + speech_verbs + r')\s+([A-Z][A-Za-z\'\-]+)', para, re.IGNORECASE):
                 if m.group(1).strip() and not any(t in m.group(1) for t in thoughts):
-                    para_dialogues.append({'speaker': m.group(2).strip(), 'text': m.group(1).strip(), 'start': m.start()})
+                    para_dialogues.append({'speaker': m.group(2).strip(), 'text': m.group(1).strip(), 'start': m.start(), 'end': m.end()})
                     last_speaker = m.group(2).strip()
+                    matched_spans.append((m.start(), m.end()))
+
+            # Pattern: "dialogue," Speaker verb  (e.g. "I'm serious," Maya insisted)
+            for m in re.finditer(r'["\u201c]([^"\u201d]+)["\u201d]\s*,?\s*([A-Z][A-Za-z\'\-]+)\s+(?:' + speech_verbs + r')', para, re.IGNORECASE):
+                if any(s <= m.start() < e for s, e in matched_spans):
+                    continue
+                if m.group(1).strip() and not any(t in m.group(1) for t in thoughts):
+                    para_dialogues.append({'speaker': m.group(2).strip(), 'text': m.group(1).strip(), 'start': m.start(), 'end': m.end()})
+                    last_speaker = m.group(2).strip()
+                    matched_spans.append((m.start(), m.end()))
+
+            # Also find remaining quoted segments not captured by speech-verb patterns
+            if para_dialogues:
+                for m in re.finditer(r'["\u201c]([^"\u201d]+)["\u201d]', para):
+                    if any(s <= m.start() < e for s, e in matched_spans):
+                        continue
+                    if m.group(1).strip() and not any(t in m.group(1) for t in thoughts):
+                        para_dialogues.append({'speaker': last_speaker or 'Narrator', 'text': m.group(1).strip(), 'start': m.start(), 'end': m.end()})
                     
         if not para_dialogues:
-            for m in re.finditer(r'["\']([^"\']+)["\']', para):
+            for m in re.finditer(r'["\u201c]([^"\u201d]+)["\u201d]', para):
                 if m.group(1).strip() and not any(t in m.group(1) for t in thoughts):
-                    para_dialogues.append({'speaker': last_speaker or 'Narrator', 'text': m.group(1).strip(), 'start': m.start()})
+                    para_dialogues.append({'speaker': last_speaker or 'Narrator', 'text': m.group(1).strip(), 'start': m.start(), 'end': m.end()})
                     
         if para_dialogues:
             para_dialogues.sort(key=lambda x: x.get('start', 0))
-            if para_dialogues[0]['start'] > 5:
-                pre = re.sub(r'["\'].*?["\']', '', para[:para_dialogues[0]['start']]).strip()
+
+            # Collect matched spans for gap extraction
+            spans = [(d['start'], d.get('end', d['start'] + len(d['text']) + 2)) for d in para_dialogues]
+
+            # Narration before first dialogue
+            if spans[0][0] > 0:
+                pre = re.sub(r'["\u201c].*?["\u201d]', '', para[:spans[0][0]]).strip()
                 if pre: segments.append({'speaker': 'Narrator', 'text': pre})
-            for d in para_dialogues: segments.append({'speaker': d['speaker'], 'text': d['text']})
+
+            for i, d in enumerate(para_dialogues):
+                segments.append({'speaker': d['speaker'], 'text': d['text']})
+                # Narration gap between this dialogue and the next
+                if i < len(para_dialogues) - 1:
+                    gap_text = para[spans[i][1]:spans[i + 1][0]]
+                    gap_text = re.sub(r'["\u201c].*?["\u201d]', '', gap_text).strip().strip('.,;: ')
+                    if gap_text:
+                        segments.append({'speaker': 'Narrator', 'text': gap_text})
+
+            # Narration after last dialogue
+            if spans[-1][1] < len(para):
+                post = re.sub(r'["\u201c].*?["\u201d]', '', para[spans[-1][1]:]).strip().strip('.,;: ')
+                if post:
+                    segments.append({'speaker': 'Narrator', 'text': post})
         else:
-            if '"' not in para and "'" not in para: segments.append({'speaker': 'Narrator', 'text': para})
+            if '"' not in para and '\u201c' not in para: segments.append({'speaker': 'Narrator', 'text': para})
             
     return segments
 
