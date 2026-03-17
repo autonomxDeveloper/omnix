@@ -351,11 +351,12 @@ async function loadVoicePanel(bookId) {
 
         let html = '';
         for (const [character, profile] of Object.entries(profiles)) {
-            const currentVoice = (typeof profile === 'object' ? profile.voice : profile) || '';
+            const speakerVoice = audiobookState.voiceMapping[character];
+            const storedVoice = (typeof profile === 'object' ? profile.voice : profile) || '';
+            const currentVoice = speakerVoice || storedVoice;
             html += `<div class="voice-panel-row">`;
             html += `<span class="voice-panel-character">${_escapeHtml(character)}</span>`;
-            html += `<select class="voice-panel-select" data-character="${_escapeHtml(character)}"
-                         onchange="updateVoicePanelEntry('${_escapeHtml(character)}', this.value)">`;
+            html += `<select class="voice-panel-select" data-character="${_escapeHtml(character)}" disabled>`;
             html += `<option value="">-- Auto --</option>`;
             availableVoices.forEach(v => {
                 const sel = v === currentVoice ? 'selected' : '';
@@ -366,6 +367,13 @@ async function loadVoicePanel(bookId) {
 
         audiobookVoicePanelList.innerHTML = html;
         audiobookVoicePanel.style.display = 'block';
+        syncVoicePanelFromSpeakerSelections();
+
+        const saveBtn = audiobookVoicePanel.querySelector('.voice-panel-save-btn');
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.textContent = '🔄 Auto-synced from Individual Speakers';
+        }
     } catch (e) {
         console.error('[AUDIOBOOK] Voice panel load error:', e);
     }
@@ -374,6 +382,35 @@ async function loadVoicePanel(bookId) {
 // Update a single voice panel entry (does not auto-save)
 function updateVoicePanelEntry(character, voice) {
     audiobookState.voiceMapping[character] = voice || undefined;
+}
+
+function syncVoicePanelFromSpeakerSelections() {
+    if (!audiobookVoicePanelList || !audiobookSpeakersList) return;
+
+    const speakerSelects = audiobookSpeakersList.querySelectorAll('.speaker-voice-select');
+    const panelSelects = audiobookVoicePanelList.querySelectorAll('.voice-panel-select');
+    if (!speakerSelects.length || !panelSelects.length) return;
+
+    const speakerMap = {};
+    speakerSelects.forEach(sel => {
+        const speaker = sel.dataset.speaker;
+        const voice = sel.value;
+        if (speaker && voice) speakerMap[speaker] = voice;
+    });
+
+    panelSelects.forEach(sel => {
+        const character = sel.dataset.character;
+        if (!character || !speakerMap[character]) return;
+        sel.value = speakerMap[character];
+    });
+}
+
+function scheduleVoiceProfileAutoSave() {
+    if (!audiobookState.bookId) return;
+    if (voiceProfileSaveTimer) clearTimeout(voiceProfileSaveTimer);
+    voiceProfileSaveTimer = setTimeout(() => {
+        saveVoiceProfiles();
+    }, 500);
 }
 
 // Save all voice panel entries to the server
@@ -388,18 +425,27 @@ async function saveVoiceProfiles() {
         ? audiobookVoicePanelList.querySelectorAll('.voice-panel-select')
         : [];
     const voices = {};
-    selects.forEach(sel => {
-        const char = sel.dataset.character;
-        const voice = sel.value;
-        if (char && voice) voices[char] = voice;
-    });
+    if (selects.length > 0) {
+        selects.forEach(sel => {
+            const char = sel.dataset.character;
+            const voice = sel.value;
+            if (char && voice) voices[char] = voice;
+        });
+    } else {
+        Object.entries(audiobookState.voiceMapping).forEach(([speaker, voice]) => {
+            if (speaker && voice) voices[speaker] = voice;
+        });
+    }
 
     // Find the save button and show saving state
     const saveBtn = audiobookVoicePanel
         ? audiobookVoicePanel.querySelector('.voice-panel-save-btn')
         : null;
     const resetBtn = () => {
-        if (saveBtn) { saveBtn.textContent = '💾 Save Voice Profiles'; saveBtn.disabled = false; }
+        if (saveBtn) {
+            saveBtn.textContent = '🔄 Auto-synced from Individual Speakers';
+            saveBtn.disabled = true;
+        }
     };
     if (saveBtn) {
         saveBtn.disabled = true;
@@ -531,6 +577,7 @@ async function displaySpeakers(speakers, segments) {
         const gender = speakerInfo.gender || 'neutral';
         const suggested = speakerInfo.suggested_voice || '';
         const segmentCount = speakerInfo.segment_count || 0;
+        if (suggested) audiobookState.voiceMapping[speakerName] = suggested;
         
         html += `<div class="speaker-assignment-row" data-gender="${gender}">`;
         html += `<div class="speaker-info">`;
@@ -556,6 +603,8 @@ async function displaySpeakers(speakers, segments) {
     
     audiobookSpeakersList.innerHTML = html;
     audiobookSpeakersSection.style.display = 'block';
+    syncVoicePanelFromSpeakerSelections();
+    scheduleVoiceProfileAutoSave();
     
     // Auto-select default voices based on gender detection
     autoSelectDefaultVoices(availableVoices);
@@ -605,6 +654,8 @@ function updateVoiceMapping(speakerName, voiceId) {
     } else {
         delete audiobookState.voiceMapping[speakerName];
     }
+    syncVoicePanelFromSpeakerSelections();
+    scheduleVoiceProfileAutoSave();
 }
 
 // Update default voice
@@ -624,6 +675,7 @@ async function generateAudiobook() {
     audiobookState.audioQueue = [];
     audiobookState.currentSegment = 0;
     audiobookState.totalSegments = audiobookState.segments.length;
+    streamingShouldShowFullControls = false;
     
     // Show progress and player immediately
     if (audiobookProgress) audiobookProgress.style.display = 'block';
@@ -693,11 +745,12 @@ async function generateAudiobook() {
                                 
                             } else if (data.type === 'done') {
                                 updateProgress(100, 'Generation complete!');
-                                updateStreamingStatus('Generation complete!');
-                                
-                                // Stop streaming playback and show full controls
-                                stopStreamingAudio();
-                                showFullPlaybackControls();
+                                updateStreamingStatus('Finishing playback...');
+                                audiobookState.isGenerating = false;
+                                streamingShouldShowFullControls = true;
+                                if (!streamingPlaybackInProgress && streamingAudioIndex >= audiobookState.audioQueue.length && audiobookState.audioQueue.length > 0) {
+                                    showFullPlaybackControls();
+                                }
                                 
                             } else if (data.type === 'error') {
                                 console.error('Audiobook error:', data.error);
@@ -733,6 +786,11 @@ async function generateAudiobook() {
 let streamingPlaybackInProgress = false;
 let streamingAudioIndex = 0;
 let streamingAudioElement = null;
+let streamingShouldShowFullControls = false;
+let voiceProfileSaveTimer = null;
+const AUDIO_EDGE_FADE_MS = 8;
+const MIN_FADE_SAMPLES = 8;
+const MAX_FADE_DIVISOR = 4;
 
 // Combined audio for playback controls
 let combinedAudioBlob = null;
@@ -798,6 +856,10 @@ async function playStreamingAudio() {
     }
     
     streamingPlaybackInProgress = false;
+    if (streamingShouldShowFullControls && audiobookState.audioQueue.length > 0 && audiobookState.isPlaying) {
+        streamingShouldShowFullControls = false;
+        showFullPlaybackControls();
+    }
 }
 
 // Play a single audio segment
@@ -893,6 +955,7 @@ function resumeStreamingAudio() {
 function stopStreamingAudio() {
     audiobookState.isPlaying = false;
     streamingPlaybackInProgress = false;
+    streamingShouldShowFullControls = false;
     streamingAudioIndex = 0;
     
     if (streamingAudioElement) {
@@ -930,7 +993,7 @@ async function combineAudioSegments() {
         for (let i = 0; i < len; i++) {
             pcmBuffer[i] = binaryString.charCodeAt(i) & 0xFF;
         }
-        pcmArrays.push(pcmBuffer);
+        pcmArrays.push(applyEdgeFadeToPcmBytes(pcmBuffer, sampleRate));
         totalLength += len;
         
         // Track approximate duration (16-bit mono)
@@ -1443,6 +1506,7 @@ function createWavBufferFromBase64(base64Pcm, sampleRate) {
     for (let i = 0; i < len; i++) {
         pcmView[i] = binaryString.charCodeAt(i) & 0xFF;
     }
+    const smoothedPcmView = applyEdgeFadeToPcmBytes(pcmView, sampleRate);
     
     // Create WAV container
     const numChannels = 1;
@@ -1450,7 +1514,7 @@ function createWavBufferFromBase64(base64Pcm, sampleRate) {
     const bytesPerSample = bitsPerSample / 8;
     const blockAlign = numChannels * bytesPerSample;
     const byteRate = sampleRate * blockAlign;
-    const dataSize = pcmBuffer.byteLength;
+    const dataSize = smoothedPcmView.byteLength;
     const bufferSize = 44 + dataSize;
     
     const buffer = new ArrayBuffer(bufferSize);
@@ -1477,11 +1541,35 @@ function createWavBufferFromBase64(base64Pcm, sampleRate) {
     
     // Copy PCM data
     const offset = 44;
-    for (let i = 0; i < pcmView.length; i++) {
-        view.setUint8(offset + i, pcmView[i]);
+    for (let i = 0; i < smoothedPcmView.length; i++) {
+        view.setUint8(offset + i, smoothedPcmView[i]);
     }
     
     return buffer;
+}
+
+function applyEdgeFadeToPcmBytes(pcmBytes, sampleRate) {
+    const totalSamples = Math.floor(pcmBytes.length / 2);
+    if (totalSamples < MIN_FADE_SAMPLES) return pcmBytes;
+
+    const int16 = new Int16Array(totalSamples);
+    const byteView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+    for (let i = 0; i < totalSamples; i++) {
+        int16[i] = byteView.getInt16(i * 2, true);
+    }
+
+    const fadeSamples = Math.min(
+        Math.max(MIN_FADE_SAMPLES, Math.floor(sampleRate * (AUDIO_EDGE_FADE_MS / 1000))),
+        Math.floor(totalSamples / MAX_FADE_DIVISOR)
+    );
+
+    for (let i = 0; i < fadeSamples; i++) {
+        const gain = i / fadeSamples;
+        int16[i] = Math.round(int16[i] * gain);
+        int16[totalSamples - 1 - i] = Math.round(int16[totalSamples - 1 - i] * gain);
+    }
+
+    return new Uint8Array(int16.buffer);
 }
 
 function writeStringToView(view, offset, string) {
