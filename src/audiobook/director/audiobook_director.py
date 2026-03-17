@@ -1,5 +1,6 @@
 from typing import List, Dict, Optional, Callable
 
+from audiobook.constants import NARRATOR
 from audiobook.director.pacing_engine import PacingEngine
 from audiobook.director.emphasis_engine import EmphasisEngine
 from audiobook.director.scene_mood_engine import SceneMoodEngine
@@ -55,7 +56,7 @@ class AudiobookDirector:
             pause_after = self.pacing.pause(line)
 
             directed.append({
-                "speaker": line.get("speaker", "Narrator"),
+                "speaker": line.get("speaker", NARRATOR),
                 "text": line.get("text", ""),
                 "emotion": emotion,
                 "pace": pace,

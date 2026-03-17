@@ -1,6 +1,8 @@
 """Voice consistency manager – ensures the same character always gets the same
 voice across the entire book."""
 
+import hashlib
+import logging
 from typing import Callable, Dict, List, Optional, Set
 
 from .character_normalizer import CharacterNormalizer
@@ -8,6 +10,8 @@ from .character_voice_memory import CharacterVoiceMemory
 from .voice_classifier import classify_character_voice
 
 _DEFAULT_VOICE = "neutral_voice"
+
+logger = logging.getLogger(__name__)
 
 
 class VoiceManager:
@@ -53,14 +57,27 @@ class VoiceManager:
         """Get or assign a voice for *character_name*.
 
         1. Normalise the name.
-        2. Return persisted voice if one exists.
-        3. Otherwise classify the character, pick a matching voice, persist
+        2. Respect an external ``voice_map`` supplied via *metadata* (the
+           UI's single source of truth).
+        3. Return persisted voice if one exists.
+        4. Otherwise classify the character, pick a matching voice, persist
            it, and return it.
         """
         canonical = self._normalizer.normalize(character_name)
 
+        # ── Honour external voice_map first (Issue 1 fix) ──
+        if metadata and "voice_map" in metadata:
+            mapped = metadata["voice_map"].get(canonical)
+            if mapped:
+                # Persist so subsequent calls stay consistent
+                self._memory.set_voice(canonical, mapped)
+                self._used_voices.add(mapped)
+                logger.info("[VOICE MAP] %s → %s (from voice_map)", canonical, mapped)
+                return mapped
+
         existing = self._memory.get_voice(canonical)
         if existing is not None:
+            logger.info("[VOICE MAP] %s → %s (persisted)", canonical, existing)
             return existing
 
         context = (metadata or {}).get("context", "")
@@ -68,9 +85,10 @@ class VoiceManager:
             canonical, context=context, llm_fn=self._llm_fn,
         )
 
-        voice_id = self._select_voice(traits)
+        voice_id = self._select_voice(traits, canonical)
         self._memory.set_voice(canonical, voice_id)
         self._used_voices.add(voice_id)
+        logger.info("[VOICE MAP] %s → %s (newly assigned)", canonical, voice_id)
         return voice_id
 
     def save(self) -> None:
@@ -106,15 +124,17 @@ class VoiceManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _select_voice(self, traits: Dict) -> str:
+    def _select_voice(self, traits: Dict, character_name: str = "") -> str:
         """Pick the best voice from *available_voices* based on *traits*.
 
         Strategy:
         1. Try to find an unused voice whose name contains the detected
            gender (e.g. ``"male"`` in ``"deep_male"``).
         2. Fall back to any voice whose name contains the gender.
-        3. Fall back to hash-based deterministic selection from all voices.
-        4. Ultimate fallback: ``"neutral_voice"``.
+        3. Fall back to any unused voice at all.
+        4. Deterministic hash-based fallback across full list (uses
+           *character_name* so the result is stable across sessions).
+        5. Ultimate fallback: ``"neutral_voice"``.
         """
         if not self._available_voices:
             return _DEFAULT_VOICE
@@ -142,6 +162,7 @@ class VoiceManager:
         if unused:
             return unused[0]
 
-        # 4. Deterministic hash-based fallback across full list
-        idx = hash(traits.get("tone", "")) % len(self._available_voices)
+        # 4. Deterministic hash-based fallback (stable across sessions)
+        key = character_name or traits.get("tone", "")
+        idx = int(hashlib.md5(key.encode()).hexdigest(), 16) % len(self._available_voices)
         return self._available_voices[idx]

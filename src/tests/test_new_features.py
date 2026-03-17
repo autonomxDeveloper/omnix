@@ -190,8 +190,11 @@ class TestValidateSegments:
         assert len(result) == 1
 
     def test_missing_speaker(self):
+        """Segments with missing speaker are assigned to Narrator, not dropped."""
         result = self._validate([{"text": "hi"}])
-        assert len(result) == 0
+        assert len(result) == 1
+        assert result[0]["speaker"] == "Narrator"
+        assert result[0]["type"] == "narration"
 
     def test_missing_text(self):
         result = self._validate([{"speaker": "A"}])
