@@ -57,16 +57,18 @@ class JobQueue:
     """
 
     def __init__(self, worker_fn: Callable = None, max_workers: int = 1,
-                 max_cache_size: int = 100):
+                 max_cache_size: int = 100, max_retries: int = 3):
         """
         Args:
             worker_fn: Function(text, speaker, voice_id, **kwargs) -> dict with audio result
             max_workers: Number of background worker threads
             max_cache_size: Max completed jobs to keep in cache
+            max_retries: Max retry attempts for failed jobs
         """
         self._worker_fn = worker_fn
         self._max_workers = max_workers
         self._max_cache_size = max_cache_size
+        self._max_retries = max_retries
 
         self._queue: list = []  # pending jobs
         self._jobs: OrderedDict = OrderedDict()  # all jobs by id
@@ -169,8 +171,6 @@ class JobQueue:
 
             self._process_job(job)
 
-    _MAX_RETRIES = 3
-
     def _process_job(self, job: Job) -> None:
         """Process a single job using the worker function (with retry)."""
         if self._worker_fn is None:
@@ -181,7 +181,7 @@ class JobQueue:
             return
 
         last_err: Optional[Exception] = None
-        for attempt in range(self._MAX_RETRIES):
+        for attempt in range(self._max_retries):
             try:
                 result = self._worker_fn(
                     job.text, job.speaker, job.voice_id, **job.kwargs
@@ -198,7 +198,7 @@ class JobQueue:
 
             except Exception as e:
                 last_err = e
-                logger.warning("Job %s attempt %d/%d failed: %s", job.job_id, attempt + 1, self._MAX_RETRIES, e)
+                logger.warning("Job %s attempt %d/%d failed: %s", job.job_id, attempt + 1, self._max_retries, e)
 
         # All retries exhausted
         with self._lock:
@@ -206,7 +206,7 @@ class JobQueue:
             job.error = str(last_err)
             job.completed_at = time.time()
 
-        logger.error("Job %s failed after %d attempts: %s", job.job_id, self._MAX_RETRIES, last_err)
+        logger.error("Job %s failed after %d attempts: %s", job.job_id, self._max_retries, last_err)
 
     def get_ordered_results(self, job_ids: List[str]) -> List[Optional[Dict[str, Any]]]:
         """Return results for *job_ids* sorted by ``chunk_index``.

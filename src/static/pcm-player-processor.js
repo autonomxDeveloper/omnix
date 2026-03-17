@@ -1,3 +1,5 @@
+const MAX_CORRUPTION_COUNT = 5000;
+
 class PCMPlayerProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
@@ -69,7 +71,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
         }
 
         // Reset on sustained corruption to prevent speaker damage
-        if (this.corruptionCount > 5000) {
+        if (this.corruptionCount > MAX_CORRUPTION_COUNT) {
             this.buffer = [];
             this.bufferSamples = 0;
             this.chunkOffset = 0;
