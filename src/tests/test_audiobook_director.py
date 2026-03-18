@@ -432,8 +432,8 @@ class TestCharacterVoiceMemory:
         mem.set_voice("Alice", "young_female")
         mem.set_voice("Narrator", "deep_male")
         profiles = mem.all_profiles()
-        assert "Alice" in profiles
-        assert "Narrator" in profiles
+        assert "alice" in profiles
+        assert "narrator" in profiles
 
     def test_has_character(self, tmp_path):
         mem = self._get(str(tmp_path))
