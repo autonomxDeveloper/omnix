@@ -5,6 +5,8 @@ import re
 import sys
 import json
 import time
+import struct
+import base64
 import requests
 from flask import Blueprint, request, jsonify, Response, send_file
 import app.shared as shared
@@ -139,8 +141,8 @@ def generate():
     v_map = data.get('voice_mapping', {})
     # voice_map is the canonical single-source-of-truth from the UI
     voice_map = data.get('voice_map', {})
-    # Merge: voice_map takes precedence over voice_mapping
-    merged_map = {**v_map, **voice_map}
+    # Merge and normalise keys (lower-cased) so UI changes always win
+    merged_map = {k.lower().strip(): v for k, v in {**v_map, **voice_map}.items()}
     def_v = data.get('default_voices', {})
     avail = set(shared.custom_voices.keys())
     job_id = data.get('job_id', f"job_{int(time.time())}")
@@ -165,13 +167,37 @@ def generate():
         except Exception:
             pass
 
+        # Write a WAV file immediately with a streaming-style placeholder header
+        # (RIFF/data sizes set to 0xFFFFFFFF).  PCM bytes are appended as each
+        # segment is generated so the file is usable before generation finishes.
+        # The header is updated with real sizes at the end.
+        output_path = f"/tmp/audiobook_{job_id}.wav"
+        _WAV_SAMPLE_RATE = 24000
+        _WAV_HEADER_SIZE = 44
+        total_pcm_bytes = 0
+        _streaming_sentinel = 0xFFFFFFFF
+        try:
+            wav_header = struct.pack(
+                "<4sI4s4sIHHIIHH4sI",
+                b"RIFF", _streaming_sentinel, b"WAVE",
+                b"fmt ", 16, 1, 1, _WAV_SAMPLE_RATE, _WAV_SAMPLE_RATE * 2,
+                2, 16,
+                b"data", _streaming_sentinel,
+            )
+            with open(output_path, "wb") as _fh:
+                _fh.write(wav_header)
+        except Exception:
+            pass
+        yield f"data: {json.dumps({'type': 'job', 'job_id': job_id, 'download_url': f'/api/audiobook/{job_id}/download'})}\n\n"
+
         current_time = 0.0
 
         for i, seg in enumerate(segments):
             speaker, text = seg.get('speaker'), seg.get('text', '')
             if not text.strip(): continue
 
-            v_name = merged_map.get(speaker)
+            # Normalise speaker name for case-insensitive lookup
+            v_name = merged_map.get(speaker.lower().strip() if speaker else '')
             if not v_name:
                 g = detect_gender(speaker)
                 v_name = def_v.get('female') if g == 'female' else def_v.get('male') if g == 'male' else def_v.get('narrator')
@@ -191,10 +217,21 @@ def generate():
 
                 if result and result.get('success'):
                     duration = estimate_duration(text)
+                    audio_b64 = result.get('audio', '')
+                    # Append raw PCM bytes to the WAV file as they arrive so the
+                    # file is usable for download before generation finishes.
+                    if audio_b64:
+                        try:
+                            pcm_bytes = base64.b64decode(audio_b64)
+                            with open(output_path, "ab") as _fh:
+                                _fh.write(pcm_bytes)
+                            total_pcm_bytes += len(pcm_bytes)
+                        except Exception:
+                            pass
                     payload = {
                         'type': 'audio',
-                        'audio': result.get('audio', ''),
-                        'sample_rate': result.get('sample_rate', 24000),
+                        'audio': audio_b64,
+                        'sample_rate': result.get('sample_rate', _WAV_SAMPLE_RATE),
                         'segment_index': i,
                         'text': text[:100],
                         'voice_used': v_name,
@@ -212,6 +249,19 @@ def generate():
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
             time.sleep(0.1)
+
+        # Finalise the WAV header with the real PCM data size now that all
+        # segments have been written.
+        if total_pcm_bytes > 0:
+            try:
+                with open(output_path, "r+b") as _fh:
+                    _fh.seek(4)
+                    _fh.write(struct.pack("<I", 36 + total_pcm_bytes))
+                    _fh.seek(40)
+                    _fh.write(struct.pack("<I", total_pcm_bytes))
+            except Exception:
+                pass
+
         yield f"data: {json.dumps({'type': 'done', 'job_id': job_id})}\n\n"
     return Response(gen(), mimetype='text/event-stream')
 

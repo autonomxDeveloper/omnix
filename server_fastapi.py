@@ -2385,7 +2385,11 @@ async def websocket_audiobook(websocket: WebSocket):
                 segments = data.get("segments")
                 voice_mapping = data.get("voice_mapping", {})
                 voice_map = data.get("voice_map", {})
-                merged_map = {**voice_mapping, **voice_map}
+                # Normalise keys so UI voice changes (lower-cased) always win
+                merged_map = {
+                    k.lower().strip(): v
+                    for k, v in {**voice_mapping, **voice_map}.items()
+                }
                 default_voices = data.get("default_voices", {})
                 plain_text = data.get("text")
                 job_id = data.get("job_id", f"ws_{int(time.time())}")
@@ -2403,8 +2407,10 @@ async def websocket_audiobook(websocket: WebSocket):
                         if not seg_text.strip():
                             continue
 
-                        # Resolve voice
-                        v_name = merged_map.get(speaker_name)
+                        # Resolve voice (normalise speaker name for lookup)
+                        v_name = merged_map.get(
+                            speaker_name.lower().strip() if speaker_name else ''
+                        )
                         if not v_name:
                             g = _detect_gender(speaker_name)
                             if g == "female":
