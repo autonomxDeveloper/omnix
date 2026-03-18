@@ -167,18 +167,30 @@ def generate():
         except Exception:
             pass
 
-        # Create a placeholder file immediately so the download endpoint can
-        # confirm the job exists; it will be overwritten with the real WAV once
-        # generation completes.
+        # Write a WAV file immediately with a streaming-style placeholder header
+        # (RIFF/data sizes set to 0xFFFFFFFF).  PCM bytes are appended as each
+        # segment is generated so the file is usable before generation finishes.
+        # The header is updated with real sizes at the end.
         output_path = f"/tmp/audiobook_{job_id}.wav"
+        _WAV_SAMPLE_RATE = 24000
+        _WAV_HEADER_SIZE = 44
+        total_pcm_bytes = 0
+        _streaming_sentinel = 0xFFFFFFFF
         try:
-            open(output_path, 'wb').close()
+            wav_header = struct.pack(
+                "<4sI4s4sIHHIIHH4sI",
+                b"RIFF", _streaming_sentinel, b"WAVE",
+                b"fmt ", 16, 1, 1, _WAV_SAMPLE_RATE, _WAV_SAMPLE_RATE * 2,
+                2, 16,
+                b"data", _streaming_sentinel,
+            )
+            with open(output_path, "wb") as _fh:
+                _fh.write(wav_header)
         except Exception:
             pass
         yield f"data: {json.dumps({'type': 'job', 'job_id': job_id, 'download_url': f'/api/audiobook/{job_id}/download'})}\n\n"
 
         current_time = 0.0
-        accumulated_pcm = bytearray()
 
         for i, seg in enumerate(segments):
             speaker, text = seg.get('speaker'), seg.get('text', '')
@@ -206,16 +218,20 @@ def generate():
                 if result and result.get('success'):
                     duration = estimate_duration(text)
                     audio_b64 = result.get('audio', '')
-                    # Accumulate raw PCM bytes for final WAV file
+                    # Append raw PCM bytes to the WAV file as they arrive so the
+                    # file is usable for download before generation finishes.
                     if audio_b64:
                         try:
-                            accumulated_pcm.extend(base64.b64decode(audio_b64))
+                            pcm_bytes = base64.b64decode(audio_b64)
+                            with open(output_path, "ab") as _fh:
+                                _fh.write(pcm_bytes)
+                            total_pcm_bytes += len(pcm_bytes)
                         except Exception:
                             pass
                     payload = {
                         'type': 'audio',
                         'audio': audio_b64,
-                        'sample_rate': result.get('sample_rate', 24000),
+                        'sample_rate': result.get('sample_rate', _WAV_SAMPLE_RATE),
                         'segment_index': i,
                         'text': text[:100],
                         'voice_used': v_name,
@@ -234,21 +250,15 @@ def generate():
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
             time.sleep(0.1)
 
-        # Write the final WAV file so the download endpoint can serve it
-        if accumulated_pcm:
+        # Finalise the WAV header with the real PCM data size now that all
+        # segments have been written.
+        if total_pcm_bytes > 0:
             try:
-                raw = bytes(accumulated_pcm)
-                sample_rate = 24000
-                data_size = len(raw)
-                byte_rate = sample_rate * 2  # mono, 16-bit
-                wav_header = struct.pack(
-                    "<4sI4s4sIHHIIHH4sI",
-                    b"RIFF", 36 + data_size, b"WAVE",
-                    b"fmt ", 16, 1, 1, sample_rate, byte_rate,
-                    2, 16, b"data", data_size,
-                )
-                with open(output_path, "wb") as _wav:
-                    _wav.write(wav_header + raw)
+                with open(output_path, "r+b") as _fh:
+                    _fh.seek(4)
+                    _fh.write(struct.pack("<I", 36 + total_pcm_bytes))
+                    _fh.seek(40)
+                    _fh.write(struct.pack("<I", total_pcm_bytes))
             except Exception:
                 pass
 

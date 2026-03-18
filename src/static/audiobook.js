@@ -381,7 +381,12 @@ async function loadVoicePanel(bookId) {
 
 // Update a single voice panel entry (does not auto-save)
 function updateVoicePanelEntry(character, voice) {
-    audiobookState.voiceMapping[_normalizeKey(character)] = voice || undefined;
+    const key = _normalizeKey(character);
+    if (voice) {
+        audiobookState.voiceMapping[key] = voice;
+    } else {
+        delete audiobookState.voiceMapping[key];
+    }
 }
 
 function syncVoicePanelFromSpeakerSelections() {
@@ -783,6 +788,27 @@ async function generateAudiobookWS() {
 
         // ── Helpers ───────────────────────────────────────────────────────
 
+        /**
+         * Concatenate all accumulated Int16Array chunks into a single WAV Blob
+         * and store it in the module-level combinedAudioBlob / combinedAudioUrl.
+         * No-op if no chunks have been received or a blob was already built.
+         */
+        function _buildWavBlobFromChunks() {
+            if (allPcmChunks.length === 0 || combinedAudioBlob) return;
+            let totalLen = 0;
+            for (const c of allPcmChunks) totalLen += c.length;
+            const combined = new Int16Array(totalLen);
+            let offset = 0;
+            for (const c of allPcmChunks) {
+                combined.set(c, offset);
+                offset += c.length;
+            }
+            const pcmBytes = new Uint8Array(combined.buffer);
+            const wavBuffer = createWavBufferFromPcm(pcmBytes, SAMPLE_RATE);
+            combinedAudioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+            combinedAudioUrl = URL.createObjectURL(combinedAudioBlob);
+        }
+
         async function ensureCtx() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({
@@ -805,14 +831,25 @@ async function generateAudiobookWS() {
             return samples;
         }
 
+        // 10 ms overlap between consecutive chunks eliminates the discontinuity
+        // click that occurs when adjacent buffers share no samples.
+        const CHUNK_OVERLAP_SECONDS = 0.01;
+
         function scheduleChunk(pcm16Array) {
             if (!audioCtx) return;
 
-            // Convert int16 → float32 and apply fade-in/out to avoid clicks
+            // Convert int16 → float32, validate (skip corrupt chunks with non-finite
+            // values), and hard-clamp to [-1, 1] — all in a single pass for efficiency.
             const float32 = new Float32Array(pcm16Array.length);
             for (let i = 0; i < pcm16Array.length; i++) {
-                float32[i] = pcm16Array[i] / 32768.0;
+                const sample = pcm16Array[i] / 32768.0;
+                if (!Number.isFinite(sample)) {
+                    console.warn('[AUDIOBOOK-WS] Skipping corrupt (non-finite) audio chunk');
+                    return;
+                }
+                float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
             }
+
             applyFadeFloat32(float32);
 
             const audioBuffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
@@ -820,7 +857,20 @@ async function generateAudiobookWS() {
 
             const source = audioCtx.createBufferSource();
             source.buffer = audioBuffer;
-            source.connect(audioCtx.destination);
+
+            // Use a GainNode with linear ramps to eliminate inter-chunk clicks.
+            // rampDuration is capped at 10 ms (0.01 s) so it is imperceptibly short
+            // on long chunks, but also capped at 10 % of the buffer duration to
+            // avoid overlapping ramps on very short chunks (< 100 ms).
+            const gainNode = audioCtx.createGain();
+            const rampDuration = Math.min(0.01, audioBuffer.duration * 0.1);
+            gainNode.gain.setValueAtTime(0, scheduledTime);
+            gainNode.gain.linearRampToValueAtTime(1, scheduledTime + rampDuration);
+            gainNode.gain.setValueAtTime(1, scheduledTime + audioBuffer.duration - rampDuration);
+            gainNode.gain.linearRampToValueAtTime(0, scheduledTime + audioBuffer.duration);
+
+            source.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
 
             // Maintain a running scheduled-end pointer to chain chunks back-to-back
             if (scheduledTime < audioCtx.currentTime + PREBUFFER_SECONDS) {
@@ -833,7 +883,9 @@ async function generateAudiobookWS() {
             }
 
             source.start(scheduledTime);
-            scheduledTime += audioBuffer.duration;
+            // Overlap by CHUNK_OVERLAP_SECONDS to blend adjacent chunks and
+            // avoid the discontinuity click between buffers.
+            scheduledTime += audioBuffer.duration - CHUNK_OVERLAP_SECONDS;
         }
 
         function finalizeCurrentSegment() {
@@ -875,23 +927,7 @@ async function generateAudiobookWS() {
             }
 
             // Build WAV blob only if not already built eagerly in 'done' handler
-            if (!combinedAudioBlob) {
-                // Concatenate all Int16Array chunks
-                let totalLen = 0;
-                for (const c of allPcmChunks) totalLen += c.length;
-                const combined = new Int16Array(totalLen);
-                let offset = 0;
-                for (const c of allPcmChunks) {
-                    combined.set(c, offset);
-                    offset += c.length;
-                }
-
-                // Build WAV and store as module-level blob (reused by combineAudioSegments)
-                const pcmBytes = new Uint8Array(combined.buffer);
-                const wavBuffer = createWavBufferFromPcm(pcmBytes, SAMPLE_RATE);
-                combinedAudioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
-                combinedAudioUrl = URL.createObjectURL(combinedAudioBlob);
-            }
+            _buildWavBlobFromChunks();
 
             // Populate per-segment duration list used by updateSegmentInfoForTime()
             audioSegmentDurations = scheduledSegments.map(seg =>
@@ -1000,19 +1036,8 @@ async function generateAudiobookWS() {
 
                             // Build WAV blob immediately so the download button can be
                             // shown right away, before the audio finishes draining.
-                            if (allPcmChunks.length > 0 && !combinedAudioBlob) {
-                                let totalLen = 0;
-                                for (const c of allPcmChunks) totalLen += c.length;
-                                const combined = new Int16Array(totalLen);
-                                let off = 0;
-                                for (const c of allPcmChunks) {
-                                    combined.set(c, off);
-                                    off += c.length;
-                                }
-                                const pcmBytes = new Uint8Array(combined.buffer);
-                                const wavBuf = createWavBufferFromPcm(pcmBytes, SAMPLE_RATE);
-                                combinedAudioBlob = new Blob([wavBuf], { type: 'audio/wav' });
-                                combinedAudioUrl = URL.createObjectURL(combinedAudioBlob);
+                            _buildWavBlobFromChunks();
+                            if (combinedAudioBlob) {
                                 _showEarlyDownloadButton();
                             }
 

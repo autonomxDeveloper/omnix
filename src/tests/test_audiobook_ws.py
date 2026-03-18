@@ -517,3 +517,189 @@ class TestEarlyDownloadAvailability:
         assert "!combinedAudioBlob" in content, (
             "buildAndShowFinalPlayer must check for pre-built blob to avoid duplication"
         )
+
+
+# ---------------------------------------------------------------------------
+# P1: updateVoicePanelEntry uses delete not undefined
+# ---------------------------------------------------------------------------
+
+class TestUpdateVoicePanelEntryDelete:
+    """updateVoicePanelEntry must delete the key when voice is falsy, not store
+    undefined, to prevent stale entries remaining in voiceMapping."""
+
+    def test_uses_delete_for_falsy_voice(self):
+        content = _read_source("src/static/audiobook.js")
+        assert "function updateVoicePanelEntry" in content, (
+            "updateVoicePanelEntry must be defined"
+        )
+        # The function must contain a 'delete' operation on voiceMapping
+        assert "delete audiobookState.voiceMapping" in content, (
+            "updateVoicePanelEntry must use 'delete' to remove falsy voice entries"
+        )
+        # Must NOT store undefined as a voiceMapping value
+        assert "voiceMapping[key] = voice || undefined" not in content, (
+            "Must NOT assign 'undefined' to voiceMapping; use delete instead"
+        )
+
+    def test_uses_normalize_key(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function updateVoicePanelEntry\s*\(.*?\{.*?\}',
+            content, re.DOTALL
+        )
+        assert match, "updateVoicePanelEntry must be defined"
+        body = match.group(0)
+        assert "_normalizeKey" in body, (
+            "updateVoicePanelEntry must use _normalizeKey for the lookup key"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P2: Float32 sample validation (NaN / overflow protection)
+# ---------------------------------------------------------------------------
+
+class TestFloat32SampleValidation:
+    """scheduleChunk must validate float32 samples and hard-clamp to [-1, 1]
+    to prevent squeaking noise from NaN values or overflow distortion."""
+
+    def _get_schedule_chunk_body(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function scheduleChunk\s*\(.*?\{.*?(?=\n        \}\n\n        function )',
+            content, re.DOTALL
+        )
+        assert match, "scheduleChunk must be defined inside generateAudiobookWS"
+        return match.group(0)
+
+    def test_nan_check_present(self):
+        body = self._get_schedule_chunk_body()
+        assert "isFinite" in body, (
+            "scheduleChunk must check Number.isFinite to skip corrupt samples"
+        )
+
+    def test_hard_clamp_present(self):
+        body = self._get_schedule_chunk_body()
+        # The clamp: float32[i] > 1 → 1; float32[i] < -1 → -1
+        assert "> 1" in body or "> 1.0" in body, (
+            "scheduleChunk must hard-clamp values above 1"
+        )
+        assert "< -1" in body or "< -1.0" in body, (
+            "scheduleChunk must hard-clamp values below -1"
+        )
+
+    def test_nan_check_before_audio_buffer(self):
+        """The NaN/isFinite check must happen before createBuffer to avoid
+        writing corrupt data into the audio graph."""
+        body = self._get_schedule_chunk_body()
+        nan_idx = body.find("isFinite")
+        buf_idx = body.find("createBuffer")
+        assert nan_idx != -1, "scheduleChunk must call isFinite"
+        assert buf_idx != -1, "scheduleChunk must call createBuffer"
+        assert nan_idx < buf_idx, "isFinite check must precede createBuffer"
+
+
+# ---------------------------------------------------------------------------
+# P3: Gain ramp + overlap for artifact-free transitions
+# ---------------------------------------------------------------------------
+
+class TestGainRampAndOverlap:
+    """scheduleChunk must use a GainNode with linear ramps and a small overlap
+    between consecutive chunks to eliminate inter-chunk click/pop artifacts."""
+
+    def _get_schedule_chunk_body(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function scheduleChunk\s*\(.*?\{.*?(?=\n        \}\n\n        function )',
+            content, re.DOTALL
+        )
+        assert match, "scheduleChunk must be defined"
+        return match.group(0)
+
+    def test_gain_node_used(self):
+        body = self._get_schedule_chunk_body()
+        assert "createGain" in body, (
+            "scheduleChunk must use a GainNode for smooth transition ramps"
+        )
+
+    def test_linear_ramp_used(self):
+        body = self._get_schedule_chunk_body()
+        assert "linearRampToValueAtTime" in body, (
+            "scheduleChunk must use linearRampToValueAtTime for smooth volume transitions"
+        )
+
+    def test_chunk_overlap_defined(self):
+        content = _read_source("src/static/audiobook.js")
+        assert "CHUNK_OVERLAP_SECONDS" in content, (
+            "audiobook.js must define CHUNK_OVERLAP_SECONDS for inter-chunk overlap"
+        )
+
+    def test_scheduled_time_uses_overlap(self):
+        """scheduledTime must be advanced by duration minus overlap."""
+        body = self._get_schedule_chunk_body()
+        assert "CHUNK_OVERLAP_SECONDS" in body, (
+            "scheduleChunk must subtract CHUNK_OVERLAP_SECONDS from scheduledTime advance"
+        )
+        # Must subtract (not add)
+        assert "duration - CHUNK_OVERLAP_SECONDS" in body, (
+            "scheduledTime must advance by (duration - CHUNK_OVERLAP_SECONDS)"
+        )
+
+    def test_source_connects_through_gain(self):
+        """The source BufferSource must route through the GainNode."""
+        body = self._get_schedule_chunk_body()
+        assert "source.connect(gainNode)" in body, (
+            "Source must connect to gainNode, not directly to destination"
+        )
+        assert "gainNode.connect(audioCtx.destination)" in body, (
+            "gainNode must connect to destination"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P4: Progressive WAV streaming in backend
+# ---------------------------------------------------------------------------
+
+class TestProgressiveWavStreaming:
+    """audiobook.py must write a WAV header at the start and append PCM bytes
+    incrementally, then finalize the header at the end — so the file is usable
+    for download before generation is complete."""
+
+    def test_wav_header_written_before_loop(self):
+        """A WAV header must be written BEFORE the TTS generation loop."""
+        content = _read_source("src/app/audiobook.py")
+        # The header-write and the job-yield must come before the for-loop
+        header_idx = content.find("b\"RIFF\"")
+        loop_idx = content.find("for i, seg in enumerate(segments)")
+        assert header_idx != -1, "Must write RIFF header before loop"
+        assert loop_idx != -1, "Must have segment for-loop"
+        assert header_idx < loop_idx, "WAV header must be written before the TTS loop"
+
+    def test_pcm_appended_per_segment(self):
+        """Each segment's PCM must be appended to the file as it is generated."""
+        content = _read_source("src/app/audiobook.py")
+        # Must open in append-binary mode inside the loop
+        assert '"ab"' in content or "'ab'" in content, (
+            "audiobook.py must open the WAV file in append mode ('ab') per segment"
+        )
+
+    def test_header_finalized_after_loop(self):
+        """After the loop the RIFF/data sizes must be updated with real values."""
+        content = _read_source("src/app/audiobook.py")
+        # Must seek to offset 4 (RIFF size) and 40 (data size)
+        assert "seek(4)" in content, "Must seek to byte 4 to update RIFF size"
+        assert "seek(40)" in content, "Must seek to byte 40 to update data size"
+
+    def test_total_pcm_bytes_tracked(self):
+        """Must track total PCM bytes written to correctly finalize the header."""
+        content = _read_source("src/app/audiobook.py")
+        assert "total_pcm_bytes" in content, (
+            "audiobook.py must track total_pcm_bytes for WAV header finalization"
+        )
+
+    def test_no_full_accumulation_in_memory(self):
+        """Should NOT accumulate all PCM in memory (bytearray) before writing."""
+        content = _read_source("src/app/audiobook.py")
+        assert "accumulated_pcm" not in content, (
+            "audiobook.py must NOT use an accumulated_pcm bytearray; "
+            "append each segment directly to the file instead"
+        )
