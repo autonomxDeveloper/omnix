@@ -244,9 +244,9 @@ async function aiStructureAudiobookText() {
             for (const seg of (data.structured_script.segments || [])) {
                 for (const line of (seg.script || [])) {
                     allLines.push(line);
-                    // Persist voice mapping from AI
+                    // Persist voice mapping from AI (normalized key)
                     if (line.voice && line.speaker) {
-                        audiobookState.voiceMapping[line.speaker] = line.voice;
+                        audiobookState.voiceMapping[_normalizeKey(line.speaker)] = line.voice;
                     }
                 }
             }
@@ -310,10 +310,10 @@ async function aiDirectScript() {
             audiobookState.directedScript = data.directed_script;
             audiobookState.segments = data.directed_script;
 
-            // Update voice mappings from directed output
+            // Update voice mappings from directed output (normalized key)
             for (const line of data.directed_script) {
                 if (line.voice && line.speaker) {
-                    audiobookState.voiceMapping[line.speaker] = line.voice;
+                    audiobookState.voiceMapping[_normalizeKey(line.speaker)] = line.voice;
                 }
             }
 
@@ -351,7 +351,7 @@ async function loadVoicePanel(bookId) {
 
         let html = '';
         for (const [character, profile] of Object.entries(profiles)) {
-            const speakerVoice = audiobookState.voiceMapping[character];
+            const speakerVoice = audiobookState.voiceMapping[_normalizeKey(character)];
             const storedVoice = (typeof profile === 'object' ? profile.voice : profile) || '';
             const currentVoice = speakerVoice || storedVoice;
             html += `<div class="voice-panel-row">`;
@@ -381,7 +381,7 @@ async function loadVoicePanel(bookId) {
 
 // Update a single voice panel entry (does not auto-save)
 function updateVoicePanelEntry(character, voice) {
-    audiobookState.voiceMapping[character] = voice || undefined;
+    audiobookState.voiceMapping[_normalizeKey(character)] = voice || undefined;
 }
 
 function syncVoicePanelFromSpeakerSelections() {
@@ -393,13 +393,13 @@ function syncVoicePanelFromSpeakerSelections() {
 
     const speakerMap = {};
     speakerSelects.forEach(sel => {
-        const speaker = sel.dataset.speaker;
+        const speaker = _normalizeKey(sel.dataset.speaker);
         const voice = sel.value;
         if (speaker && voice) speakerMap[speaker] = voice;
     });
 
     panelSelects.forEach(sel => {
-        const character = sel.dataset.character;
+        const character = _normalizeKey(sel.dataset.character);
         if (!character || !speakerMap[character]) return;
         sel.value = speakerMap[character];
     });
@@ -577,7 +577,7 @@ async function displaySpeakers(speakers, segments) {
         const gender = speakerInfo.gender || 'neutral';
         const suggested = speakerInfo.suggested_voice || '';
         const segmentCount = speakerInfo.segment_count || 0;
-        if (suggested) audiobookState.voiceMapping[speakerName] = suggested;
+        if (suggested) audiobookState.voiceMapping[_normalizeKey(speakerName)] = suggested;
         
         html += `<div class="speaker-assignment-row" data-gender="${gender}">`;
         html += `<div class="speaker-info">`;
@@ -649,10 +649,11 @@ function autoSelectDefaultVoices(availableVoices) {
 
 // Update voice mapping
 function updateVoiceMapping(speakerName, voiceId) {
+    const key = _normalizeKey(speakerName);
     if (voiceId) {
-        audiobookState.voiceMapping[speakerName] = voiceId;
+        audiobookState.voiceMapping[key] = voiceId;
     } else {
-        delete audiobookState.voiceMapping[speakerName];
+        delete audiobookState.voiceMapping[key];
     }
     syncVoicePanelFromSpeakerSelections();
     scheduleVoiceProfileAutoSave();
@@ -664,6 +665,11 @@ function updateDefaultVoice(gender, voiceId) {
 }
 
 // Generate audiobook with streaming playback
+
+// Normalize a speaker/character name to a consistent lookup key
+function _normalizeKey(name) {
+    return (name || '').toLowerCase().trim();
+}
 
 // Streaming playback state
 let streamingPlaybackInProgress = false;
@@ -868,21 +874,24 @@ async function generateAudiobookWS() {
                 return;
             }
 
-            // Concatenate all Int16Array chunks
-            let totalLen = 0;
-            for (const c of allPcmChunks) totalLen += c.length;
-            const combined = new Int16Array(totalLen);
-            let offset = 0;
-            for (const c of allPcmChunks) {
-                combined.set(c, offset);
-                offset += c.length;
-            }
+            // Build WAV blob only if not already built eagerly in 'done' handler
+            if (!combinedAudioBlob) {
+                // Concatenate all Int16Array chunks
+                let totalLen = 0;
+                for (const c of allPcmChunks) totalLen += c.length;
+                const combined = new Int16Array(totalLen);
+                let offset = 0;
+                for (const c of allPcmChunks) {
+                    combined.set(c, offset);
+                    offset += c.length;
+                }
 
-            // Build WAV and store as module-level blob (reused by combineAudioSegments)
-            const pcmBytes = new Uint8Array(combined.buffer);
-            const wavBuffer = createWavBufferFromPcm(pcmBytes, SAMPLE_RATE);
-            combinedAudioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
-            combinedAudioUrl = URL.createObjectURL(combinedAudioBlob);
+                // Build WAV and store as module-level blob (reused by combineAudioSegments)
+                const pcmBytes = new Uint8Array(combined.buffer);
+                const wavBuffer = createWavBufferFromPcm(pcmBytes, SAMPLE_RATE);
+                combinedAudioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+                combinedAudioUrl = URL.createObjectURL(combinedAudioBlob);
+            }
 
             // Populate per-segment duration list used by updateSegmentInfoForTime()
             audioSegmentDurations = scheduledSegments.map(seg =>
@@ -925,8 +934,19 @@ async function generateAudiobookWS() {
         ws.onmessage = async (event) => {
             if (event.data instanceof ArrayBuffer) {
                 // ── Binary: raw PCM int16 chunk ───────────────────────────
-                await ensureCtx();
+                // Validate: Int16Array requires an even byte count.
+                // Skip corrupted chunks to prevent squeaking noise.
+                if (event.data.byteLength % 2 !== 0) {
+                    console.warn('[AUDIOBOOK-WS] Skipping odd-length chunk:', event.data.byteLength, 'bytes');
+                    return;
+                }
                 const pcm16 = new Int16Array(event.data);
+                // Skip chunks that are too short to be valid audio
+                if (pcm16.length < 100) {
+                    console.warn('[AUDIOBOOK-WS] Skipping too-short chunk:', pcm16.length, 'samples');
+                    return;
+                }
+                await ensureCtx();
                 allPcmChunks.push(pcm16);
                 scheduleChunk(pcm16);
 
@@ -977,6 +997,24 @@ async function generateAudiobookWS() {
                             audiobookState.isGenerating = false;
                             finished = true;
                             ws.close();
+
+                            // Build WAV blob immediately so the download button can be
+                            // shown right away, before the audio finishes draining.
+                            if (allPcmChunks.length > 0 && !combinedAudioBlob) {
+                                let totalLen = 0;
+                                for (const c of allPcmChunks) totalLen += c.length;
+                                const combined = new Int16Array(totalLen);
+                                let off = 0;
+                                for (const c of allPcmChunks) {
+                                    combined.set(c, off);
+                                    off += c.length;
+                                }
+                                const pcmBytes = new Uint8Array(combined.buffer);
+                                const wavBuf = createWavBufferFromPcm(pcmBytes, SAMPLE_RATE);
+                                combinedAudioBlob = new Blob([wavBuf], { type: 'audio/wav' });
+                                combinedAudioUrl = URL.createObjectURL(combinedAudioBlob);
+                                _showEarlyDownloadButton();
+                            }
 
                             // Wait for scheduled audio to finish, then build the full player.
                             // The extra 600 ms gives the AudioContext time to drain the last
@@ -1088,6 +1126,13 @@ async function generateAudiobookSSE() {
                                     showFullPlaybackControls();
                                 }
                                 
+                            } else if (data.type === 'job') {
+                                // Download URL is ready — show button early (file written
+                                // on server once generation completes).
+                                if (data.download_url) {
+                                    _showEarlyServerDownloadButton(data.download_url);
+                                }
+
                             } else if (data.type === 'error') {
                                 console.error('Audiobook error:', data.error);
                                 const errorMsg = data.error || 'Unknown error';
@@ -1117,6 +1162,39 @@ let combinedAudioBlob = null;
 let combinedAudioUrl = null;
 let combinedAudioElement = null;
 let audioSegmentDurations = []; // Track duration of each segment for seeking
+
+/**
+ * Show a download button immediately (WS path — client-side blob already built).
+ * Called as soon as the 'done' WS message arrives, before audio finishes draining.
+ */
+function _showEarlyDownloadButton() {
+    if (!audiobookPlayer || !combinedAudioBlob) return;
+    if (document.getElementById('audiobook-early-download')) return;
+    const div = document.createElement('div');
+    div.id = 'audiobook-early-download';
+    div.className = 'audiobook-actions-row';
+    div.innerHTML = '<button class="btn-primary" onclick="downloadAudiobook()">⬇ Download Audiobook</button>';
+    audiobookPlayer.appendChild(div);
+}
+
+/**
+ * Show a server-side download link immediately (SSE path — file written at end
+ * of generation, but URL is known upfront so we can show the button early).
+ */
+function _showEarlyServerDownloadButton(downloadUrl) {
+    if (!audiobookPlayer) return;
+    const existing = document.getElementById('audiobook-early-download');
+    if (existing) {
+        const anchor = existing.querySelector('a');
+        if (anchor) anchor.href = downloadUrl;
+        return;
+    }
+    const div = document.createElement('div');
+    div.id = 'audiobook-early-download';
+    div.className = 'audiobook-actions-row';
+    div.innerHTML = `<a class="btn-primary" href="${downloadUrl}" download="audiobook.wav">⬇ Download Audiobook</a>`;
+    audiobookPlayer.appendChild(div);
+}
 
 // Show streaming player (minimal controls that appear immediately)
 function showStreamingPlayer() {

@@ -329,3 +329,191 @@ class TestAudiobookJSWebSocket:
         fn_body = match.group(0)
         assert "Int16Array" in fn_body, "Must decode PCM as Int16Array"
         assert "ArrayBuffer" in fn_body, "Must handle ArrayBuffer data"
+
+
+# ---------------------------------------------------------------------------
+# Issue 1: Voice mapping normalisation
+# ---------------------------------------------------------------------------
+
+class TestVoiceMappingNormalisation:
+    """Verify that voice mapping keys are normalised to lowercase in both the
+    frontend (audiobook.js) and the backend (audiobook.py, server_fastapi.py).
+    This prevents stale voice assignments when users change voices in the UI."""
+
+    def test_normalize_key_function_exists(self):
+        content = _read_source("src/static/audiobook.js")
+        assert "_normalizeKey" in content, "audiobook.js must define _normalizeKey helper"
+
+    def test_normalize_key_lowercases(self):
+        content = _read_source("src/static/audiobook.js")
+        # Find the _normalizeKey function using a robust terminator set
+        match = re.search(
+            r'function _normalizeKey\s*\(.*?\{.*?\}',
+            content, re.DOTALL
+        )
+        assert match, "_normalizeKey function must be defined"
+        body = match.group(0)
+        assert "toLowerCase" in body, "_normalizeKey must call toLowerCase()"
+        assert "trim" in body, "_normalizeKey must call trim()"
+
+    def test_update_voice_mapping_uses_normalize(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function updateVoiceMapping.*?(?=\n// |\nfunction )',
+            content, re.DOTALL
+        )
+        assert match, "updateVoiceMapping must exist"
+        body = match.group(0)
+        assert "_normalizeKey" in body, "updateVoiceMapping must normalise the key"
+
+    def test_display_speakers_uses_normalize(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function displaySpeakers.*?(?=\n// |\nfunction )',
+            content, re.DOTALL
+        )
+        assert match, "displaySpeakers must exist"
+        body = match.group(0)
+        assert "_normalizeKey" in body, "displaySpeakers must normalise voiceMapping keys"
+
+    def test_backend_normalises_merged_map_keys(self):
+        """audiobook.py must build merged_map with lower-cased keys."""
+        content = _read_source("src/app/audiobook.py")
+        # Should contain a dict comprehension that calls .lower() or .lower().strip()
+        assert "lower().strip()" in content or ".lower().strip():" in content, (
+            "audiobook.py generate() must normalise merged_map keys"
+        )
+
+    def test_fastapi_normalises_merged_map_keys(self):
+        """server_fastapi.py WS handler must build merged_map with lower-cased keys."""
+        content = _read_source("server_fastapi.py")
+        match = re.search(
+            r'async def websocket_audiobook.*?(?=\nasync def |\nclass |\n# ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match, "websocket_audiobook must exist"
+        body = match.group(0)
+        assert "lower().strip()" in body, (
+            "websocket_audiobook must normalise merged_map keys"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue 2: PCM chunk validation
+# ---------------------------------------------------------------------------
+
+class TestPcmChunkValidation:
+    """Verify that the WebSocket binary handler validates PCM chunk integrity
+    before scheduling playback, to prevent squeaking noise from corrupted data."""
+
+    def test_odd_byte_length_check(self):
+        content = _read_source("src/static/audiobook.js")
+        # Must check that byteLength is even before creating Int16Array
+        assert "byteLength % 2" in content, (
+            "audiobook.js WS handler must reject odd-length PCM chunks"
+        )
+
+    def test_minimum_sample_count_check(self):
+        content = _read_source("src/static/audiobook.js")
+        # Must skip chunks that are too short
+        assert "pcm16.length < 100" in content, (
+            "audiobook.js WS handler must skip chunks with fewer than 100 samples"
+        )
+
+    def test_validation_before_schedule(self):
+        """Validation must happen before scheduleChunk is called in onmessage."""
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function generateAudiobookWS.*?(?=\nfunction |\n// ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match, "generateAudiobookWS must exist"
+        body = match.group(0)
+        # Find the onmessage handler section
+        onmessage_match = re.search(r'ws\.onmessage.*', body, re.DOTALL)
+        assert onmessage_match, "Must have onmessage handler"
+        onmessage_body = onmessage_match.group(0)
+        odd_idx = onmessage_body.find("byteLength % 2")
+        schedule_call_idx = onmessage_body.find("scheduleChunk(pcm16")
+        assert odd_idx != -1, "onmessage handler must check odd byte length"
+        assert schedule_call_idx != -1, "onmessage handler must call scheduleChunk"
+        assert odd_idx < schedule_call_idx, "Validation must precede scheduleChunk call"
+
+
+# ---------------------------------------------------------------------------
+# Issue 3: Download available after segmentation
+# ---------------------------------------------------------------------------
+
+class TestEarlyDownloadAvailability:
+    """Verify that the download button is made available as soon as audio
+    generation completes (WS: on 'done'; SSE: on 'job' event) rather than
+    waiting for the full playback UI to render."""
+
+    def test_show_early_download_button_defined(self):
+        content = _read_source("src/static/audiobook.js")
+        assert "_showEarlyDownloadButton" in content, (
+            "audiobook.js must define _showEarlyDownloadButton"
+        )
+
+    def test_show_early_server_download_button_defined(self):
+        content = _read_source("src/static/audiobook.js")
+        assert "_showEarlyServerDownloadButton" in content, (
+            "audiobook.js must define _showEarlyServerDownloadButton"
+        )
+
+    def test_ws_done_builds_blob_early(self):
+        """On WS 'done', build WAV blob and show download button before audio drains."""
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function generateAudiobookWS.*?(?=\nfunction |\n// ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match, "generateAudiobookWS must exist"
+        body = match.group(0)
+        # The 'done' case must call _showEarlyDownloadButton
+        assert "_showEarlyDownloadButton" in body, (
+            "WS 'done' handler must call _showEarlyDownloadButton"
+        )
+
+    def test_sse_handler_handles_job_type(self):
+        """SSE handler must handle the 'job' event type to show the download button."""
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function generateAudiobookSSE.*?(?=\nfunction |\n// ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match, "generateAudiobookSSE must exist"
+        body = match.group(0)
+        assert "data.type === 'job'" in body or 'data.type === "job"' in body, (
+            "SSE handler must handle 'job' event type"
+        )
+        assert "_showEarlyServerDownloadButton" in body, (
+            "SSE handler must call _showEarlyServerDownloadButton on 'job' event"
+        )
+
+    def test_backend_emits_job_event(self):
+        """audiobook.py SSE generator must yield a 'job' event before TTS loop."""
+        content = _read_source("src/app/audiobook.py")
+        assert "'type': 'job'" in content or '"type": "job"' in content, (
+            "audiobook.py generate() must yield a 'job' SSE event"
+        )
+        assert "download_url" in content, (
+            "The 'job' event must include a download_url"
+        )
+
+    def test_backend_saves_wav_file(self):
+        """audiobook.py SSE generator must write a WAV file for download."""
+        content = _read_source("src/app/audiobook.py")
+        # Must create the output path
+        assert "output_path" in content, "Must define output_path for WAV file"
+        # Must write RIFF/WAV header
+        assert "RIFF" in content and "WAVE" in content, (
+            "Must write valid WAV (RIFF/WAVE) header"
+        )
+
+    def test_buildAndShowFinalPlayer_skips_double_blob_build(self):
+        """buildAndShowFinalPlayer must skip blob building if already done eagerly."""
+        content = _read_source("src/static/audiobook.js")
+        assert "!combinedAudioBlob" in content, (
+            "buildAndShowFinalPlayer must check for pre-built blob to avoid duplication"
+        )
