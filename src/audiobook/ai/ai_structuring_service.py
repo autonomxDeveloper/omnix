@@ -125,11 +125,23 @@ class AIStructuringService:
 
         characters = self._char_extractor.extract(all_lines)
 
-        return {
+        result = {
             "title": title,
             "characters": characters,
             "segments": structured_scenes,
         }
+
+        # Dump structured script for debugging
+        try:
+            import hashlib
+            debug_id = hashlib.md5(title.encode() if title else b"default").hexdigest()[:8]
+            debug_path = f"/tmp/audiobook_structured_{debug_id}.json"
+            with open(debug_path, "w", encoding="utf-8") as _fh:
+                json.dump(result, _fh, indent=2)
+        except Exception:
+            pass
+
+        return result
 
     def _structure_segment(self, text: str) -> List[Dict]:
         """Structure a single text segment into script lines."""
