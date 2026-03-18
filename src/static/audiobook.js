@@ -677,8 +677,6 @@ const MAX_FADE_DIVISOR = 4;
 
 // WebSocket audiobook state
 let audiobookWs = null;
-/** Minimum number of PCM chunks to buffer before starting WebSocket playback */
-const WS_MIN_AUDIO_BUFFER = 3;
 
 async function generateAudiobook() {
     if (audiobookState.segments.length === 0) {
@@ -692,6 +690,15 @@ async function generateAudiobook() {
     audiobookState.currentSegment = 0;
     audiobookState.totalSegments = audiobookState.segments.length;
     streamingShouldShowFullControls = false;
+
+    // Reset combined-audio state so a previous run's data isn't reused
+    audioSegmentDurations = [];
+    if (combinedAudioUrl) {
+        URL.revokeObjectURL(combinedAudioUrl);
+        combinedAudioUrl = null;
+    }
+    combinedAudioBlob = null;
+    combinedAudioElement = null;
     
     // Show progress and player immediately
     if (audiobookProgress) audiobookProgress.style.display = 'block';
@@ -721,12 +728,19 @@ async function generateAudiobook() {
 
 /**
  * Generate audiobook via WebSocket — streams raw PCM (no base64, no WAV header).
- * Uses the /ws/audiobook endpoint for low-latency, high-quality streaming.
+ *
+ * Uses scheduled AudioContext playback (not a queue/onended chain) to eliminate
+ * audio artifacts between segments.  Subtitles are synchronised against
+ * AudioContext.currentTime via a requestAnimationFrame loop.  After generation
+ * completes, the accumulated PCM is combined into a WAV blob and the full
+ * playback UI (seek bar + download) is shown.
  */
 async function generateAudiobookWS() {
+    // Unique job identifier sent to the server so it can save a download file
+    const jobId = 'ab_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/audiobook`;
-    
+
     return new Promise((resolve, reject) => {
         let ws;
         try {
@@ -737,137 +751,245 @@ async function generateAudiobookWS() {
         }
         ws.binaryType = 'arraybuffer';
         audiobookWs = ws;
-        
-        // Create a lightweight AudioOutput instance for PCM playback
-        // (uses the same AudioOutput class as voice mode)
+
+        // ── Scheduled-playback state ──────────────────────────────────────
         let audioCtx = null;
-        let audioQueue = [];
-        let playing = false;
+        /** Absolute AudioContext time when the last scheduled chunk ends. */
+        let scheduledTime = 0;
+        const PREBUFFER_SECONDS = 0.3;
+        const SAMPLE_RATE = 24000;
+
+        // ── PCM accumulation (for final WAV download) ─────────────────────
+        /** All raw Int16Array chunks received during this session. */
+        const allPcmChunks = [];
+
+        // ── Segment timing for subtitle sync ─────────────────────────────
+        /**
+         * Segments whose scheduled audio window has been fully determined.
+         * Each entry: { index, text, speaker, voiceUsed, startTime, endTime }
+         */
+        const scheduledSegments = [];
+        /** The segment currently being scheduled (audio not yet fully received). */
+        let pendingSegMeta = null;
+        let subtitleRafId = null;
         let finished = false;
-        
+        let playbackStarted = false;
+
+        // ── Helpers ───────────────────────────────────────────────────────
+
         async function ensureCtx() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-                    latencyHint: 'interactive'
+                    sampleRate: SAMPLE_RATE,
+                    latencyHint: 'interactive',
                 });
             }
             if (audioCtx.state === 'suspended') {
                 await audioCtx.resume();
             }
         }
-        
-        async function playNextChunk() {
-            if (playing) return;
-            if (audioQueue.length === 0) {
-                if (finished) {
-                    updateStreamingStatus('Playback complete!');
-                    streamingShouldShowFullControls = true;
-                    streamingPlaybackInProgress = false;
-                    resolve();
-                }
-                return;
+
+        function applyFadeFloat32(samples) {
+            const fadeSize = Math.min(256, Math.floor(samples.length / 4));
+            for (let i = 0; i < fadeSize; i++) {
+                const g = i / fadeSize;
+                samples[i] *= g;
+                samples[samples.length - 1 - i] *= g;
             }
-            
-            // Buffer before first play
-            if (!finished && audioQueue.length < WS_MIN_AUDIO_BUFFER) {
-                return;
+            return samples;
+        }
+
+        function scheduleChunk(pcm16Array) {
+            if (!audioCtx) return;
+
+            // Convert int16 → float32 and apply fade-in/out to avoid clicks
+            const float32 = new Float32Array(pcm16Array.length);
+            for (let i = 0; i < pcm16Array.length; i++) {
+                float32[i] = pcm16Array[i] / 32768.0;
             }
-            
-            await ensureCtx();
-            playing = true;
-            streamingPlaybackInProgress = true;
-            
-            const chunk = audioQueue.shift();
-            try {
-                const pcm16 = new Int16Array(chunk);
-                const float32 = new Float32Array(pcm16.length);
-                for (let i = 0; i < pcm16.length; i++) {
-                    float32[i] = pcm16[i] / 32768.0;
+            applyFadeFloat32(float32);
+
+            const audioBuffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
+            audioBuffer.getChannelData(0).set(float32);
+
+            const source = audioCtx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioCtx.destination);
+
+            // Maintain a running scheduled-end pointer to chain chunks back-to-back
+            if (scheduledTime < audioCtx.currentTime + PREBUFFER_SECONDS) {
+                scheduledTime = audioCtx.currentTime + PREBUFFER_SECONDS;
+            }
+
+            // Latch the start time for the first chunk of the current segment
+            if (pendingSegMeta !== null && pendingSegMeta.startTime < 0) {
+                pendingSegMeta.startTime = scheduledTime;
+            }
+
+            source.start(scheduledTime);
+            scheduledTime += audioBuffer.duration;
+        }
+
+        function finalizeCurrentSegment() {
+            if (pendingSegMeta !== null) {
+                if (pendingSegMeta.startTime >= 0) {
+                    pendingSegMeta.endTime = scheduledTime;
+                    scheduledSegments.push(pendingSegMeta);
                 }
-                
-                const audioBuffer = audioCtx.createBuffer(1, float32.length, 24000);
-                audioBuffer.getChannelData(0).set(float32);
-                
-                const source = audioCtx.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(audioCtx.destination);
-                
-                source.onended = () => {
-                    playing = false;
-                    playNextChunk();
-                };
-                
-                source.start();
-            } catch (err) {
-                console.error('[AUDIOBOOK-WS] Playback error:', err);
-                playing = false;
-                playNextChunk();
+                pendingSegMeta = null;
             }
         }
-        
+
+        /**
+         * requestAnimationFrame loop that updates the subtitle display to match
+         * the currently playing audio based on AudioContext.currentTime.
+         */
+        function updateSubtitlesLoop() {
+            if (!audioCtx) return;
+            const now = audioCtx.currentTime;
+            for (const seg of scheduledSegments) {
+                if (now >= seg.startTime && now < seg.endTime) {
+                    updateSegmentInfo(seg);
+                    break;
+                }
+            }
+            if (!finished || now < scheduledTime) {
+                subtitleRafId = requestAnimationFrame(updateSubtitlesLoop);
+            }
+        }
+
+        /**
+         * Build a WAV blob from the accumulated PCM chunks, populate the
+         * shared state that showFullPlaybackControls() needs, then show it.
+         */
+        function buildAndShowFinalPlayer() {
+            if (allPcmChunks.length === 0) {
+                resolve();
+                return;
+            }
+
+            // Concatenate all Int16Array chunks
+            let totalLen = 0;
+            for (const c of allPcmChunks) totalLen += c.length;
+            const combined = new Int16Array(totalLen);
+            let offset = 0;
+            for (const c of allPcmChunks) {
+                combined.set(c, offset);
+                offset += c.length;
+            }
+
+            // Build WAV and store as module-level blob (reused by combineAudioSegments)
+            const pcmBytes = new Uint8Array(combined.buffer);
+            const wavBuffer = createWavBufferFromPcm(pcmBytes, SAMPLE_RATE);
+            combinedAudioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+            combinedAudioUrl = URL.createObjectURL(combinedAudioBlob);
+
+            // Populate per-segment duration list used by updateSegmentInfoForTime()
+            audioSegmentDurations = scheduledSegments.map(seg =>
+                Math.max(0, seg.endTime - seg.startTime));
+
+            // Populate audiobookState.audioQueue with segment metadata for the
+            // time-based subtitle loop inside the full player
+            audiobookState.audioQueue = scheduledSegments.map(seg => ({
+                speaker: seg.speaker,
+                text: seg.text,
+                voiceUsed: seg.voiceUsed,
+            }));
+
+            streamingPlaybackInProgress = false;
+            showFullPlaybackControls();
+            resolve();
+        }
+
+        // ── WebSocket timeout ─────────────────────────────────────────────
         const timeout = setTimeout(() => {
             if (ws.readyState !== WebSocket.OPEN) {
                 ws.close();
                 reject(new Error('WebSocket connection timeout'));
             }
         }, 5000);
-        
+
+        // ── WebSocket events ──────────────────────────────────────────────
         ws.onopen = () => {
             clearTimeout(timeout);
-            console.log('[AUDIOBOOK-WS] Connected');
-            
-            // Send start message with segments
+            console.log('[AUDIOBOOK-WS] Connected, jobId:', jobId);
             ws.send(JSON.stringify({
                 type: 'start',
                 segments: audiobookState.segments,
                 voice_mapping: audiobookState.voiceMapping,
-                default_voices: audiobookState.defaultVoices
+                default_voices: audiobookState.defaultVoices,
+                job_id: jobId,
             }));
         };
-        
-        ws.onmessage = (event) => {
+
+        ws.onmessage = async (event) => {
             if (event.data instanceof ArrayBuffer) {
-                // Raw PCM int16 bytes — enqueue for playback
-                audioQueue.push(event.data);
-                playNextChunk();
+                // ── Binary: raw PCM int16 chunk ───────────────────────────
+                await ensureCtx();
+                const pcm16 = new Int16Array(event.data);
+                allPcmChunks.push(pcm16);
+                scheduleChunk(pcm16);
+
+                if (!playbackStarted) {
+                    playbackStarted = true;
+                    streamingPlaybackInProgress = true;
+                    updateSubtitlesLoop();
+                }
             } else {
+                // ── JSON control message ──────────────────────────────────
                 try {
                     const data = JSON.parse(event.data);
-                    
+
                     switch (data.type) {
                         case 'start':
-                            updateStreamingStatus('Streaming audio...');
+                            updateStreamingStatus('Streaming audio…');
                             break;
-                            
+
                         case 'segment': {
+                            // Finalise previous segment's time window
+                            finalizeCurrentSegment();
+
                             const idx = data.index;
                             audiobookState.currentSegment = idx + 1;
-                            const percent = Math.round((audiobookState.currentSegment / audiobookState.totalSegments) * 100);
-                            updateProgress(percent, `Generated ${audiobookState.currentSegment}/${audiobookState.totalSegments} segments`);
-                            
-                            // Update segment info
-                            if (idx < audiobookState.segments.length) {
-                                const seg = audiobookState.segments[idx];
-                                const infoEl = document.getElementById('audiobook-segment-info');
-                                if (infoEl) {
-                                    infoEl.innerHTML = `
-                                        <p><strong>Speaker:</strong> ${seg.speaker || 'Unknown'}</p>
-                                        <p><strong>Text:</strong> ${(seg.text || '').substring(0, 100)}</p>
-                                    `;
-                                }
-                            }
+                            const pct = Math.round(
+                                (audiobookState.currentSegment / audiobookState.totalSegments) * 100
+                            );
+                            updateProgress(pct,
+                                `Generated ${audiobookState.currentSegment}/${audiobookState.totalSegments} segments`);
+
+                            // Start tracking the new segment; startTime latched on first chunk
+                            const srcSeg = idx < audiobookState.segments.length
+                                ? audiobookState.segments[idx] : {};
+                            pendingSegMeta = {
+                                index: idx,
+                                text: data.text || srcSeg.text || '',
+                                speaker: data.speaker || srcSeg.speaker || 'Narrator',
+                                voiceUsed: data.voice || srcSeg.voice || undefined,
+                                startTime: -1,   // latched when first chunk arrives
+                                endTime: -1,
+                            };
                             break;
                         }
-                            
+
                         case 'done':
+                            finalizeCurrentSegment();
                             updateProgress(100, 'Generation complete!');
                             audiobookState.isGenerating = false;
                             finished = true;
-                            // Flush remaining buffered chunks
-                            playNextChunk();
                             ws.close();
+
+                            // Wait for scheduled audio to finish, then build the full player.
+                            // The extra 600 ms gives the AudioContext time to drain the last
+                            // buffer before we replace the player UI.
+                            if (audioCtx && scheduledTime > audioCtx.currentTime) {
+                                const waitMs = (scheduledTime - audioCtx.currentTime) * 1000 + 600;
+                                updateStreamingStatus('Finishing playback…');
+                                setTimeout(buildAndShowFinalPlayer, waitMs);
+                            } else {
+                                buildAndShowFinalPlayer();
+                            }
                             break;
-                            
+
                         case 'error':
                             console.error('[AUDIOBOOK-WS] Server error:', data.message);
                             updateProgress(-1, `Error: ${data.message}`);
@@ -881,17 +1003,16 @@ async function generateAudiobookWS() {
                 }
             }
         };
-        
+
         ws.onerror = (err) => {
             clearTimeout(timeout);
             console.error('[AUDIOBOOK-WS] WebSocket error:', err);
             reject(new Error('WebSocket error'));
         };
-        
+
         ws.onclose = () => {
             audiobookWs = null;
             if (!finished) {
-                // Unexpected close
                 reject(new Error('WebSocket closed unexpectedly'));
             }
         };
@@ -1183,6 +1304,11 @@ function stopStreamingAudio() {
 
 // Combine all audio segments into a single playable audio with seek support
 async function combineAudioSegments() {
+    // WS path pre-builds the blob; return it immediately if already available
+    if (combinedAudioUrl) {
+        return combinedAudioUrl;
+    }
+
     if (audiobookState.audioQueue.length === 0) {
         return null;
     }

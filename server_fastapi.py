@@ -2352,14 +2352,14 @@ async def websocket_audiobook(websocket: WebSocket):
     --------
     Client → Server  (JSON):
         {"type": "start", "segments": [...], "voice_mapping": {...},
-         "default_voices": {...}}
+         "default_voices": {...}, "job_id": "..."}
         *or*  {"type": "start", "text": "plain text"}
         {"type": "stop"}
 
     Server → Client  (JSON):
         {"type": "start"}
-        {"type": "segment", "index": i}
-        {"type": "done"}
+        {"type": "segment", "index": i, "text": "...", "speaker": "..."}
+        {"type": "done", "job_id": "..."}
         {"type": "error", "message": "..."}
 
     Server → Client  (binary):
@@ -2388,6 +2388,10 @@ async def websocket_audiobook(websocket: WebSocket):
                 merged_map = {**voice_mapping, **voice_map}
                 default_voices = data.get("default_voices", {})
                 plain_text = data.get("text")
+                job_id = data.get("job_id", f"ws_{int(time.time())}")
+
+                # Accumulate all PCM bytes so we can save the final WAV
+                all_pcm_bytes: list = []
 
                 await websocket.send_json({"type": "start"})
 
@@ -2416,7 +2420,12 @@ async def websocket_audiobook(websocket: WebSocket):
                         )
                         final_speaker = vid if vid else (v_name or "default")
 
-                        await websocket.send_json({"type": "segment", "index": i})
+                        await websocket.send_json({
+                            "type": "segment",
+                            "index": i,
+                            "text": seg_text[:200],
+                            "speaker": speaker_name,
+                        })
 
                         # Split long segments into manageable paragraphs
                         paragraphs = _split_into_paragraphs(
@@ -2428,6 +2437,7 @@ async def websocket_audiobook(websocket: WebSocket):
 
                             chunks = await loop.run_in_executor(None, _gen_para)
                             for chunk in chunks:
+                                all_pcm_bytes.append(chunk)
                                 await websocket.send_bytes(chunk)
 
                 elif plain_text:
@@ -2436,16 +2446,29 @@ async def websocket_audiobook(websocket: WebSocket):
                         shared.remove_emojis(plain_text)
                     )
                     for idx, para in enumerate(paragraphs):
-                        await websocket.send_json({"type": "segment", "index": idx})
+                        await websocket.send_json({
+                            "type": "segment",
+                            "index": idx,
+                            "text": para[:200],
+                            "speaker": "Narrator",
+                        })
 
                         def _gen_plain(p=para):
                             return list(_generate_audiobook_tts_pcm(p))
 
                         chunks = await loop.run_in_executor(None, _gen_plain)
                         for chunk in chunks:
+                            all_pcm_bytes.append(chunk)
                             await websocket.send_bytes(chunk)
 
-                await websocket.send_json({"type": "done"})
+                # Save accumulated PCM as a WAV file for the download endpoint
+                if all_pcm_bytes:
+                    try:
+                        _save_audiobook_wav(job_id, all_pcm_bytes)
+                    except Exception as _e:
+                        print(f"[WS-AUDIOBOOK] WAV save error: {_e}")
+
+                await websocket.send_json({"type": "done", "job_id": job_id})
 
     except WebSocketDisconnect:
         print("[WS-AUDIOBOOK] Client disconnected")
@@ -2457,7 +2480,44 @@ async def websocket_audiobook(websocket: WebSocket):
             pass
 
 
-# ============== MAIN ==============
+def _save_audiobook_wav(job_id: str, pcm_chunks: list, sample_rate: int = 24000) -> None:
+    """Concatenate raw PCM int16 chunks and write a WAV file to /tmp."""
+    import struct
+
+    raw = b"".join(pcm_chunks)
+    num_samples = len(raw) // 2
+    num_channels = 1
+    bits_per_sample = 16
+    byte_rate = sample_rate * num_channels * bits_per_sample // 8
+    block_align = num_channels * bits_per_sample // 8
+    data_size = len(raw)
+    riff_size = 36 + data_size
+
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", riff_size, b"WAVE",
+        b"fmt ", 16, 1, num_channels, sample_rate, byte_rate,
+        block_align, bits_per_sample,
+        b"data", data_size,
+    )
+
+    path = f"/tmp/audiobook_{job_id}.wav"
+    with open(path, "wb") as fh:
+        fh.write(header + raw)
+
+
+@app.get("/api/audiobook/{job_id}/download")
+async def download_audiobook_ws(job_id: str):
+    """Download the accumulated WAV file for a completed audiobook job."""
+    # Sanitize job_id: allow alphanumeric, underscore, hyphen only
+    if not re.match(r"^[A-Za-z0-9_\-]+$", job_id):
+        return JSONResponse({"error": "Invalid job_id"}, status_code=400)
+    path = f"/tmp/audiobook_{job_id}.wav"
+    if not os.path.exists(path):
+        return JSONResponse({"error": "Audio file not found"}, status_code=404)
+    return FileResponse(path, media_type="audio/wav", filename="audiobook.wav")
+
+
 if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("Omnix FastAPI Server - Ultra Low Latency")

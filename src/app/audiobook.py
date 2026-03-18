@@ -6,7 +6,7 @@ import sys
 import json
 import time
 import requests
-from flask import Blueprint, request, jsonify, Response
+from flask import Blueprint, request, jsonify, Response, send_file
 import app.shared as shared
 
 # Make the src/audiobook package importable from within src/app/
@@ -143,7 +143,13 @@ def generate():
     merged_map = {**v_map, **voice_map}
     def_v = data.get('default_voices', {})
     avail = set(shared.custom_voices.keys())
-    
+    job_id = data.get('job_id', f"job_{int(time.time())}")
+
+    def estimate_duration(text: str) -> float:
+        """Estimate speech duration at ~150 WPM."""
+        words = len(text.split())
+        return max(0.4, words / 2.5)
+
     def gen():
         # Use the configured TTS provider (same as /api/tts endpoint)
         tts_provider = shared.get_tts_provider()
@@ -151,20 +157,29 @@ def generate():
             yield f"data: {json.dumps({'type': 'error', 'error': 'No TTS provider available. Please check your TTS settings.', 'code': 'TTS_UNAVAILABLE'})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
-        
+
+        # Dump segments for debugging
+        try:
+            with open(f"/tmp/audiobook_segments_{job_id}.json", "w") as _fh:
+                json.dump(segments, _fh, indent=2)
+        except Exception:
+            pass
+
+        current_time = 0.0
+
         for i, seg in enumerate(segments):
             speaker, text = seg.get('speaker'), seg.get('text', '')
             if not text.strip(): continue
-            
+
             v_name = merged_map.get(speaker)
             if not v_name:
                 g = detect_gender(speaker)
                 v_name = def_v.get('female') if g == 'female' else def_v.get('male') if g == 'male' else def_v.get('narrator')
-            
+
             vid = shared.custom_voices.get(v_name, {}).get('voice_clone_id') if v_name else None
-            
+
             final_speaker = vid if vid else v_name
-            
+
             try:
                 if hasattr(tts_provider, 'generate_tts'):
                     result = tts_provider.generate_tts(text=shared.remove_emojis(text), speaker=final_speaker, language="en")
@@ -173,9 +188,22 @@ def generate():
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'error': 'TTS provider missing generate method.'})}\n\n"
                     break
-                
+
                 if result and result.get('success'):
-                    yield f"data: {json.dumps({'type': 'audio', 'audio': result.get('audio', ''), 'sample_rate': result.get('sample_rate', 24000), 'segment_index': i, 'text': text[:100], 'voice_used': v_name})}\n\n"
+                    duration = estimate_duration(text)
+                    payload = {
+                        'type': 'audio',
+                        'audio': result.get('audio', ''),
+                        'sample_rate': result.get('sample_rate', 24000),
+                        'segment_index': i,
+                        'text': text[:100],
+                        'voice_used': v_name,
+                        'start_time': current_time,
+                        'end_time': current_time + duration,
+                        'duration': duration,
+                    }
+                    yield f"data: {json.dumps(payload)}\n\n"
+                    current_time += duration
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'error': result.get('error', 'TTS generation failed')})}\n\n"
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
@@ -184,8 +212,21 @@ def generate():
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
             time.sleep(0.1)
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'job_id': job_id})}\n\n"
     return Response(gen(), mimetype='text/event-stream')
+
+
+@audiobook_bp.route('/api/audiobook/<job_id>/download', methods=['GET'])
+def download_audiobook(job_id: str):
+    """Download the accumulated WAV file for a completed audiobook job."""
+    # Sanitize job_id: allow alphanumeric, underscore, hyphen only
+    if not re.match(r'^[A-Za-z0-9_\-]+$', job_id):
+        return jsonify({"error": "Invalid job_id"}), 400
+    path = f"/tmp/audiobook_{job_id}.wav"
+    if not os.path.exists(path):
+        return jsonify({"error": "Audio file not found"}), 404
+    return send_file(path, mimetype='audio/wav', as_attachment=True,
+                     download_name='audiobook.wav')
 
 @audiobook_bp.route('/api/audiobook/speakers/detect', methods=['POST'])
 def detect():

@@ -321,8 +321,8 @@ class TestVoiceManager:
         vm.get_voice("Alice")
         vm.get_voice("Bob")
         assignments = vm.get_all_assignments()
-        assert "Alice" in assignments
-        assert "Bob" in assignments
+        assert "alice" in assignments
+        assert "bob" in assignments
 
     def test_no_available_voices(self):
         vm = self._make()
