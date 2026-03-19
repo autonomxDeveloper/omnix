@@ -939,3 +939,88 @@ She walked away.
         for seg in segments:
             assert seg["speaker"].lower() != "unknown"
             assert seg["speaker"] != ""
+
+
+# ---------------------------------------------------------------------------
+# is_system_character() helper (voice_classifier)
+# ---------------------------------------------------------------------------
+
+class TestIsSystemCharacter:
+    def _fn(self, name):
+        from audiobook.voice.voice_classifier import is_system_character
+        return is_system_character(name)
+
+    def test_bot_suffix(self):
+        assert self._fn("HR_Bot") is True
+
+    def test_bot_uppercase(self):
+        assert self._fn("HR_BOT") is True
+
+    def test_system_keyword(self):
+        assert self._fn("SystemNotification") is True
+
+    def test_notification_keyword(self):
+        assert self._fn("notification_service") is True
+
+    def test_assistant_keyword(self):
+        assert self._fn("assistant") is True
+
+    def test_human_character(self):
+        assert self._fn("Alice") is False
+
+    def test_human_with_unrelated_name(self):
+        assert self._fn("Robert") is False
+
+    def test_empty_name(self):
+        assert self._fn("") is False
+
+
+class TestSystemCharacterClassification:
+    def _classify(self, name):
+        from audiobook.voice.voice_classifier import classify_character_voice, clear_voice_cache
+        clear_voice_cache()
+        return classify_character_voice(name=name)
+
+    def test_hr_bot_is_neutral(self):
+        r = self._classify("HR_Bot")
+        assert r["gender"] == "neutral"
+        assert r["confidence"] > 0.5
+
+    def test_system_bot_is_neutral(self):
+        r = self._classify("System_Bot")
+        assert r["gender"] == "neutral"
+
+    def test_human_character_not_neutral_if_known(self):
+        r = self._classify("Sarah")
+        assert r["gender"] == "female"
+
+
+# ---------------------------------------------------------------------------
+# VoiceManager – case-insensitive voice_map lookup (HR_Bot fix)
+# ---------------------------------------------------------------------------
+
+class TestVoiceManagerCaseInsensitiveMap:
+    def _make(self, **kw):
+        from audiobook.voice.voice_manager import VoiceManager
+        d = tempfile.mkdtemp()
+        return VoiceManager(book_id="test_book", base_dir=d, **kw)
+
+    def test_voice_map_lowercase_key_matches_mixed_case_character(self):
+        """Frontend sends lowercase keys; canonical form may be mixed case."""
+        mgr = self._make(available_voices=["voice_a", "voice_b"])
+        # Frontend normalises "HR_Bot" → "hr_bot"
+        metadata = {"voice_map": {"hr_bot": "robot_voice"}}
+        voice = mgr.get_voice("HR_Bot", metadata=metadata)
+        assert voice == "robot_voice"
+
+    def test_voice_map_exact_case_key_still_works(self):
+        mgr = self._make(available_voices=["voice_a"])
+        metadata = {"voice_map": {"HR_Bot": "robot_voice"}}
+        voice = mgr.get_voice("HR_Bot", metadata=metadata)
+        assert voice == "robot_voice"
+
+    def test_voice_map_lowercase_character_name(self):
+        mgr = self._make(available_voices=["voice_a"])
+        metadata = {"voice_map": {"lena": "female_voice"}}
+        voice = mgr.get_voice("Lena", metadata=metadata)
+        assert voice == "female_voice"

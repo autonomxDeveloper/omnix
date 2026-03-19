@@ -43,12 +43,29 @@ _LLM_PROMPT_TEMPLATE = (
 )
 
 
+def is_system_character(name: str) -> bool:
+    """Return True if *name* looks like a bot, system, or automated speaker."""
+    nl = name.lower()
+    return any(keyword in nl for keyword in [
+        "bot", "system", "notification", "assistant",
+    ])
+
+
 def _keyword_classify(name: str) -> Dict:
     """Fallback classification based on name keywords."""
     if not name:
         return dict(_DEFAULT_RESULT)
 
     nl = name.lower().strip()
+
+    # System/bot characters get a neutral, robotic classification
+    if is_system_character(name):
+        return {
+            "gender": "neutral",
+            "age": "adult",
+            "tone": "calm",
+            "confidence": 0.9,
+        }
 
     gender = "neutral"
     if any(w in nl for w in ["ms.", "mrs.", "she", "her", "woman"]):

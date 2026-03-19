@@ -32,6 +32,8 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
             if (!this.draining && data instanceof Float32Array && data.length > 0) {
                 this.buffer.push(data);
                 this.bufferSamples += data.length;
+            } else if (!this.draining && !(data instanceof Float32Array) && data !== null) {
+                console.warn('[PCMPlayerProcessor] Invalid audio chunk type — expected Float32Array, got:', typeof data);
             }
         };
     }
