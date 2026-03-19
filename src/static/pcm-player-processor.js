@@ -1,6 +1,16 @@
+/**
+ * DEPRECATED — Canonical source: /static/js/audio/pcm-player-worklet.js
+ *
+ * This file is kept for backwards compatibility only.  All audio worklet
+ * consumers should load the canonical module at the path above.  The
+ * implementation below is an exact copy so that any code that still
+ * references this path continues to work.
+ */
+
+// ── Identical copy of js/audio/pcm-player-worklet.js ──────────────────────
 const MAX_CORRUPTION_COUNT = 5000;
-const MAX_BUFFER_CHUNKS = 200;
-const CROSSFADE_SAMPLES = 16;
+const MAX_BUFFER_SAMPLES = 24000 * 5; // ~5 seconds at 24 kHz
+const CROSSFADE_SAMPLES = 32;
 
 class PCMPlayerProcessor extends AudioWorkletProcessor {
     constructor() {
@@ -31,8 +41,6 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
             }
 
             if (data.type === 'stop') {
-                // Soft stop: finish playing queued audio, then go silent.
-                // Do NOT clear the buffer — frames already queued must play out.
                 this.draining = true;
                 return;
             }
@@ -48,8 +56,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
                 this.buffer.push(data);
                 this.bufferSamples += data.length;
 
-                // Prevent memory blowup — drop oldest chunks
-                if (this.buffer.length > MAX_BUFFER_CHUNKS) {
+                while (this.bufferSamples > MAX_BUFFER_SAMPLES && this.buffer.length > 1) {
                     const dropped = this.buffer.shift();
                     this.bufferSamples -= dropped.length;
                 }
@@ -62,14 +69,12 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
         let outputIndex = 0;
 
         while (outputIndex < output.length) {
-            // Load next chunk if needed
             if (!this.currentChunk || this.chunkOffset >= this.currentChunk.length) {
                 if (this.buffer.length > 0) {
                     this.previousChunk = this.currentChunk;
                     this.currentChunk = this.buffer.shift();
                     this.chunkOffset = 0;
 
-                    // Cross-chunk smoothing: crossfade at chunk boundaries
                     if (this.previousChunk && this.currentChunk.length > 0) {
                         const fadeSamples = Math.min(
                             CROSSFADE_SAMPLES,
@@ -83,9 +88,10 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
                         }
                     }
                 } else {
-                    // Underrun: smooth decay instead of harsh silence
                     this.lastSample *= 0.98;
-                    output[outputIndex++] = this.lastSample;
+                    output[outputIndex] = this.lastSample;
+                    this.lastSample = output[outputIndex] || this.lastSample;
+                    outputIndex++;
                     continue;
                 }
             }
@@ -97,20 +103,17 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
             for (let j = 0; j < copySize; j++) {
                 let sample = this.currentChunk[this.chunkOffset + j];
 
-                // Reject corrupt samples (NaN, Infinity, extreme values)
                 if (!Number.isFinite(sample) || Math.abs(sample) > 5) {
                     sample = 0;
                     this.corruptionCount++;
                 }
 
-                // Soft-clip to [-1, 1]
                 sample = Math.max(-1, Math.min(1, sample));
                 output[outputIndex + j] = sample;
             }
 
-            // Track last sample for underrun smoothing
             if (copySize > 0) {
-                this.lastSample = output[outputIndex + copySize - 1];
+                this.lastSample = output[outputIndex + copySize - 1] || this.lastSample;
             }
 
             this.chunkOffset += copySize;
@@ -118,7 +121,6 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
             outputIndex += copySize;
         }
 
-        // Reset on sustained corruption to prevent speaker damage
         if (this.corruptionCount > MAX_CORRUPTION_COUNT) {
             this.buffer = [];
             this.bufferSamples = 0;
@@ -132,7 +134,6 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
         if (this.draining && this.buffer.length === 0 &&
             (!this.currentChunk || this.chunkOffset >= this.currentChunk.length)) {
             this.draining = false;
-            // Notify the main thread that the buffer has fully drained
             this.port.postMessage({ type: 'drained' });
         }
 

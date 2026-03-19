@@ -805,112 +805,124 @@ class TestWsClientSafePcmDecoding:
 
 
 # ---------------------------------------------------------------------------
-# AudioWorklet — cross-chunk crossfade, underrun smoothing, overflow protection
+# AudioWorklet — canonical worklet (js/audio/pcm-player-worklet.js)
 # ---------------------------------------------------------------------------
 
 class TestWorkletStreamingImprovements:
-    """Verify pcm-player-processor.js has streaming read model with crossfade,
-    underrun smoothing, and buffer overflow protection."""
-
-    def _get_processor_source(self):
-        return _read_source("src/static/pcm-player-processor.js")
-
-    def test_current_chunk_model(self):
-        src = self._get_processor_source()
-        assert "this.currentChunk" in src, (
-            "Worklet must use currentChunk/chunkOffset streaming model"
-        )
-
-    def test_previous_chunk_tracking(self):
-        src = self._get_processor_source()
-        assert "this.previousChunk" in src, (
-            "Worklet must track previousChunk for crossfade"
-        )
-
-    def test_last_sample_hold(self):
-        src = self._get_processor_source()
-        assert "this.lastSample" in src, (
-            "Worklet must track lastSample for underrun smoothing"
-        )
-
-    def test_underrun_smoothing(self):
-        src = self._get_processor_source()
-        assert "lastSample *= 0.98" in src or "this.lastSample *= 0.98" in src, (
-            "Worklet must use exponential decay (0.98) for underrun smoothing"
-        )
-
-    def test_crossfade_at_boundaries(self):
-        src = self._get_processor_source()
-        assert "CROSSFADE_SAMPLES" in src, (
-            "Worklet must define CROSSFADE_SAMPLES for cross-chunk smoothing"
-        )
-
-    def test_buffer_overflow_protection(self):
-        src = self._get_processor_source()
-        assert "MAX_BUFFER_CHUNKS" in src, (
-            "Worklet must define MAX_BUFFER_CHUNKS to prevent memory blowup"
-        )
-
-    def test_input_validation(self):
-        src = self._get_processor_source()
-        assert "!(data instanceof Float32Array)" in src, (
-            "Worklet must validate that input data is Float32Array"
-        )
-
-    def test_corruption_detection(self):
-        src = self._get_processor_source()
-        assert "isFinite" in src, (
-            "Worklet must check Number.isFinite to reject corrupt samples"
-        )
-
-
-# ---------------------------------------------------------------------------
-# AudioWorklet (js/audio) — same improvements
-# ---------------------------------------------------------------------------
-
-class TestWorkletJsAudioImprovements:
-    """Verify pcm-player-worklet.js (js/audio/) has the same streaming
-    improvements as pcm-player-processor.js."""
+    """Verify the canonical pcm-player-worklet.js has streaming read model with
+    crossfade, underrun smoothing, and sample-based overflow protection."""
 
     def _get_worklet_source(self):
         return _read_source("src/static/js/audio/pcm-player-worklet.js")
 
     def test_current_chunk_model(self):
         src = self._get_worklet_source()
-        assert "this.currentChunk" in src
+        assert "this.currentChunk" in src, (
+            "Worklet must use currentChunk/chunkOffset streaming model"
+        )
 
     def test_previous_chunk_tracking(self):
         src = self._get_worklet_source()
-        assert "this.previousChunk" in src
+        assert "this.previousChunk" in src, (
+            "Worklet must track previousChunk for crossfade"
+        )
 
     def test_last_sample_hold(self):
         src = self._get_worklet_source()
-        assert "this.lastSample" in src
+        assert "this.lastSample" in src, (
+            "Worklet must track lastSample for underrun smoothing"
+        )
 
     def test_underrun_smoothing(self):
         src = self._get_worklet_source()
-        assert "lastSample *= 0.98" in src or "this.lastSample *= 0.98" in src
+        assert "lastSample *= 0.98" in src or "this.lastSample *= 0.98" in src, (
+            "Worklet must use exponential decay (0.98) for underrun smoothing"
+        )
+
+    def test_underrun_updates_last_sample(self):
+        """After writing a decayed sample, lastSample must be updated from the
+        output so the next decay iteration stays consistent."""
+        src = self._get_worklet_source()
+        assert "this.lastSample = output[outputIndex]" in src, (
+            "Underrun path must update lastSample from the written output sample"
+        )
 
     def test_crossfade_at_boundaries(self):
         src = self._get_worklet_source()
-        assert "CROSSFADE_SAMPLES" in src
+        assert "CROSSFADE_SAMPLES" in src, (
+            "Worklet must define CROSSFADE_SAMPLES for cross-chunk smoothing"
+        )
 
-    def test_buffer_overflow_protection(self):
+    def test_crossfade_32_samples(self):
         src = self._get_worklet_source()
-        assert "MAX_BUFFER_CHUNKS" in src
+        assert "CROSSFADE_SAMPLES = 32" in src, (
+            "CROSSFADE_SAMPLES must be 32 for consistent smoothing"
+        )
+
+    def test_buffer_overflow_sample_based(self):
+        src = self._get_worklet_source()
+        assert "MAX_BUFFER_SAMPLES" in src, (
+            "Worklet must use sample-based MAX_BUFFER_SAMPLES, not chunk-based"
+        )
 
     def test_input_validation(self):
         src = self._get_worklet_source()
+        assert "!(data instanceof Float32Array)" in src, (
+            "Worklet must validate that input data is Float32Array"
+        )
+
+    def test_corruption_detection(self):
+        src = self._get_worklet_source()
+        assert "isFinite" in src, (
+            "Worklet must check Number.isFinite to reject corrupt samples"
+        )
+
+
+# ---------------------------------------------------------------------------
+# AudioWorklet (pcm-player-processor.js) — backwards-compat copy
+# ---------------------------------------------------------------------------
+
+class TestWorkletProcessorBackwardsCompat:
+    """Verify pcm-player-processor.js is kept in sync with the canonical worklet
+    and includes a deprecation notice pointing to the canonical source."""
+
+    def _get_processor_source(self):
+        return _read_source("src/static/pcm-player-processor.js")
+
+    def test_deprecation_notice(self):
+        src = self._get_processor_source()
+        assert "pcm-player-worklet.js" in src, (
+            "pcm-player-processor.js must reference the canonical worklet path"
+        )
+
+    def test_same_crossfade_value(self):
+        src = self._get_processor_source()
+        assert "CROSSFADE_SAMPLES = 32" in src, (
+            "Processor must use same CROSSFADE_SAMPLES = 32 as canonical worklet"
+        )
+
+    def test_sample_based_buffer(self):
+        src = self._get_processor_source()
+        assert "MAX_BUFFER_SAMPLES" in src, (
+            "Processor must use sample-based MAX_BUFFER_SAMPLES"
+        )
+
+    def test_corruption_detection(self):
+        src = self._get_processor_source()
+        assert "isFinite" in src
+
+    def test_input_validation(self):
+        src = self._get_processor_source()
         assert "!(data instanceof Float32Array)" in src
 
 
 # ---------------------------------------------------------------------------
-# Audiobook crossfade between scheduled chunks
+# Audiobook: NO crossfade in scheduleChunk (handled by worklet only)
 # ---------------------------------------------------------------------------
 
-class TestAudiobookChunkCrossfade:
-    """Verify audiobook.js scheduleChunk applies crossfade between consecutive
-    chunks for click-free transitions."""
+class TestAudiobookNoCrossfade:
+    """Verify audiobook.js does NOT apply crossfade in scheduleChunk — crossfade
+    must only happen in the AudioWorklet to avoid double-blending."""
 
     def _get_schedule_chunk_body(self):
         content = _read_source("src/static/audiobook.js")
@@ -921,25 +933,40 @@ class TestAudiobookChunkCrossfade:
         assert match, "scheduleChunk must be defined inside generateAudiobookWS"
         return match.group(0)
 
-    def test_crossfade_applied(self):
+    def test_no_crossfade_in_schedule_chunk(self):
         body = self._get_schedule_chunk_body()
-        assert "lastScheduledFloat32" in body, (
-            "scheduleChunk must track previous chunk for crossfade"
+        assert "lastScheduledFloat32" not in body, (
+            "scheduleChunk must NOT have crossfade — it is handled by the AudioWorklet"
+        )
+        assert "CROSSFADE_LEN" not in body, (
+            "scheduleChunk must NOT define CROSSFADE_LEN"
         )
 
-    def test_crossfade_length_defined(self):
-        body = self._get_schedule_chunk_body()
-        assert "CROSSFADE_LEN" in body, (
-            "scheduleChunk must define CROSSFADE_LEN for crossfade window"
+    def test_no_last_scheduled_variable(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function generateAudiobookWS.*?(?=\nfunction |\n// ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match
+        body = match.group(0)
+        assert "lastScheduledFloat32" not in body, (
+            "generateAudiobookWS must NOT declare lastScheduledFloat32 variable"
         )
 
-    def test_crossfade_before_fade(self):
-        """Crossfade must be applied before the gain fade."""
-        body = self._get_schedule_chunk_body()
-        crossfade_idx = body.find("lastScheduledFloat32")
-        fade_idx = body.find("applyFadeFloat32")
-        assert crossfade_idx < fade_idx, (
-            "Crossfade must be applied before applyFadeFloat32"
+
+# ---------------------------------------------------------------------------
+# Clipping detection is throttled
+# ---------------------------------------------------------------------------
+
+class TestClippingDetectionThrottled:
+    """Verify that clipping detection in ttsClient.js is throttled to avoid
+    main-thread slowdown from scanning every sample of every chunk."""
+
+    def test_throttled_with_random(self):
+        content = _read_source("src/static/voice/ttsClient.js")
+        assert "Math.random()" in content, (
+            "ttsClient.js clipping detection must be throttled with Math.random()"
         )
 
 

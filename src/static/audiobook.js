@@ -785,8 +785,6 @@ async function generateAudiobookWS() {
         let subtitleRafId = null;
         let finished = false;
         let playbackStarted = false;
-        /** Previous Float32Array chunk, used for crossfade between chunks. */
-        let lastScheduledFloat32 = null;
 
         // ── Helpers ───────────────────────────────────────────────────────
 
@@ -851,22 +849,6 @@ async function generateAudiobookWS() {
                 }
                 float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
             }
-
-            // Crossfade with the previous chunk to eliminate clicks at boundaries
-            const CROSSFADE_LEN = 32;
-            if (lastScheduledFloat32) {
-                const fadeSamples = Math.min(
-                    CROSSFADE_LEN,
-                    lastScheduledFloat32.length,
-                    float32.length
-                );
-                for (let i = 0; i < fadeSamples; i++) {
-                    const t = i / fadeSamples;
-                    const prev = lastScheduledFloat32[lastScheduledFloat32.length - fadeSamples + i] || 0;
-                    float32[i] = prev * (1 - t) + float32[i] * t;
-                }
-            }
-            lastScheduledFloat32 = float32;
 
             applyFadeFloat32(float32);
 
