@@ -46,7 +46,7 @@ def parse_dialogue(text):
         para_dialogues = []
         thoughts = [t[1] for t in thought_pattern.findall(para)]
         
-        for m in re.finditer(r'([A-Z][A-Za-z\'\-]+)\s*:\s*(.+)$', para, re.MULTILINE):
+        for m in re.finditer(r'([A-Za-z][A-Za-z0-9_\-\'\.]*)\s*:\s*(.+)$', para, re.MULTILINE):
             if m.group(2).strip() and not any(t in m.group(2) for t in thoughts):
                 para_dialogues.append({'speaker': m.group(1).strip(), 'text': m.group(2).strip(), 'start': m.start(), 'end': m.end()})
                 last_speaker = m.group(1).strip()
