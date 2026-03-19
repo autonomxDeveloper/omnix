@@ -4,83 +4,95 @@
     "language": "en",
     "voice_clone_id": "Anaka",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "default_ref": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "default_ref",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Donald Trump": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Donald Trump",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Her": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Her",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Inigo": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Inigo",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Jinx": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Jinx",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Joe Rogen": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Joe Rogen",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Maya": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Maya",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Morgan": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Morgan",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Nate Fallout": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Nate Fallout",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Sofia": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Sofia",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   },
   "Vic Cyberpunk": {
     "speaker": "default",
     "language": "en",
     "voice_clone_id": "Vic Cyberpunk",
     "has_audio": true,
-    "is_preloaded": true
+    "is_preloaded": true,
+    "gender": "neutral"
   }
 }
