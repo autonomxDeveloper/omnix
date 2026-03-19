@@ -30,6 +30,114 @@ def detect_gender(name):
     if any(m in nl for m in MALE_NAMES): return 'male'
     return 'neutral'
 
+# ---------------------------------------------------------------------------
+# PDF page filtering helpers
+# ---------------------------------------------------------------------------
+
+MAX_INITIAL_PAGES = 5
+MIN_WORDS_THRESHOLD = 30
+
+# Server-side session storage for remaining pages (avoids returning entire book in one response)
+_upload_sessions = {}
+
+
+def is_title_page(text):
+    """Detect title/cover pages by their brevity or keyword presence."""
+    words = text.split()
+    if len(words) < 50 and "chapter" not in text.lower():
+        return True
+
+    keywords = ["by", "author", "published"]
+    if any(k in text.lower() for k in keywords) and len(words) < 100:
+        return True
+
+    return False
+
+
+def is_table_of_contents(text):
+    """Detect table-of-contents pages."""
+    t = text.lower()
+
+    if "contents" in t:
+        return True
+
+    lines = text.splitlines()
+    toc_like = sum(1 for line in lines if re.search(r'\d+\s*$', line))
+
+    if toc_like >= 5:
+        return True
+
+    if "...." in text:
+        return True
+
+    return False
+
+
+def is_story_page(text):
+    """Return True when the page looks like actual story prose."""
+    if len(text.split()) < MIN_WORDS_THRESHOLD:
+        return False
+
+    if '"' in text:
+        return True
+
+    sentences = text.split('.')
+    if len(sentences) > 5:
+        return True
+
+    return False
+
+
+def extract_valid_pages(reader):
+    """Filter a PdfReader's pages, keeping only real story content."""
+    valid_pages = []
+
+    for page in reader.pages:
+        text = page.extract_text() or ""
+
+        if is_table_of_contents(text):
+            continue
+        if is_title_page(text):
+            continue
+        if not is_story_page(text):
+            continue
+
+        valid_pages.append(text)
+
+    return valid_pages
+
+
+def extract_characters_and_gender(text):
+    """
+    Lightweight, fast character extraction with pronoun-based gender scoring.
+    Pronouns are scoped to a ±100 char window around each speaking-verb match
+    so that "she" near Sarah doesn't pollute Tom's score.
+    Returns: { character_name: {"male": int, "female": int} }
+    """
+    characters = {}
+
+    # Find each "Name said/replied/asked" match with position info
+    for m in re.finditer(
+        r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)',
+        text,
+    ):
+        name = m.group(1)
+
+        if name not in characters:
+            characters[name] = {"male": 0, "female": 0}
+
+        # Local window: ±100 chars around the match (critical for accuracy)
+        start = max(0, m.start() - 100)
+        end = min(len(text), m.end() + 100)
+        window = text[start:end].lower()
+
+        if " he " in window or " his " in window or " him " in window:
+            characters[name]["male"] += 2
+        if " she " in window or " her " in window or " hers " in window:
+            characters[name]["female"] += 2
+
+    return characters
+
 def parse_dialogue(text):
     segments = []
     speech_verbs = r'(?:said|asked|replied|whispered|shouted|murmured|answered|added|insisted|demanded|muttered|sighed|groaned|exclaimed|called|declared|continued|suggested|offered|responded)'
@@ -123,16 +231,76 @@ def upload():
     text = None
     if 'file' in request.files:
         f = request.files['file']
-        if f.filename.endswith('.pdf'):
+        if f.filename and f.filename.lower().endswith('.pdf'):
             import PyPDF2
-            text = "".join(p.extract_text() + "\n" for p in PyPDF2.PdfReader(f).pages)
-        elif f.filename.endswith('.txt'): text = f.read().decode('utf-8')
-    elif request.form.get('text'): text = request.form.get('text')
-    elif request.is_json: text = request.get_json().get('text', '')
-    
-    if not text: return jsonify({"success": False, "error": "No text"}), 400
+            import uuid
+            reader = PyPDF2.PdfReader(f)
+            valid_pages = extract_valid_pages(reader)
+
+            if not valid_pages:
+                return jsonify({"success": False, "error": "No readable story content found"}), 400
+
+            # Fast start: only first few pages
+            initial_pages = valid_pages[:MAX_INITIAL_PAGES]
+            remaining_pages = valid_pages[MAX_INITIAL_PAGES:]
+            initial_text = "\n".join(initial_pages)
+
+            characters = extract_characters_and_gender(initial_text)
+
+            # Also parse segments from initial text for backward compat
+            segs = parse_dialogue(initial_text)
+
+            # Build available cloned voices grouped by gender
+            available_voices = []
+            for vid, vdata in shared.custom_voices.items():
+                available_voices.append({
+                    "id": vid,
+                    "gender": vdata.get("gender", "neutral"),
+                })
+
+            # Store remaining pages server-side (avoid sending entire book)
+            session_id = None
+            if remaining_pages:
+                session_id = str(uuid.uuid4())
+                _upload_sessions[session_id] = remaining_pages
+
+            return jsonify({
+                "success": True,
+                "initial_text": initial_text,
+                "session_id": session_id,
+                "characters": characters,
+                "total_pages": len(valid_pages),
+                "remaining_count": len(remaining_pages),
+                "segments": segs,
+                "speakers": list({s['speaker'] for s in segs}),
+                "available_voices": available_voices,
+            })
+
+        elif f.filename and f.filename.lower().endswith('.txt'):
+            text = f.read().decode('utf-8')
+    elif request.form.get('text'):
+        text = request.form.get('text')
+    elif request.is_json:
+        text = request.get_json().get('text', '')
+
+    if not text:
+        return jsonify({"success": False, "error": "No text"}), 400
     segs = parse_dialogue(text)
     return jsonify({"success": True, "segments": segs, "speakers": list(set(s['speaker'] for s in segs))})
+
+
+@audiobook_bp.route('/api/audiobook/pages', methods=['GET'])
+def get_remaining_pages():
+    """Lazily fetch remaining pages stored during PDF upload."""
+    session_id = request.args.get('session_id', '')
+    if not session_id or not re.match(r'^[A-Za-z0-9\-]+$', session_id):
+        return jsonify({"success": False, "error": "Invalid session_id"}), 400
+
+    pages = _upload_sessions.pop(session_id, None)
+    if pages is None:
+        return jsonify({"success": False, "error": "Session not found or already consumed"}), 404
+
+    return jsonify({"success": True, "pages": pages})
 
 @audiobook_bp.route('/api/audiobook/generate', methods=['POST'])
 def generate():

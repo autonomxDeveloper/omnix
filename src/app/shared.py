@@ -476,8 +476,13 @@ def _init_custom_voices():
             if w.lower().endswith('.wav'):
                 vid = os.path.splitext(w)[0]
                 if vid not in custom_voices:
-                    custom_voices[vid] = {"speaker": "default", "language": "en", "voice_clone_id": vid, "has_audio": True, "is_preloaded": True}
-    
+                    custom_voices[vid] = {"speaker": "default", "language": "en", "voice_clone_id": vid, "has_audio": True, "is_preloaded": True, "gender": "neutral"}
+
+    # Ensure all existing entries have the gender field
+    for vid, vdata in custom_voices.items():
+        if "gender" not in vdata:
+            vdata["gender"] = "neutral"
+
     with open(VOICE_CLONES_FILE, 'w') as f:
         json.dump(custom_voices, f, indent=2)
 

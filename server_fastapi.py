@@ -979,9 +979,30 @@ async def get_voice_clones():
             voices.append({
                 "id": voice_id,
                 "name": voice_id,
+                "gender": voice_data.get("gender", "neutral"),
                 **voice_data
             })
         return {"success": True, "voices": voices}
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.put("/api/voice_clones/{voice_id}")
+async def update_voice_clone(voice_id: str, request: Request):
+    """Update a voice clone's metadata (e.g. gender)."""
+    try:
+        voice_id = voice_id.replace("_", " ")
+        if voice_id not in shared.custom_voices:
+            return JSONResponse({"success": False, "error": "Voice not found"}, status_code=404)
+
+        data = await request.json()
+        if "gender" in data and data["gender"] in ("male", "female", "neutral"):
+            shared.custom_voices[voice_id]["gender"] = data["gender"]
+
+        with open(shared.VOICE_CLONES_FILE, 'w') as f:
+            json.dump(shared.custom_voices, f, indent=2)
+
+        return {"success": True, "voice": shared.custom_voices[voice_id]}
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
@@ -1229,6 +1250,85 @@ def _llm_generate_audiobook(prompt: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# PDF page filtering helpers (mirrors app/audiobook.py)
+# ---------------------------------------------------------------------------
+
+_MAX_INITIAL_PAGES = 5
+_MIN_WORDS_THRESHOLD = 30
+
+# Server-side session storage for remaining pages
+_upload_sessions: dict = {}
+
+
+def _is_title_page(text):
+    words = text.split()
+    if len(words) < 50 and "chapter" not in text.lower():
+        return True
+    keywords = ["by", "author", "published"]
+    if any(k in text.lower() for k in keywords) and len(words) < 100:
+        return True
+    return False
+
+
+def _is_table_of_contents(text):
+    t = text.lower()
+    if "contents" in t:
+        return True
+    lines = text.splitlines()
+    toc_like = sum(1 for line in lines if _re.search(r'\d+\s*$', line))
+    if toc_like >= 5:
+        return True
+    if "...." in text:
+        return True
+    return False
+
+
+def _is_story_page(text):
+    if len(text.split()) < _MIN_WORDS_THRESHOLD:
+        return False
+    if '"' in text:
+        return True
+    sentences = text.split('.')
+    if len(sentences) > 5:
+        return True
+    return False
+
+
+def _extract_valid_pages(reader):
+    valid_pages = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        if _is_table_of_contents(text):
+            continue
+        if _is_title_page(text):
+            continue
+        if not _is_story_page(text):
+            continue
+        valid_pages.append(text)
+    return valid_pages
+
+
+def _extract_characters_and_gender(text):
+    characters = {}
+    for m in _re.finditer(
+        r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)',
+        text,
+    ):
+        name = m.group(1)
+        if name not in characters:
+            characters[name] = {"male": 0, "female": 0}
+        # Local window: ±100 chars around the match
+        start = max(0, m.start() - 100)
+        end = min(len(text), m.end() + 100)
+        window = text[start:end].lower()
+        if " he " in window or " his " in window or " him " in window:
+            characters[name]["male"] += 2
+        if " she " in window or " her " in window or " hers " in window:
+            characters[name]["female"] += 2
+    return characters
+
+
 @app.post("/api/audiobook/upload")
 async def audiobook_upload(request: Request):
     """Parse uploaded text or file into dialogue segments."""
@@ -1240,10 +1340,49 @@ async def audiobook_upload(request: Request):
         file = form.get("file")
         if file:
             raw = await file.read()
-            if file.filename and file.filename.endswith(".pdf"):
-                import PyPDF2, io
+            if file.filename and file.filename.lower().endswith(".pdf"):
+                import PyPDF2, io, uuid as _uuid
                 reader = PyPDF2.PdfReader(io.BytesIO(raw))
-                text = "".join(p.extract_text() + "\n" for p in reader.pages)
+                valid_pages = _extract_valid_pages(reader)
+
+                if not valid_pages:
+                    return JSONResponse(
+                        {"success": False, "error": "No readable story content found"},
+                        status_code=400,
+                    )
+
+                initial_pages = valid_pages[:_MAX_INITIAL_PAGES]
+                remaining_pages = valid_pages[_MAX_INITIAL_PAGES:]
+                initial_text = "\n".join(initial_pages)
+
+                characters = _extract_characters_and_gender(initial_text)
+
+                segs = _parse_dialogue(initial_text)
+
+                available_voices = []
+                for vid, vdata in shared.custom_voices.items():
+                    available_voices.append({
+                        "id": vid,
+                        "gender": vdata.get("gender", "neutral"),
+                    })
+
+                # Store remaining pages server-side
+                session_id = None
+                if remaining_pages:
+                    session_id = str(_uuid.uuid4())
+                    _upload_sessions[session_id] = remaining_pages
+
+                return {
+                    "success": True,
+                    "initial_text": initial_text,
+                    "session_id": session_id,
+                    "characters": characters,
+                    "total_pages": len(valid_pages),
+                    "remaining_count": len(remaining_pages),
+                    "segments": segs,
+                    "speakers": list({s["speaker"] for s in segs}),
+                    "available_voices": available_voices,
+                }
             else:
                 text = raw.decode("utf-8")
         if not text:
@@ -1261,6 +1400,23 @@ async def audiobook_upload(request: Request):
         "segments": segs,
         "speakers": list({s["speaker"] for s in segs}),
     }
+
+
+@app.get("/api/audiobook/pages")
+async def audiobook_get_remaining_pages(request: Request):
+    """Lazily fetch remaining pages stored during PDF upload."""
+    session_id = request.query_params.get("session_id", "")
+    if not session_id or not _re.match(r'^[A-Za-z0-9\-]+$', session_id):
+        return JSONResponse({"success": False, "error": "Invalid session_id"}, status_code=400)
+
+    pages = _upload_sessions.pop(session_id, None)
+    if pages is None:
+        return JSONResponse(
+            {"success": False, "error": "Session not found or already consumed"},
+            status_code=404,
+        )
+
+    return {"success": True, "pages": pages}
 
 
 @app.post("/api/audiobook/generate")
