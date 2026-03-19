@@ -1097,7 +1097,7 @@ import re as _re_mod
 
 def _is_title_page(text):
     words = text.split()
-    if len(words) < 50:
+    if len(words) < 50 and "chapter" not in text.lower():
         return True
     keywords = ["by", "author", "published"]
     if any(k in text.lower() for k in keywords) and len(words) < 100:
@@ -1132,21 +1132,21 @@ def _is_story_page(text):
 
 def _extract_characters_and_gender(text):
     characters = {}
-    matches = _re_mod.findall(
+    for m in _re_mod.finditer(
         r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)',
         text,
-    )
-    for name, _ in matches:
+    ):
+        name = m.group(1)
         if name not in characters:
             characters[name] = {"male": 0, "female": 0}
-    for name in list(characters.keys()):
-        name_pattern = _re_mod.compile(_re_mod.escape(name) + r'.{0,200}', _re_mod.DOTALL)
-        for m in name_pattern.finditer(text):
-            context = m.group(0).lower()
-            if " he " in context or " his " in context or " him " in context:
-                characters[name]["male"] += 1
-            if " she " in context or " her " in context or " hers " in context:
-                characters[name]["female"] += 1
+        # Local window: ±100 chars around the match
+        start = max(0, m.start() - 100)
+        end = min(len(text), m.end() + 100)
+        window = text[start:end].lower()
+        if " he " in window or " his " in window or " him " in window:
+            characters[name]["male"] += 2
+        if " she " in window or " her " in window or " hers " in window:
+            characters[name]["female"] += 2
     return characters
 
 
@@ -1189,6 +1189,11 @@ class TestPageFiltering:
     def test_not_story_page_too_short(self):
         assert _is_story_page("Short text.") is False
 
+    def test_chapter_title_page_not_skipped(self):
+        """Pages with 'Chapter' in them should not be treated as title pages."""
+        text = "Chapter 1: The Beginning"
+        assert _is_title_page(text) is False
+
 
 class TestCharacterExtraction:
     """Tests for character + gender extraction."""
@@ -1229,6 +1234,39 @@ class TestCharacterExtraction:
         assert "James" in chars
         assert "Alice" in chars
         assert "Tom" in chars
+
+    def test_gender_not_polluted_across_characters(self):
+        """Critical: pronouns near one character must NOT pollute another."""
+        # Tom is male, Sarah is female — with enough separation they should
+        # not cross-contaminate each other's gender scores
+        text = (
+            'Tom said he was heading home. He grabbed his coat and left. '
+            + 'x ' * 50  # 100 chars of separation
+            + 'Sarah replied she would stay. She looked at her phone.'
+        )
+        chars = _extract_characters_and_gender(text)
+        assert "Tom" in chars
+        assert "Sarah" in chars
+        # Tom should have male score only (no female pollution)
+        assert chars["Tom"]["male"] > 0
+        assert chars["Tom"]["female"] == 0, (
+            f"Tom incorrectly got female={chars['Tom']['female']}"
+        )
+        # Sarah should have female score only (no male pollution)
+        assert chars["Sarah"]["female"] > 0
+        assert chars["Sarah"]["male"] == 0, (
+            f"Sarah incorrectly got male={chars['Sarah']['male']}"
+        )
+
+    def test_gender_scoring_uses_local_window(self):
+        """Verify that pronouns far from a character mention are ignored."""
+        # "she" is 300+ characters away from "Tom said" — should not count
+        text = (
+            'Tom said hello. ' + 'a ' * 200 + 'she walked away.'
+        )
+        chars = _extract_characters_and_gender(text)
+        assert "Tom" in chars
+        assert chars["Tom"]["female"] == 0
 
 
 class TestVoiceCloneGenderField:

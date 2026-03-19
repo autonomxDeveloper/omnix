@@ -37,11 +37,14 @@ def detect_gender(name):
 MAX_INITIAL_PAGES = 5
 MIN_WORDS_THRESHOLD = 30
 
+# Server-side session storage for remaining pages (avoids returning entire book in one response)
+_upload_sessions = {}
+
 
 def is_title_page(text):
     """Detect title/cover pages by their brevity or keyword presence."""
     words = text.split()
-    if len(words) < 50:
+    if len(words) < 50 and "chapter" not in text.lower():
         return True
 
     keywords = ["by", "author", "published"]
@@ -107,27 +110,31 @@ def extract_valid_pages(reader):
 def extract_characters_and_gender(text):
     """
     Lightweight, fast character extraction with pronoun-based gender scoring.
+    Pronouns are scoped to a ±100 char window around each speaking-verb match
+    so that "she" near Sarah doesn't pollute Tom's score.
     Returns: { character_name: {"male": int, "female": int} }
     """
     characters = {}
 
-    # Naive speaker detection: "Name said/replied/asked" (includes verb conjugations)
-    matches = re.findall(r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)', text)
+    # Find each "Name said/replied/asked" match with position info
+    for m in re.finditer(
+        r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)',
+        text,
+    ):
+        name = m.group(1)
 
-    for name, _ in matches:
         if name not in characters:
             characters[name] = {"male": 0, "female": 0}
 
-    # Pronoun-based scoring using context around character names
-    for name in list(characters.keys()):
-        # Look for pronoun patterns near each character mention
-        name_pattern = re.compile(re.escape(name) + r'.{0,200}', re.DOTALL)
-        for m in name_pattern.finditer(text):
-            context = m.group(0).lower()
-            if " he " in context or " his " in context or " him " in context:
-                characters[name]["male"] += 1
-            if " she " in context or " her " in context or " hers " in context:
-                characters[name]["female"] += 1
+        # Local window: ±100 chars around the match (critical for accuracy)
+        start = max(0, m.start() - 100)
+        end = min(len(text), m.end() + 100)
+        window = text[start:end].lower()
+
+        if " he " in window or " his " in window or " him " in window:
+            characters[name]["male"] += 2
+        if " she " in window or " her " in window or " hers " in window:
+            characters[name]["female"] += 2
 
     return characters
 
@@ -222,12 +229,11 @@ def parse_dialogue(text):
 @audiobook_bp.route('/api/audiobook/upload', methods=['POST'])
 def upload():
     text = None
-    is_pdf = False
     if 'file' in request.files:
         f = request.files['file']
         if f.filename and f.filename.lower().endswith('.pdf'):
-            is_pdf = True
             import PyPDF2
+            import uuid
             reader = PyPDF2.PdfReader(f)
             valid_pages = extract_valid_pages(reader)
 
@@ -252,12 +258,19 @@ def upload():
                     "gender": vdata.get("gender", "neutral"),
                 })
 
+            # Store remaining pages server-side (avoid sending entire book)
+            session_id = None
+            if remaining_pages:
+                session_id = str(uuid.uuid4())
+                _upload_sessions[session_id] = remaining_pages
+
             return jsonify({
                 "success": True,
                 "initial_text": initial_text,
-                "remaining_pages": remaining_pages,
+                "session_id": session_id,
                 "characters": characters,
                 "total_pages": len(valid_pages),
+                "remaining_count": len(remaining_pages),
                 "segments": segs,
                 "speakers": list({s['speaker'] for s in segs}),
                 "available_voices": available_voices,
@@ -274,6 +287,20 @@ def upload():
         return jsonify({"success": False, "error": "No text"}), 400
     segs = parse_dialogue(text)
     return jsonify({"success": True, "segments": segs, "speakers": list(set(s['speaker'] for s in segs))})
+
+
+@audiobook_bp.route('/api/audiobook/pages', methods=['GET'])
+def get_remaining_pages():
+    """Lazily fetch remaining pages stored during PDF upload."""
+    session_id = request.args.get('session_id', '')
+    if not session_id or not re.match(r'^[A-Za-z0-9\-]+$', session_id):
+        return jsonify({"success": False, "error": "Invalid session_id"}), 400
+
+    pages = _upload_sessions.pop(session_id, None)
+    if pages is None:
+        return jsonify({"success": False, "error": "Session not found or already consumed"}), 404
+
+    return jsonify({"success": True, "pages": pages})
 
 @audiobook_bp.route('/api/audiobook/generate', methods=['POST'])
 def generate():

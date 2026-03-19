@@ -1257,10 +1257,13 @@ def _llm_generate_audiobook(prompt: str) -> str:
 _MAX_INITIAL_PAGES = 5
 _MIN_WORDS_THRESHOLD = 30
 
+# Server-side session storage for remaining pages
+_upload_sessions: dict = {}
+
 
 def _is_title_page(text):
     words = text.split()
-    if len(words) < 50:
+    if len(words) < 50 and "chapter" not in text.lower():
         return True
     keywords = ["by", "author", "published"]
     if any(k in text.lower() for k in keywords) and len(words) < 100:
@@ -1308,18 +1311,21 @@ def _extract_valid_pages(reader):
 
 def _extract_characters_and_gender(text):
     characters = {}
-    matches = _re.findall(r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)', text)
-    for name, _ in matches:
+    for m in _re.finditer(
+        r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)',
+        text,
+    ):
+        name = m.group(1)
         if name not in characters:
             characters[name] = {"male": 0, "female": 0}
-    for name in list(characters.keys()):
-        name_pattern = _re.compile(_re.escape(name) + r'.{0,200}', _re.DOTALL)
-        for m in name_pattern.finditer(text):
-            context = m.group(0).lower()
-            if " he " in context or " his " in context or " him " in context:
-                characters[name]["male"] += 1
-            if " she " in context or " her " in context or " hers " in context:
-                characters[name]["female"] += 1
+        # Local window: ±100 chars around the match
+        start = max(0, m.start() - 100)
+        end = min(len(text), m.end() + 100)
+        window = text[start:end].lower()
+        if " he " in window or " his " in window or " him " in window:
+            characters[name]["male"] += 2
+        if " she " in window or " her " in window or " hers " in window:
+            characters[name]["female"] += 2
     return characters
 
 
@@ -1328,7 +1334,6 @@ async def audiobook_upload(request: Request):
     """Parse uploaded text or file into dialogue segments."""
     content_type = request.headers.get("content-type", "")
     text = None
-    is_pdf = False
 
     if "multipart/form-data" in content_type:
         form = await request.form()
@@ -1336,8 +1341,7 @@ async def audiobook_upload(request: Request):
         if file:
             raw = await file.read()
             if file.filename and file.filename.lower().endswith(".pdf"):
-                is_pdf = True
-                import PyPDF2, io
+                import PyPDF2, io, uuid as _uuid
                 reader = PyPDF2.PdfReader(io.BytesIO(raw))
                 valid_pages = _extract_valid_pages(reader)
 
@@ -1362,12 +1366,19 @@ async def audiobook_upload(request: Request):
                         "gender": vdata.get("gender", "neutral"),
                     })
 
+                # Store remaining pages server-side
+                session_id = None
+                if remaining_pages:
+                    session_id = str(_uuid.uuid4())
+                    _upload_sessions[session_id] = remaining_pages
+
                 return {
                     "success": True,
                     "initial_text": initial_text,
-                    "remaining_pages": remaining_pages,
+                    "session_id": session_id,
                     "characters": characters,
                     "total_pages": len(valid_pages),
+                    "remaining_count": len(remaining_pages),
                     "segments": segs,
                     "speakers": list({s["speaker"] for s in segs}),
                     "available_voices": available_voices,
@@ -1389,6 +1400,23 @@ async def audiobook_upload(request: Request):
         "segments": segs,
         "speakers": list({s["speaker"] for s in segs}),
     }
+
+
+@app.get("/api/audiobook/pages")
+async def audiobook_get_remaining_pages(request: Request):
+    """Lazily fetch remaining pages stored during PDF upload."""
+    session_id = request.query_params.get("session_id", "")
+    if not session_id or not _re.match(r'^[A-Za-z0-9\-]+$', session_id):
+        return JSONResponse({"success": False, "error": "Invalid session_id"}, status_code=400)
+
+    pages = _upload_sessions.pop(session_id, None)
+    if pages is None:
+        return JSONResponse(
+            {"success": False, "error": "Session not found or already consumed"},
+            status_code=404,
+        )
+
+    return {"success": True, "pages": pages}
 
 
 @app.post("/api/audiobook/generate")
