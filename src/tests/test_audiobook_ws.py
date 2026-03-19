@@ -843,6 +843,8 @@ class TestWorkletStreamingImprovements:
         """After writing a decayed sample, lastSample must be updated from the
         output so the next decay iteration stays consistent."""
         src = self._get_worklet_source()
+        # The underrun path writes to output[outputIndex] then assigns lastSample
+        # from that same index — without a truthy-guard that would suppress zero.
         assert "this.lastSample = output[outputIndex]" in src, (
             "Underrun path must update lastSample from the written output sample"
         )

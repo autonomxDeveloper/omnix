@@ -86,7 +86,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
                     // Underrun: smooth decay instead of harsh silence
                     this.lastSample *= 0.98;
                     output[outputIndex] = this.lastSample;
-                    this.lastSample = output[outputIndex] || this.lastSample;
+                    this.lastSample = output[outputIndex];
                     outputIndex++;
                     continue;
                 }
@@ -112,7 +112,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
 
             // Track last sample for underrun smoothing
             if (copySize > 0) {
-                this.lastSample = output[outputIndex + copySize - 1] || this.lastSample;
+                this.lastSample = output[outputIndex + copySize - 1];
             }
 
             this.chunkOffset += copySize;
