@@ -842,8 +842,8 @@ function updateProgressiveDownload() {
     if (_progressiveAudioChunks.length === 0) return;
 
     // Cap memory: evict oldest chunks beyond limit
-    while (_progressiveAudioChunks.length > 200) {
-        _progressiveAudioChunks.shift();
+    if (_progressiveAudioChunks.length > 200) {
+        _progressiveAudioChunks = _progressiveAudioChunks.slice(-200);
     }
 
     const blob = new Blob(_progressiveAudioChunks, { type: "audio/wav" });
