@@ -970,13 +970,15 @@ async function generateAudiobookWS() {
         ws.onmessage = async (event) => {
             if (event.data instanceof ArrayBuffer) {
                 // ── Binary: raw PCM int16 chunk ───────────────────────────
-                // Validate: Int16Array requires an even byte count.
-                // Skip corrupted chunks to prevent squeaking noise.
-                if (event.data.byteLength % 2 !== 0) {
-                    console.warn('[AUDIOBOOK-WS] Skipping odd-length chunk:', event.data.byteLength, 'bytes');
-                    return;
+                // Handle odd-length buffers by zero-padding instead of dropping
+                let pcmBuffer = event.data;
+                if (pcmBuffer.byteLength % 2 !== 0) {
+                    const padded = new Uint8Array(pcmBuffer.byteLength + 1);
+                    padded.set(new Uint8Array(pcmBuffer));
+                    padded[pcmBuffer.byteLength] = 0;
+                    pcmBuffer = padded.buffer;
                 }
-                const pcm16 = new Int16Array(event.data);
+                const pcm16 = new Int16Array(pcmBuffer);
                 // Skip chunks that are too short to be valid audio
                 if (pcm16.length < 100) {
                     console.warn('[AUDIOBOOK-WS] Skipping too-short chunk:', pcm16.length, 'samples');
