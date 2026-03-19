@@ -137,12 +137,13 @@ class VoiceManager:
         3. Fall back to any unused voice at all.
         4. Deterministic hash-based fallback across full list (uses
            *character_name* so the result is stable across sessions).
-        5. Ultimate fallback: ``"neutral_voice"``.
+        5. Ultimate fallback: ``"neutral_voice"`` (``"system_neutral_voice"`` for bots).
         """
         if not self._available_voices:
-            # System/bot characters always fall back to a neutral voice identifier
+            # System/bot characters get a dedicated identifier so callers can apply
+            # a robotic tone or announcement-style voice if supported by the TTS provider.
             if is_system_character(character_name):
-                return "neutral_voice"
+                return "system_neutral_voice"
             return _DEFAULT_VOICE
 
         gender: str = traits.get("gender", "neutral")

@@ -942,7 +942,57 @@ She walked away.
 
 
 # ---------------------------------------------------------------------------
-# is_system_character() helper (voice_classifier)
+# parse_dialogue – regex coverage tests (single-char names, underscores, dots)
+# ---------------------------------------------------------------------------
+
+class TestParseDialogueRegex:
+    """Colon-label regex handles edge-case speaker names.
+
+    Tests the pattern directly (no Flask import needed) so they run in the
+    sandbox environment that lacks flask/uvicorn.
+    """
+
+    # Duplicate of the pattern in app/audiobook.py line ~49. The full
+    # parse_dialogue() function is Flask-dependent and cannot be imported
+    # in the sandbox environment, so we test the regex logic in isolation.
+    _PATTERN = r'([A-Za-z][A-Za-z0-9_\-\'\.]*)\s*:\s*(.+)$'
+
+    def _find(self, line):
+        import re
+        return re.findall(self._PATTERN, line, re.MULTILINE)
+
+    def test_single_char_speaker(self):
+        """Regex allows single-character speaker names like 'A:' or 'Q:'."""
+        matches = self._find("A: This is a question.")
+        assert matches, "Expected match for single-char speaker 'A'"
+        assert matches[0][0] == "A"
+
+    def test_underscore_in_speaker(self):
+        """HR_Bot-style names (underscore) are captured correctly."""
+        matches = self._find("HR_Bot: Reminder — no food theft.")
+        assert matches, "Expected match for 'HR_Bot'"
+        assert matches[0][0] == "HR_Bot"
+
+    def test_numeric_suffix_in_speaker(self):
+        """Names like 'System1' are captured."""
+        matches = self._find("System1: Automated alert.")
+        assert matches, "Expected match for 'System1'"
+        assert matches[0][0] == "System1"
+
+    def test_dot_in_speaker(self):
+        """Names with dots like 'Mr.Smith' are captured."""
+        matches = self._find("Mr.Smith: Good morning.")
+        assert matches, "Expected match for 'Mr.Smith'"
+        assert matches[0][0] == "Mr.Smith"
+
+    def test_multi_word_text_with_colon(self):
+        """Text containing a colon doesn't split the dialogue text."""
+        matches = self._find("HR_Bot: A reminder: no food theft.")
+        assert matches
+        assert matches[0][0] == "HR_Bot"
+        assert "A reminder: no food theft." in matches[0][1]
+
+
 # ---------------------------------------------------------------------------
 
 class TestIsSystemCharacter:
@@ -1024,3 +1074,15 @@ class TestVoiceManagerCaseInsensitiveMap:
         metadata = {"voice_map": {"lena": "female_voice"}}
         voice = mgr.get_voice("Lena", metadata=metadata)
         assert voice == "female_voice"
+
+    def test_system_bot_no_voices_gets_system_neutral(self):
+        """System/bot characters without available voices get 'system_neutral_voice'."""
+        mgr = self._make()  # no available_voices
+        voice = mgr.get_voice("HR_Bot")
+        assert voice == "system_neutral_voice"
+
+    def test_human_no_voices_gets_neutral_voice(self):
+        """Non-bot characters without available voices still get 'neutral_voice'."""
+        mgr = self._make()
+        voice = mgr.get_voice("Alice")
+        assert voice == "neutral_voice"

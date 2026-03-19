@@ -19,7 +19,11 @@ export class AudioOutput {
 
   async initContext() {
     if (!this.audioContext) {
+      // Match the AudioContext sample rate to the backend TTS output rate (24 kHz)
+      // so no browser-side resampling is needed and the sample rate is defined in
+      // one canonical place (here) rather than scattered as magic literals.
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 24000,
         latencyHint: 'interactive'
       });
     }
@@ -104,7 +108,10 @@ export class AudioOutput {
     // Fast-path: chunk is already a decoded Float32Array (e.g. from ttsClient.js)
     if (chunk instanceof Float32Array) {
       float32 = chunk;
-      sampleRate = 24000;
+      // initContext() is always called before playAudioChunk(), so audioContext
+      // is guaranteed to be initialised here. Derive the rate from the context
+      // rather than repeating the magic literal.
+      sampleRate = this.audioContext.sampleRate;
     } else {
       const uint8arr = new Uint8Array(chunk);
       const arrView = new DataView(uint8arr.buffer);

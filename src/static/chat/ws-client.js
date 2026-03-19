@@ -228,6 +228,11 @@ function pushAudioData(samples) {
 function handleAudioData(pcmBytes) {
     // Backend sends raw 16-bit signed PCM (Int16). Re-interpreting the bytes
     // directly as Float32 would produce garbage noise; convert properly.
+    // Int16Array requires an even byte count — drop corrupt odd-length frames.
+    if (pcmBytes.byteLength % 2 !== 0) {
+        console.warn('[WS-AUDIO] Dropping odd-length PCM frame:', pcmBytes.byteLength, 'bytes');
+        return;
+    }
     const int16 = new Int16Array(pcmBytes);
     const float32 = new Float32Array(int16.length);
     for (let i = 0; i < int16.length; i++) {
