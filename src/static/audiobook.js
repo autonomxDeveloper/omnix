@@ -688,6 +688,14 @@ const MAX_FADE_DIVISOR = 4;
 
 // WebSocket audiobook state
 let audiobookWs = null;
+// Reference to the AudioContext used by the WS streaming path so that
+// pauseStreamingAudio / resumeStreamingAudio / stopStreamingAudio can
+// control it without needing access to the generateAudiobookWS closure.
+let _streamingAudioCtx = null;
+// Set to true when the user explicitly stops generation so that the
+// ws.onclose handler resolves (instead of rejecting) and avoids the
+// unintended SSE fallback.
+let _wsUserStopped = false;
 
 async function generateAudiobook() {
     if (audiobookState.segments.length === 0) {
@@ -752,6 +760,8 @@ async function generateAudiobookWS() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/audiobook`;
 
+    _wsUserStopped = false;
+
     return new Promise((resolve, reject) => {
         let ws;
         try {
@@ -815,6 +825,7 @@ async function generateAudiobookWS() {
                     sampleRate: SAMPLE_RATE,
                     latencyHint: 'interactive',
                 });
+                _streamingAudioCtx = audioCtx;
             }
             if (audioCtx.state === 'suspended') {
                 await audioCtx.resume();
@@ -941,8 +952,28 @@ async function generateAudiobookWS() {
                 voiceUsed: seg.voiceUsed,
             }));
 
+            // Compute where in the audio the streaming playback currently is so
+            // that the full player can seek to the same position.
+            let seekToSeconds = 0;
+            if (audioCtx && scheduledSegments.length > 0 && scheduledSegments[0].startTime > 0) {
+                seekToSeconds = Math.max(0, audioCtx.currentTime - scheduledSegments[0].startTime);
+            }
+            const wasPlaying = audiobookState.isPlaying;
+
+            // Stop the subtitle RAF loop and tear down the AudioContext — the
+            // full player uses a plain <audio> element instead.
+            if (subtitleRafId) {
+                cancelAnimationFrame(subtitleRafId);
+                subtitleRafId = null;
+            }
+            if (audioCtx) {
+                try { audioCtx.close(); } catch (_) {}
+                audioCtx = null;
+                _streamingAudioCtx = null;
+            }
+
             streamingPlaybackInProgress = false;
-            showFullPlaybackControls();
+            showFullPlaybackControls(seekToSeconds, wasPlaying);
             resolve();
         }
 
@@ -1043,10 +1074,15 @@ async function generateAudiobookWS() {
                                 _showEarlyDownloadButton();
                             }
 
-                            // Wait for scheduled audio to finish, then build the full player.
-                            // The extra 600 ms gives the AudioContext time to drain the last
-                            // buffer before we replace the player UI.
-                            if (audioCtx && scheduledTime > audioCtx.currentTime) {
+                            // If the user has paused (AudioContext suspended) or stopped,
+                            // show the full player immediately — the AudioContext will
+                            // never drain on its own when suspended.
+                            if (!audiobookState.isPlaying || (audioCtx && audioCtx.state === 'suspended')) {
+                                buildAndShowFinalPlayer();
+                            } else if (audioCtx && scheduledTime > audioCtx.currentTime) {
+                                // Wait for scheduled audio to finish, then build the full player.
+                                // The extra 600 ms gives the AudioContext time to drain the last
+                                // buffer before we replace the player UI.
                                 const waitMs = (scheduledTime - audioCtx.currentTime) * 1000 + 600;
                                 updateStreamingStatus('Finishing playback…');
                                 setTimeout(buildAndShowFinalPlayer, waitMs);
@@ -1078,7 +1114,39 @@ async function generateAudiobookWS() {
         ws.onclose = () => {
             audiobookWs = null;
             if (!finished) {
-                reject(new Error('WebSocket closed unexpectedly'));
+                if (_wsUserStopped) {
+                    // User intentionally stopped generation.  Build the full player
+                    // from whatever PCM we received so far — resolve so generateAudiobook
+                    // doesn't fall back to SSE.
+                    if (allPcmChunks.length > 0) {
+                        _buildWavBlobFromChunks();
+                        if (combinedAudioBlob) _showEarlyDownloadButton();
+
+                        audioSegmentDurations = scheduledSegments.map(seg =>
+                            Math.max(0, seg.endTime - seg.startTime));
+                        audiobookState.audioQueue = scheduledSegments.map(seg => ({
+                            speaker: seg.speaker,
+                            text: seg.text,
+                            voiceUsed: seg.voiceUsed,
+                        }));
+
+                        if (subtitleRafId) {
+                            cancelAnimationFrame(subtitleRafId);
+                            subtitleRafId = null;
+                        }
+                        // audioCtx was already closed by stopStreamingAudio
+                        audioCtx = null;
+                        _streamingAudioCtx = null;
+
+                        streamingPlaybackInProgress = false;
+                        if (combinedAudioBlob && audiobookState.audioQueue.length > 0) {
+                            showFullPlaybackControls(0, false);
+                        }
+                    }
+                    resolve();
+                } else {
+                    reject(new Error('WebSocket closed unexpectedly'));
+                }
             }
         };
     });
@@ -1343,7 +1411,14 @@ function updateSegmentInfo(segment) {
 // Pause streaming audio
 function pauseStreamingAudio() {
     audiobookState.isPlaying = false;
-    
+
+    // WS path: suspend the AudioContext so scheduled chunks stop playing
+    if (_streamingAudioCtx && _streamingAudioCtx.state === 'running') {
+        _streamingAudioCtx.suspend().catch(e =>
+            console.warn('[AUDIOBOOK] AudioContext suspend failed:', e));
+    }
+
+    // SSE path: pause the <audio> element
     if (streamingAudioElement) {
         streamingAudioElement.pause();
     }
@@ -1359,18 +1434,24 @@ function pauseStreamingAudio() {
 // Resume streaming audio
 function resumeStreamingAudio() {
     audiobookState.isPlaying = true;
+
+    // WS path: resume the AudioContext
+    if (_streamingAudioCtx && _streamingAudioCtx.state === 'suspended') {
+        _streamingAudioCtx.resume().catch(e =>
+            console.warn('[AUDIOBOOK] AudioContext resume failed:', e));
+    }
     
     const pauseBtn = document.getElementById('audiobook-pause-btn');
     const resumeBtn = document.getElementById('audiobook-resume-btn');
     if (pauseBtn) pauseBtn.style.display = 'inline-block';
     if (resumeBtn) resumeBtn.style.display = 'none';
     
-    // Resume playing from current position
+    // SSE path: resume from current position
     if (streamingAudioElement && streamingAudioElement.paused) {
         streamingAudioElement.play();
     }
     
-    // Continue streaming playback
+    // SSE path: continue streaming playback loop
     if (!streamingPlaybackInProgress) {
         playStreamingAudio();
     }
@@ -1379,11 +1460,24 @@ function resumeStreamingAudio() {
 // Stop streaming audio
 function stopStreamingAudio() {
     audiobookState.isPlaying = false;
+    // Stop generation: WS is closed so the server stops sending.
+    // (pauseStreamingAudio deliberately leaves isGenerating unchanged so the
+    // server continues generating while audio is suspended.)
+    audiobookState.isGenerating = false;
     streamingPlaybackInProgress = false;
     streamingShouldShowFullControls = false;
     streamingAudioIndex = 0;
-    
-    // Close WebSocket if open
+
+    // WS path: mark as user-stopped so ws.onclose resolves (not rejects) and
+    // then close the AudioContext to halt scheduled playback immediately.
+    _wsUserStopped = true;
+    if (_streamingAudioCtx) {
+        try { _streamingAudioCtx.close(); } catch (_) {}
+        _streamingAudioCtx = null;
+    }
+
+    // Close WebSocket if open — onclose will handle building the player from
+    // whatever PCM was received so far.
     if (audiobookWs) {
         try {
             audiobookWs.send(JSON.stringify({ type: 'stop' }));
@@ -1391,7 +1485,8 @@ function stopStreamingAudio() {
         } catch (e) {}
         audiobookWs = null;
     }
-    
+
+    // SSE path: stop the <audio> element
     if (streamingAudioElement) {
         streamingAudioElement.pause();
         streamingAudioElement.currentTime = 0;
@@ -1498,7 +1593,7 @@ function createWavBufferFromPcm(pcmData, sampleRate) {
 }
 
 // Show full playback controls with seek bar and download
-async function showFullPlaybackControls() {
+async function showFullPlaybackControls(seekToSeconds = 0, startPlaying = false) {
     if (!audiobookPlayer) return;
     
     audiobookPlayer.style.display = 'block';
@@ -1560,6 +1655,14 @@ async function showFullPlaybackControls() {
         combinedAudioElement.addEventListener('timeupdate', updatePlaybackProgress);
         combinedAudioElement.addEventListener('loadedmetadata', () => {
             document.getElementById('audiobook-total-time').textContent = formatTime(combinedAudioElement.duration);
+            // Restore the playback position from when generation was paused/stopped
+            if (seekToSeconds > 0) {
+                combinedAudioElement.currentTime = Math.min(seekToSeconds, combinedAudioElement.duration);
+                updatePlaybackProgress();
+            }
+            if (startPlaying) {
+                playFullAudiobook();
+            }
         });
         combinedAudioElement.addEventListener('ended', onAudiobookEnded);
         
