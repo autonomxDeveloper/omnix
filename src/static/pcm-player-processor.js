@@ -90,7 +90,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
                 } else {
                     this.lastSample *= 0.98;
                     output[outputIndex] = this.lastSample;
-                    this.lastSample = output[outputIndex] || this.lastSample;
+                    this.lastSample = output[outputIndex];
                     outputIndex++;
                     continue;
                 }
@@ -113,7 +113,7 @@ class PCMPlayerProcessor extends AudioWorkletProcessor {
             }
 
             if (copySize > 0) {
-                this.lastSample = output[outputIndex + copySize - 1] || this.lastSample;
+                this.lastSample = output[outputIndex + copySize - 1];
             }
 
             this.chunkOffset += copySize;
