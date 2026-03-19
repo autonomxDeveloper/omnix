@@ -86,15 +86,13 @@ export class TTSClient {
                 const floatChunk = pcm16ToFloat32(event.data);
                 if (floatChunk && floatChunk.length > 0) {
                   // Validate: warn on potential clipping
-                  if (floatChunk.length > 0) {
-                    let maxVal = 0;
-                    for (let i = 0; i < floatChunk.length; i++) {
-                      const abs = Math.abs(floatChunk[i]);
-                      if (abs > maxVal) maxVal = abs;
-                    }
-                    if (maxVal > 1.2) {
-                      console.warn('[TTSClient] Clipping detected, max sample:', maxVal);
-                    }
+                  let maxVal = 0;
+                  for (let i = 0; i < floatChunk.length; i++) {
+                    const abs = Math.abs(floatChunk[i]);
+                    if (abs > maxVal) maxVal = abs;
+                  }
+                  if (maxVal > 1.2) {
+                    console.warn('[TTSClient] Clipping detected, max sample:', maxVal);
                   }
                   this.onAudioChunk(floatChunk);
                 }
