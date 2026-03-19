@@ -111,8 +111,8 @@ def extract_characters_and_gender(text):
     """
     characters = {}
 
-    # Naive speaker detection: "Name said/replied/asked"
-    matches = re.findall(r'([A-Z][a-z]+)\s+(said|replied|asked|whispered|shouted|murmured|exclaimed)', text)
+    # Naive speaker detection: "Name said/replied/asked" (includes verb conjugations)
+    matches = re.findall(r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)', text)
 
     for name, _ in matches:
         if name not in characters:

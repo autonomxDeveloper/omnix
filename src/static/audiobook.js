@@ -1650,6 +1650,14 @@ function stopStreamingAudio() {
     if (resumeBtn) resumeBtn.style.display = 'none';
     
     updateStreamingStatus('Stopped');
+
+    // Clean up progressive download link
+    const progressiveLink = document.getElementById('audiobook-progressive-download');
+    if (progressiveLink) {
+        if (progressiveLink.dataset.blobUrl) URL.revokeObjectURL(progressiveLink.dataset.blobUrl);
+        progressiveLink.remove();
+    }
+    _progressiveAudioChunks = [];
 }
 
 // ========== COMBINED AUDIO PLAYBACK WITH SEEKING ==========

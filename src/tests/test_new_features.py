@@ -1133,7 +1133,7 @@ def _is_story_page(text):
 def _extract_characters_and_gender(text):
     characters = {}
     matches = _re_mod.findall(
-        r'([A-Z][a-z]+)\s+(said|replied|asked|whispered|shouted|murmured|exclaimed)',
+        r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)',
         text,
     )
     for name, _ in matches:

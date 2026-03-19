@@ -1308,7 +1308,7 @@ def _extract_valid_pages(reader):
 
 def _extract_characters_and_gender(text):
     characters = {}
-    matches = _re.findall(r'([A-Z][a-z]+)\s+(said|replied|asked|whispered|shouted|murmured|exclaimed)', text)
+    matches = _re.findall(r'([A-Z][a-z]+)\s+(said|says|replied|replies|asked|asks|whispered|whispers|shouted|shouts|murmured|murmurs|exclaimed|exclaims)', text)
     for name, _ in matches:
         if name not in characters:
             characters[name] = {"male": 0, "female": 0}
