@@ -1735,6 +1735,9 @@ async def audiobook_get_library_book(filename: str):
     elif ext == '.pdf':
         from starlette.responses import FileResponse
         return FileResponse(full_path, media_type='application/pdf')
+
+
+# ============== LLAMACPP ENDPOINTS ==============
 @app.get("/api/llamacpp/server/status")
 async def llamacpp_status():
     """Get llama.cpp server status"""
