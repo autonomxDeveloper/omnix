@@ -785,6 +785,8 @@ async function generateAudiobookWS() {
         let subtitleRafId = null;
         let finished = false;
         let playbackStarted = false;
+        /** Previous Float32Array chunk, used for crossfade between chunks. */
+        let lastScheduledFloat32 = null;
 
         // ── Helpers ───────────────────────────────────────────────────────
 
@@ -849,6 +851,22 @@ async function generateAudiobookWS() {
                 }
                 float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
             }
+
+            // Crossfade with the previous chunk to eliminate clicks at boundaries
+            const CROSSFADE_LEN = 32;
+            if (lastScheduledFloat32) {
+                const fadeSamples = Math.min(
+                    CROSSFADE_LEN,
+                    lastScheduledFloat32.length,
+                    float32.length
+                );
+                for (let i = 0; i < fadeSamples; i++) {
+                    const t = i / fadeSamples;
+                    const prev = lastScheduledFloat32[lastScheduledFloat32.length - fadeSamples + i] || 0;
+                    float32[i] = prev * (1 - t) + float32[i] * t;
+                }
+            }
+            lastScheduledFloat32 = float32;
 
             applyFadeFloat32(float32);
 
@@ -970,13 +988,15 @@ async function generateAudiobookWS() {
         ws.onmessage = async (event) => {
             if (event.data instanceof ArrayBuffer) {
                 // ── Binary: raw PCM int16 chunk ───────────────────────────
-                // Validate: Int16Array requires an even byte count.
-                // Skip corrupted chunks to prevent squeaking noise.
-                if (event.data.byteLength % 2 !== 0) {
-                    console.warn('[AUDIOBOOK-WS] Skipping odd-length chunk:', event.data.byteLength, 'bytes');
-                    return;
+                // Handle odd-length buffers by zero-padding instead of dropping
+                let pcmBuffer = event.data;
+                if (pcmBuffer.byteLength % 2 !== 0) {
+                    const padded = new Uint8Array(pcmBuffer.byteLength + 1);
+                    padded.set(new Uint8Array(pcmBuffer));
+                    padded[pcmBuffer.byteLength] = 0;
+                    pcmBuffer = padded.buffer;
                 }
-                const pcm16 = new Int16Array(event.data);
+                const pcm16 = new Int16Array(pcmBuffer);
                 // Skip chunks that are too short to be valid audio
                 if (pcm16.length < 100) {
                     console.warn('[AUDIOBOOK-WS] Skipping too-short chunk:', pcm16.length, 'samples');

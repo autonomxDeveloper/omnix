@@ -703,3 +703,267 @@ class TestProgressiveWavStreaming:
             "audiobook.py must NOT use an accumulated_pcm bytearray; "
             "append each segment directly to the file instead"
         )
+
+
+# ---------------------------------------------------------------------------
+# Safe PCM decoding — ttsClient.js pads odd-length buffers
+# ---------------------------------------------------------------------------
+
+class TestSafePcmDecoding:
+    """Verify pcm16ToFloat32 in ttsClient.js pads odd-length buffers instead
+    of dropping frames."""
+
+    def test_pads_odd_length_buffers(self):
+        content = _read_source("src/static/voice/ttsClient.js")
+        assert "byteLength + 1" in content, (
+            "pcm16ToFloat32 must pad odd-length buffers to even alignment"
+        )
+
+    def test_no_dropping_frames(self):
+        content = _read_source("src/static/voice/ttsClient.js")
+        assert "Dropping odd-length" not in content, (
+            "pcm16ToFloat32 must NOT drop odd-length frames"
+        )
+
+    def test_always_returns_float32(self):
+        """pcm16ToFloat32 must never return null — always returns Float32Array."""
+        content = _read_source("src/static/voice/ttsClient.js")
+        # Find only the pcm16ToFloat32 function body
+        match = re.search(
+            r'function pcm16ToFloat32\s*\(.*?\{.*?\n\}',
+            content, re.DOTALL
+        )
+        assert match, "pcm16ToFloat32 must exist"
+        body = match.group(0)
+        assert "return null" not in body, (
+            "pcm16ToFloat32 must never return null"
+        )
+
+    def test_normalizes_to_32768(self):
+        content = _read_source("src/static/voice/ttsClient.js")
+        assert "/ 32768" in content, (
+            "pcm16ToFloat32 must normalize by dividing by 32768"
+        )
+
+    def test_clipping_detection(self):
+        content = _read_source("src/static/voice/ttsClient.js")
+        assert "Clipping detected" in content, (
+            "ttsClient.js must log a warning when clipping is detected"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Safe PCM decoding — audiobook.js pads odd-length chunks
+# ---------------------------------------------------------------------------
+
+class TestAudiobookSafePcmDecoding:
+    """Verify audiobook.js WS handler pads odd-length PCM chunks."""
+
+    def test_pads_odd_length_chunks(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function generateAudiobookWS.*?(?=\nfunction |\n// ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match, "generateAudiobookWS must exist"
+        body = match.group(0)
+        assert "byteLength + 1" in body, (
+            "audiobook.js WS handler must pad odd-length chunks"
+        )
+
+    def test_no_skipping_odd_chunks(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function generateAudiobookWS.*?(?=\nfunction |\n// ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match
+        body = match.group(0)
+        assert "Skipping odd-length chunk" not in body, (
+            "audiobook.js WS handler must NOT skip odd-length chunks"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Safe PCM decoding — ws-client.js pads odd-length frames
+# ---------------------------------------------------------------------------
+
+class TestWsClientSafePcmDecoding:
+    """Verify ws-client.js handleAudioData pads odd-length PCM frames."""
+
+    def test_pads_odd_length_frames(self):
+        content = _read_source("src/static/chat/ws-client.js")
+        assert "byteLength + 1" in content, (
+            "ws-client.js must pad odd-length PCM frames"
+        )
+
+    def test_no_dropping_frames(self):
+        content = _read_source("src/static/chat/ws-client.js")
+        assert "Dropping odd-length" not in content, (
+            "ws-client.js must NOT drop odd-length frames"
+        )
+
+
+# ---------------------------------------------------------------------------
+# AudioWorklet — cross-chunk crossfade, underrun smoothing, overflow protection
+# ---------------------------------------------------------------------------
+
+class TestWorkletStreamingImprovements:
+    """Verify pcm-player-processor.js has streaming read model with crossfade,
+    underrun smoothing, and buffer overflow protection."""
+
+    def _get_processor_source(self):
+        return _read_source("src/static/pcm-player-processor.js")
+
+    def test_current_chunk_model(self):
+        src = self._get_processor_source()
+        assert "this.currentChunk" in src, (
+            "Worklet must use currentChunk/chunkOffset streaming model"
+        )
+
+    def test_previous_chunk_tracking(self):
+        src = self._get_processor_source()
+        assert "this.previousChunk" in src, (
+            "Worklet must track previousChunk for crossfade"
+        )
+
+    def test_last_sample_hold(self):
+        src = self._get_processor_source()
+        assert "this.lastSample" in src, (
+            "Worklet must track lastSample for underrun smoothing"
+        )
+
+    def test_underrun_smoothing(self):
+        src = self._get_processor_source()
+        assert "lastSample *= 0.98" in src or "this.lastSample *= 0.98" in src, (
+            "Worklet must use exponential decay (0.98) for underrun smoothing"
+        )
+
+    def test_crossfade_at_boundaries(self):
+        src = self._get_processor_source()
+        assert "CROSSFADE_SAMPLES" in src, (
+            "Worklet must define CROSSFADE_SAMPLES for cross-chunk smoothing"
+        )
+
+    def test_buffer_overflow_protection(self):
+        src = self._get_processor_source()
+        assert "MAX_BUFFER_CHUNKS" in src, (
+            "Worklet must define MAX_BUFFER_CHUNKS to prevent memory blowup"
+        )
+
+    def test_input_validation(self):
+        src = self._get_processor_source()
+        assert "!(data instanceof Float32Array)" in src, (
+            "Worklet must validate that input data is Float32Array"
+        )
+
+    def test_corruption_detection(self):
+        src = self._get_processor_source()
+        assert "isFinite" in src, (
+            "Worklet must check Number.isFinite to reject corrupt samples"
+        )
+
+
+# ---------------------------------------------------------------------------
+# AudioWorklet (js/audio) — same improvements
+# ---------------------------------------------------------------------------
+
+class TestWorkletJsAudioImprovements:
+    """Verify pcm-player-worklet.js (js/audio/) has the same streaming
+    improvements as pcm-player-processor.js."""
+
+    def _get_worklet_source(self):
+        return _read_source("src/static/js/audio/pcm-player-worklet.js")
+
+    def test_current_chunk_model(self):
+        src = self._get_worklet_source()
+        assert "this.currentChunk" in src
+
+    def test_previous_chunk_tracking(self):
+        src = self._get_worklet_source()
+        assert "this.previousChunk" in src
+
+    def test_last_sample_hold(self):
+        src = self._get_worklet_source()
+        assert "this.lastSample" in src
+
+    def test_underrun_smoothing(self):
+        src = self._get_worklet_source()
+        assert "lastSample *= 0.98" in src or "this.lastSample *= 0.98" in src
+
+    def test_crossfade_at_boundaries(self):
+        src = self._get_worklet_source()
+        assert "CROSSFADE_SAMPLES" in src
+
+    def test_buffer_overflow_protection(self):
+        src = self._get_worklet_source()
+        assert "MAX_BUFFER_CHUNKS" in src
+
+    def test_input_validation(self):
+        src = self._get_worklet_source()
+        assert "!(data instanceof Float32Array)" in src
+
+
+# ---------------------------------------------------------------------------
+# Audiobook crossfade between scheduled chunks
+# ---------------------------------------------------------------------------
+
+class TestAudiobookChunkCrossfade:
+    """Verify audiobook.js scheduleChunk applies crossfade between consecutive
+    chunks for click-free transitions."""
+
+    def _get_schedule_chunk_body(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function scheduleChunk\s*\(.*?\{.*?(?=\n        \}\n\n        function )',
+            content, re.DOTALL
+        )
+        assert match, "scheduleChunk must be defined inside generateAudiobookWS"
+        return match.group(0)
+
+    def test_crossfade_applied(self):
+        body = self._get_schedule_chunk_body()
+        assert "lastScheduledFloat32" in body, (
+            "scheduleChunk must track previous chunk for crossfade"
+        )
+
+    def test_crossfade_length_defined(self):
+        body = self._get_schedule_chunk_body()
+        assert "CROSSFADE_LEN" in body, (
+            "scheduleChunk must define CROSSFADE_LEN for crossfade window"
+        )
+
+    def test_crossfade_before_fade(self):
+        """Crossfade must be applied before the gain fade."""
+        body = self._get_schedule_chunk_body()
+        crossfade_idx = body.find("lastScheduledFloat32")
+        fade_idx = body.find("applyFadeFloat32")
+        assert crossfade_idx < fade_idx, (
+            "Crossfade must be applied before applyFadeFloat32"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sample rate consistency
+# ---------------------------------------------------------------------------
+
+class TestSampleRateConsistency:
+    """Verify sample rate is defined as a single source of truth."""
+
+    def test_audiobook_sample_rate_constant(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function generateAudiobookWS.*?(?=\nfunction |\n// ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match
+        body = match.group(0)
+        assert "SAMPLE_RATE = 24000" in body, (
+            "audiobook.js must define SAMPLE_RATE constant"
+        )
+
+    def test_audio_output_uses_24k(self):
+        content = _read_source("src/static/voice/audioOutput.js")
+        assert "sampleRate: 24000" in content, (
+            "audioOutput.js must use 24000 Hz sample rate"
+        )
