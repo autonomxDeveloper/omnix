@@ -226,8 +226,14 @@ function pushAudioData(samples) {
 
 // ============== HANDLE INCOMING PCM ==============
 function handleAudioData(pcmBytes) {
-    const samples = new Float32Array(pcmBytes);
-    pushAudioData(samples);
+    // Backend sends raw 16-bit signed PCM (Int16). Re-interpreting the bytes
+    // directly as Float32 would produce garbage noise; convert properly.
+    const int16 = new Int16Array(pcmBytes);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 32768.0;
+    }
+    pushAudioData(float32);
 }
 
 // ============== STOP AUDIO ==============

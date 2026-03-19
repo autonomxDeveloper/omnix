@@ -1,3 +1,16 @@
+/**
+ * Convert a raw 16-bit PCM ArrayBuffer to a normalized Float32Array.
+ * Backend TTS streams Int16 samples; the audio pipeline expects Float32 in [-1, 1].
+ */
+function pcm16ToFloat32(buffer) {
+  const int16 = new Int16Array(buffer);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768.0;
+  }
+  return float32;
+}
+
 export class TTSClient {
   constructor(onAudioChunk, onDone, onStart) {
     this.onAudioChunk = onAudioChunk;
@@ -59,7 +72,7 @@ export class TTSClient {
           try {
             if (event.data instanceof ArrayBuffer) {
               if (this.onAudioChunk) {
-                this.onAudioChunk(event.data);
+                this.onAudioChunk(pcm16ToFloat32(event.data));
               }
             } else {
               const data = JSON.parse(event.data);

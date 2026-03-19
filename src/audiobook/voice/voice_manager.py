@@ -7,7 +7,7 @@ from typing import Callable, Dict, List, Optional, Set
 
 from .character_normalizer import CharacterNormalizer
 from .character_voice_memory import CharacterVoiceMemory
-from .voice_classifier import classify_character_voice
+from .voice_classifier import classify_character_voice, is_system_character
 
 _DEFAULT_VOICE = "neutral_voice"
 
@@ -67,7 +67,10 @@ class VoiceManager:
 
         # ── Honour external voice_map first (Issue 1 fix) ──
         if metadata and "voice_map" in metadata:
-            mapped = metadata["voice_map"].get(canonical)
+            # Frontend normalises keys to lowercase; try canonical form first,
+            # then lowercase so that names like "HR_Bot" are always found.
+            voice_map = metadata["voice_map"]
+            mapped = voice_map.get(canonical) or voice_map.get(canonical.lower())
             if mapped:
                 # Persist so subsequent calls stay consistent
                 self._memory.set_voice(canonical, mapped)
@@ -137,6 +140,9 @@ class VoiceManager:
         5. Ultimate fallback: ``"neutral_voice"``.
         """
         if not self._available_voices:
+            # System/bot characters always fall back to a neutral voice identifier
+            if is_system_character(character_name):
+                return "neutral_voice"
             return _DEFAULT_VOICE
 
         gender: str = traits.get("gender", "neutral")

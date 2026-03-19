@@ -101,31 +101,37 @@ export class AudioOutput {
     let float32;
     let sampleRate;
     
-    const uint8arr = new Uint8Array(chunk);
-    const arrView = new DataView(uint8arr.buffer);
-    
-    if (uint8arr.length > 44 && 
-        String.fromCharCode(uint8arr[0], uint8arr[1], uint8arr[2], uint8arr[3]) === 'RIFF' &&
-        String.fromCharCode(uint8arr[8], uint8arr[9], uint8arr[10], uint8arr[11]) === 'WAVE') {
-      const wavData = this.parseWAV(uint8arr);
-      float32 = wavData.float32;
-      sampleRate = wavData.sampleRate;
-    } else {
-      let buffer = chunk;
-      if (buffer.byteLength % 2 !== 0) {
-        const paddedBuffer = new ArrayBuffer(buffer.byteLength + 1);
-        new Uint8Array(paddedBuffer).set(new Uint8Array(buffer));
-        buffer = paddedBuffer;
-      }
-
-      const pcm16 = new Int16Array(buffer);
-      const numSamples = pcm16.length;
-      float32 = new Float32Array(numSamples);
-
-      for (let i = 0; i < numSamples; i++) {
-        float32[i] = pcm16[i] / 32768.0;
-      }
+    // Fast-path: chunk is already a decoded Float32Array (e.g. from ttsClient.js)
+    if (chunk instanceof Float32Array) {
+      float32 = chunk;
       sampleRate = 24000;
+    } else {
+      const uint8arr = new Uint8Array(chunk);
+      const arrView = new DataView(uint8arr.buffer);
+      
+      if (uint8arr.length > 44 && 
+          String.fromCharCode(uint8arr[0], uint8arr[1], uint8arr[2], uint8arr[3]) === 'RIFF' &&
+          String.fromCharCode(uint8arr[8], uint8arr[9], uint8arr[10], uint8arr[11]) === 'WAVE') {
+        const wavData = this.parseWAV(uint8arr);
+        float32 = wavData.float32;
+        sampleRate = wavData.sampleRate;
+      } else {
+        let buffer = chunk;
+        if (buffer.byteLength % 2 !== 0) {
+          const paddedBuffer = new ArrayBuffer(buffer.byteLength + 1);
+          new Uint8Array(paddedBuffer).set(new Uint8Array(buffer));
+          buffer = paddedBuffer;
+        }
+
+        const pcm16 = new Int16Array(buffer);
+        const numSamples = pcm16.length;
+        float32 = new Float32Array(numSamples);
+
+        for (let i = 0; i < numSamples; i++) {
+          float32[i] = pcm16[i] / 32768.0;
+        }
+        sampleRate = 24000;
+      }
     }
 
     // Fade-in only on the very first chunk to avoid a click on playback start.
