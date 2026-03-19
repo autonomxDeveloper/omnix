@@ -30,6 +30,107 @@ def detect_gender(name):
     if any(m in nl for m in MALE_NAMES): return 'male'
     return 'neutral'
 
+# ---------------------------------------------------------------------------
+# PDF page filtering helpers
+# ---------------------------------------------------------------------------
+
+MAX_INITIAL_PAGES = 5
+MIN_WORDS_THRESHOLD = 30
+
+
+def is_title_page(text):
+    """Detect title/cover pages by their brevity or keyword presence."""
+    words = text.split()
+    if len(words) < 50:
+        return True
+
+    keywords = ["by", "author", "published"]
+    if any(k in text.lower() for k in keywords) and len(words) < 100:
+        return True
+
+    return False
+
+
+def is_table_of_contents(text):
+    """Detect table-of-contents pages."""
+    t = text.lower()
+
+    if "contents" in t:
+        return True
+
+    lines = text.splitlines()
+    toc_like = sum(1 for line in lines if re.search(r'\d+\s*$', line))
+
+    if toc_like >= 5:
+        return True
+
+    if "...." in text:
+        return True
+
+    return False
+
+
+def is_story_page(text):
+    """Return True when the page looks like actual story prose."""
+    if len(text.split()) < MIN_WORDS_THRESHOLD:
+        return False
+
+    if '"' in text:
+        return True
+
+    sentences = text.split('.')
+    if len(sentences) > 5:
+        return True
+
+    return False
+
+
+def extract_valid_pages(reader):
+    """Filter a PdfReader's pages, keeping only real story content."""
+    valid_pages = []
+
+    for page in reader.pages:
+        text = page.extract_text() or ""
+
+        if is_table_of_contents(text):
+            continue
+        if is_title_page(text):
+            continue
+        if not is_story_page(text):
+            continue
+
+        valid_pages.append(text)
+
+    return valid_pages
+
+
+def extract_characters_and_gender(text):
+    """
+    Lightweight, fast character extraction with pronoun-based gender scoring.
+    Returns: { character_name: {"male": int, "female": int} }
+    """
+    characters = {}
+
+    # Naive speaker detection: "Name said/replied/asked"
+    matches = re.findall(r'([A-Z][a-z]+)\s+(said|replied|asked|whispered|shouted|murmured|exclaimed)', text)
+
+    for name, _ in matches:
+        if name not in characters:
+            characters[name] = {"male": 0, "female": 0}
+
+    # Pronoun-based scoring using context around character names
+    for name in list(characters.keys()):
+        # Look for pronoun patterns near each character mention
+        name_pattern = re.compile(re.escape(name) + r'.{0,200}', re.DOTALL)
+        for m in name_pattern.finditer(text):
+            context = m.group(0).lower()
+            if " he " in context or " his " in context or " him " in context:
+                characters[name]["male"] += 1
+            if " she " in context or " her " in context or " hers " in context:
+                characters[name]["female"] += 1
+
+    return characters
+
 def parse_dialogue(text):
     segments = []
     speech_verbs = r'(?:said|asked|replied|whispered|shouted|murmured|answered|added|insisted|demanded|muttered|sighed|groaned|exclaimed|called|declared|continued|suggested|offered|responded)'
@@ -121,16 +222,56 @@ def parse_dialogue(text):
 @audiobook_bp.route('/api/audiobook/upload', methods=['POST'])
 def upload():
     text = None
+    is_pdf = False
     if 'file' in request.files:
         f = request.files['file']
-        if f.filename.endswith('.pdf'):
+        if f.filename and f.filename.lower().endswith('.pdf'):
+            is_pdf = True
             import PyPDF2
-            text = "".join(p.extract_text() + "\n" for p in PyPDF2.PdfReader(f).pages)
-        elif f.filename.endswith('.txt'): text = f.read().decode('utf-8')
-    elif request.form.get('text'): text = request.form.get('text')
-    elif request.is_json: text = request.get_json().get('text', '')
-    
-    if not text: return jsonify({"success": False, "error": "No text"}), 400
+            reader = PyPDF2.PdfReader(f)
+            valid_pages = extract_valid_pages(reader)
+
+            if not valid_pages:
+                return jsonify({"success": False, "error": "No readable story content found"}), 400
+
+            # Fast start: only first few pages
+            initial_pages = valid_pages[:MAX_INITIAL_PAGES]
+            remaining_pages = valid_pages[MAX_INITIAL_PAGES:]
+            initial_text = "\n".join(initial_pages)
+
+            characters = extract_characters_and_gender(initial_text)
+
+            # Also parse segments from initial text for backward compat
+            segs = parse_dialogue(initial_text)
+
+            # Build available cloned voices grouped by gender
+            available_voices = []
+            for vid, vdata in shared.custom_voices.items():
+                available_voices.append({
+                    "id": vid,
+                    "gender": vdata.get("gender", "neutral"),
+                })
+
+            return jsonify({
+                "success": True,
+                "initial_text": initial_text,
+                "remaining_pages": remaining_pages,
+                "characters": characters,
+                "total_pages": len(valid_pages),
+                "segments": segs,
+                "speakers": list({s['speaker'] for s in segs}),
+                "available_voices": available_voices,
+            })
+
+        elif f.filename and f.filename.lower().endswith('.txt'):
+            text = f.read().decode('utf-8')
+    elif request.form.get('text'):
+        text = request.form.get('text')
+    elif request.is_json:
+        text = request.get_json().get('text', '')
+
+    if not text:
+        return jsonify({"success": False, "error": "No text"}), 400
     segs = parse_dialogue(text)
     return jsonify({"success": True, "segments": segs, "speakers": list(set(s['speaker'] for s in segs))})
 
