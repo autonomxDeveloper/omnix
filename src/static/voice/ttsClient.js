@@ -1,13 +1,19 @@
 /**
  * Convert a raw 16-bit PCM ArrayBuffer to a normalized Float32Array.
  * Backend TTS streams Int16 samples; the audio pipeline expects Float32 in [-1, 1].
- * Returns null when the buffer has an odd byte length (misaligned/corrupt frame).
+ * Handles odd-length buffers by zero-padding to even alignment instead of dropping.
  */
 function pcm16ToFloat32(buffer) {
-  if (buffer.byteLength % 2 !== 0) {
-    console.warn('[TTSClient] Dropping odd-length PCM frame:', buffer.byteLength, 'bytes');
-    return null;
+  let byteLength = buffer.byteLength;
+
+  // Handle odd-length buffers by zero-padding instead of dropping frames
+  if (byteLength % 2 !== 0) {
+    const padded = new Uint8Array(byteLength + 1);
+    padded.set(new Uint8Array(buffer));
+    padded[byteLength] = 0;
+    buffer = padded.buffer;
   }
+
   const int16 = new Int16Array(buffer);
   const float32 = new Float32Array(int16.length);
   for (let i = 0; i < int16.length; i++) {
@@ -78,7 +84,18 @@ export class TTSClient {
             if (event.data instanceof ArrayBuffer) {
               if (this.onAudioChunk) {
                 const floatChunk = pcm16ToFloat32(event.data);
-                if (floatChunk !== null) {
+                if (floatChunk && floatChunk.length > 0) {
+                  // Validate: warn on potential clipping
+                  if (floatChunk.length > 0) {
+                    let maxVal = 0;
+                    for (let i = 0; i < floatChunk.length; i++) {
+                      const abs = Math.abs(floatChunk[i]);
+                      if (abs > maxVal) maxVal = abs;
+                    }
+                    if (maxVal > 1.2) {
+                      console.warn('[TTSClient] Clipping detected, max sample:', maxVal);
+                    }
+                  }
                   this.onAudioChunk(floatChunk);
                 }
               }
