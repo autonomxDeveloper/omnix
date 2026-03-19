@@ -1682,7 +1682,59 @@ async def audiobook_update_voice_profiles(book_id: str, request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
-# ============== LLAMACPP ENDPOINTS ==============
+# ---------- Audiobook library (list files in resources/data/audiobooks) -----
+_AUDIOBOOK_LIBRARY_DIR = _os.path.join(shared.DATA_DIR, "audiobooks")
+_ALLOWED_BOOK_EXTENSIONS = {'.txt', '.pdf'}
+
+@app.get("/api/audiobook/library")
+async def audiobook_list_library():
+    """Return a list of audiobook files available in the library directory."""
+    _os.makedirs(_AUDIOBOOK_LIBRARY_DIR, exist_ok=True)
+    books = []
+    try:
+        for entry in sorted(_os.listdir(_AUDIOBOOK_LIBRARY_DIR)):
+            ext = _os.path.splitext(entry)[1].lower()
+            if ext not in _ALLOWED_BOOK_EXTENSIONS:
+                continue
+            full_path = _os.path.join(_AUDIOBOOK_LIBRARY_DIR, entry)
+            if not _os.path.isfile(full_path):
+                continue
+            name_without_ext = _os.path.splitext(entry)[0]
+            books.append({
+                "filename": entry,
+                "title": name_without_ext.replace('_', ' ').replace('-', ' '),
+                "type": ext.lstrip('.'),
+                "size": _os.path.getsize(full_path),
+            })
+    except OSError:
+        pass
+    return {"success": True, "books": books}
+
+
+@app.get("/api/audiobook/library/{filename:path}")
+async def audiobook_get_library_book(filename: str):
+    """Return the content of a specific audiobook from the library."""
+    basename = _os.path.basename(filename)
+    if basename != filename:
+        return JSONResponse({"success": False, "error": "Invalid filename"}, status_code=400)
+    ext = _os.path.splitext(basename)[1].lower()
+    if ext not in _ALLOWED_BOOK_EXTENSIONS:
+        return JSONResponse({"success": False, "error": "Unsupported file type"}, status_code=400)
+
+    full_path = _os.path.join(_AUDIOBOOK_LIBRARY_DIR, basename)
+    if not _os.path.isfile(full_path):
+        return JSONResponse({"success": False, "error": "File not found"}, status_code=404)
+
+    if ext == '.txt':
+        try:
+            with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+                text = f.read()
+            return {"success": True, "text": text, "filename": basename}
+        except Exception as e:
+            return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+    elif ext == '.pdf':
+        from starlette.responses import FileResponse
+        return FileResponse(full_path, media_type='application/pdf')
 @app.get("/api/llamacpp/server/status")
 async def llamacpp_status():
     """Get llama.cpp server status"""
