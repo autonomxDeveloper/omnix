@@ -939,3 +939,150 @@ She walked away.
         for seg in segments:
             assert seg["speaker"].lower() != "unknown"
             assert seg["speaker"] != ""
+
+
+# ---------------------------------------------------------------------------
+# parse_dialogue – regex coverage tests (single-char names, underscores, dots)
+# ---------------------------------------------------------------------------
+
+class TestParseDialogueRegex:
+    """Colon-label regex handles edge-case speaker names.
+
+    Tests the pattern directly (no Flask import needed) so they run in the
+    sandbox environment that lacks flask/uvicorn.
+    """
+
+    # Duplicate of the pattern in app/audiobook.py line ~49. The full
+    # parse_dialogue() function is Flask-dependent and cannot be imported
+    # in the sandbox environment, so we test the regex logic in isolation.
+    _PATTERN = r'([A-Za-z][A-Za-z0-9_\-\'\.]*)\s*:\s*(.+)$'
+
+    def _find(self, line):
+        import re
+        return re.findall(self._PATTERN, line, re.MULTILINE)
+
+    def test_single_char_speaker(self):
+        """Regex allows single-character speaker names like 'A:' or 'Q:'."""
+        matches = self._find("A: This is a question.")
+        assert matches, "Expected match for single-char speaker 'A'"
+        assert matches[0][0] == "A"
+
+    def test_underscore_in_speaker(self):
+        """HR_Bot-style names (underscore) are captured correctly."""
+        matches = self._find("HR_Bot: Reminder — no food theft.")
+        assert matches, "Expected match for 'HR_Bot'"
+        assert matches[0][0] == "HR_Bot"
+
+    def test_numeric_suffix_in_speaker(self):
+        """Names like 'System1' are captured."""
+        matches = self._find("System1: Automated alert.")
+        assert matches, "Expected match for 'System1'"
+        assert matches[0][0] == "System1"
+
+    def test_dot_in_speaker(self):
+        """Names with dots like 'Mr.Smith' are captured."""
+        matches = self._find("Mr.Smith: Good morning.")
+        assert matches, "Expected match for 'Mr.Smith'"
+        assert matches[0][0] == "Mr.Smith"
+
+    def test_multi_word_text_with_colon(self):
+        """Text containing a colon doesn't split the dialogue text."""
+        matches = self._find("HR_Bot: A reminder: no food theft.")
+        assert matches
+        assert matches[0][0] == "HR_Bot"
+        assert "A reminder: no food theft." in matches[0][1]
+
+
+# ---------------------------------------------------------------------------
+
+class TestIsSystemCharacter:
+    def _fn(self, name):
+        from audiobook.voice.voice_classifier import is_system_character
+        return is_system_character(name)
+
+    def test_bot_suffix(self):
+        assert self._fn("HR_Bot") is True
+
+    def test_bot_uppercase(self):
+        assert self._fn("HR_BOT") is True
+
+    def test_system_keyword(self):
+        assert self._fn("SystemNotification") is True
+
+    def test_notification_keyword(self):
+        assert self._fn("notification_service") is True
+
+    def test_assistant_keyword(self):
+        assert self._fn("assistant") is True
+
+    def test_human_character(self):
+        assert self._fn("Alice") is False
+
+    def test_human_with_unrelated_name(self):
+        assert self._fn("Robert") is False
+
+    def test_empty_name(self):
+        assert self._fn("") is False
+
+
+class TestSystemCharacterClassification:
+    def _classify(self, name):
+        from audiobook.voice.voice_classifier import classify_character_voice, clear_voice_cache
+        clear_voice_cache()
+        return classify_character_voice(name=name)
+
+    def test_hr_bot_is_neutral(self):
+        r = self._classify("HR_Bot")
+        assert r["gender"] == "neutral"
+        assert r["confidence"] > 0.5
+
+    def test_system_bot_is_neutral(self):
+        r = self._classify("System_Bot")
+        assert r["gender"] == "neutral"
+
+    def test_human_character_not_neutral_if_known(self):
+        r = self._classify("Sarah")
+        assert r["gender"] == "female"
+
+
+# ---------------------------------------------------------------------------
+# VoiceManager – case-insensitive voice_map lookup (HR_Bot fix)
+# ---------------------------------------------------------------------------
+
+class TestVoiceManagerCaseInsensitiveMap:
+    def _make(self, **kw):
+        from audiobook.voice.voice_manager import VoiceManager
+        d = tempfile.mkdtemp()
+        return VoiceManager(book_id="test_book", base_dir=d, **kw)
+
+    def test_voice_map_lowercase_key_matches_mixed_case_character(self):
+        """Frontend sends lowercase keys; canonical form may be mixed case."""
+        mgr = self._make(available_voices=["voice_a", "voice_b"])
+        # Frontend normalises "HR_Bot" → "hr_bot"
+        metadata = {"voice_map": {"hr_bot": "robot_voice"}}
+        voice = mgr.get_voice("HR_Bot", metadata=metadata)
+        assert voice == "robot_voice"
+
+    def test_voice_map_exact_case_key_still_works(self):
+        mgr = self._make(available_voices=["voice_a"])
+        metadata = {"voice_map": {"HR_Bot": "robot_voice"}}
+        voice = mgr.get_voice("HR_Bot", metadata=metadata)
+        assert voice == "robot_voice"
+
+    def test_voice_map_lowercase_character_name(self):
+        mgr = self._make(available_voices=["voice_a"])
+        metadata = {"voice_map": {"lena": "female_voice"}}
+        voice = mgr.get_voice("Lena", metadata=metadata)
+        assert voice == "female_voice"
+
+    def test_system_bot_no_voices_gets_system_neutral(self):
+        """System/bot characters without available voices get 'system_neutral_voice'."""
+        mgr = self._make()  # no available_voices
+        voice = mgr.get_voice("HR_Bot")
+        assert voice == "system_neutral_voice"
+
+    def test_human_no_voices_gets_neutral_voice(self):
+        """Non-bot characters without available voices still get 'neutral_voice'."""
+        mgr = self._make()
+        voice = mgr.get_voice("Alice")
+        assert voice == "neutral_voice"
