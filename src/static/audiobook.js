@@ -168,11 +168,11 @@ async function handleAudiobookFileUpload(event) {
                 // Show speakers section
                 displaySpeakers(data.speakers, data.segments);
 
-                // Store remaining pages for async processing
-                if (data.remaining_pages && data.remaining_pages.length > 0) {
-                    audiobookState._remainingPages = data.remaining_pages;
+                // Store session_id for lazy page fetching (remaining pages stay server-side)
+                if (data.session_id && data.remaining_count > 0) {
+                    audiobookState._sessionId = data.session_id;
                     audiobookState._availableVoices = data.available_voices || [];
-                    console.log(`[AUDIOBOOK] ${data.total_pages} total pages, ${data.remaining_pages.length} remaining for background processing`);
+                    console.log(`[AUDIOBOOK] ${data.total_pages} total pages, ${data.remaining_count} remaining (session: ${data.session_id})`);
                 }
             } else {
                 alert('Error loading PDF: ' + data.error);
@@ -185,30 +185,40 @@ async function handleAudiobookFileUpload(event) {
 
 /**
  * Process remaining pages from a PDF upload in the background.
- * Called after the user starts generation, to parse and append segments
- * from pages beyond the initial batch.
+ * Fetches pages lazily from the server using the session_id,
+ * then parses each page into segments.
  */
-async function processRemainingPages(pages, availableVoices) {
-    if (!pages || pages.length === 0) return;
+async function processRemainingPages(sessionId) {
+    if (!sessionId) return;
 
-    for (const pageText of pages) {
-        // Parse each page into segments on the client side
-        // by sending it to the server for dialogue parsing
-        try {
-            const response = await fetch('/api/audiobook/upload', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: pageText })
-            });
-            const data = await response.json();
-            if (data.success && data.segments) {
-                // Append new segments
-                audiobookState.segments = audiobookState.segments.concat(data.segments);
-                audiobookState.totalSegments = audiobookState.segments.length;
-            }
-        } catch (e) {
-            console.warn('[AUDIOBOOK] Error processing remaining page:', e);
+    try {
+        // Fetch remaining pages from server (lazy loading)
+        const fetchRes = await fetch(`/api/audiobook/pages?session_id=${encodeURIComponent(sessionId)}`);
+        const fetchData = await fetchRes.json();
+        if (!fetchData.success || !fetchData.pages) {
+            console.warn('[AUDIOBOOK] Failed to fetch remaining pages:', fetchData.error);
+            return;
         }
+
+        for (const pageText of fetchData.pages) {
+            // Parse each page into segments via the server
+            try {
+                const response = await fetch('/api/audiobook/upload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: pageText })
+                });
+                const data = await response.json();
+                if (data.success && data.segments) {
+                    audiobookState.segments = audiobookState.segments.concat(data.segments);
+                    audiobookState.totalSegments = audiobookState.segments.length;
+                }
+            } catch (e) {
+                console.warn('[AUDIOBOOK] Error processing remaining page:', e);
+            }
+        }
+    } catch (e) {
+        console.warn('[AUDIOBOOK] Error fetching remaining pages:', e);
     }
     console.log('[AUDIOBOOK] Background page processing complete, total segments:', audiobookState.segments.length);
 }
@@ -778,8 +788,22 @@ function resolveGender(score) {
 }
 
 /**
+ * Simple string hash for deterministic voice assignment.
+ * Same character name → same voice every time.
+ */
+function _hashCode(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash |= 0; // Convert to 32-bit integer
+    }
+    return Math.abs(hash);
+}
+
+/**
  * Assign a cloned voice to a character based on gender scoring.
- * Uses the available_voices list returned by the upload endpoint.
+ * Uses deterministic hash-based selection so the same character always
+ * gets the same voice (no randomness).
  *
  * @param {string} character  - Character name
  * @param {object} score      - { male: number, female: number }
@@ -804,16 +828,24 @@ function assignClonedVoice(character, score, availableVoices) {
     // Fallback to full pool if no gender match
     if (pool.length === 0) pool = availableVoices;
 
-    const voice = pool[Math.floor(Math.random() * pool.length)];
+    const index = _hashCode(character) % pool.length;
+    const voice = pool[index];
     _clonedVoiceMap[character] = voice.id;
     return voice.id;
 }
 
 /**
  * Update the progressive download link as new audio chunks arrive.
+ * Caps memory at 200 chunks to prevent memory blowup on long books.
  */
 function updateProgressiveDownload() {
     if (_progressiveAudioChunks.length === 0) return;
+
+    // Cap memory: evict oldest chunks beyond limit
+    while (_progressiveAudioChunks.length > 200) {
+        _progressiveAudioChunks.shift();
+    }
+
     const blob = new Blob(_progressiveAudioChunks, { type: "audio/wav" });
     const url = URL.createObjectURL(blob);
 
@@ -869,9 +901,9 @@ async function generateAudiobook() {
     
     updateProgress(0, 'Starting generation...');
 
-    // Kick off background page processing (non-blocking)
-    if (audiobookState._remainingPages && audiobookState._remainingPages.length > 0) {
-        processRemainingPages(audiobookState._remainingPages, audiobookState._availableVoices);
+    // Kick off background page processing (non-blocking, lazy fetch via session_id)
+    if (audiobookState._sessionId) {
+        processRemainingPages(audiobookState._sessionId);
     }
 
     // Try WebSocket first, fall back to SSE
@@ -1056,6 +1088,7 @@ async function generateAudiobookWS() {
         /**
          * requestAnimationFrame loop that updates the subtitle display to match
          * the currently playing audio based on AudioContext.currentTime.
+         * Also updates _playbackOffset based on segment timing for accurate resume.
          */
         function updateSubtitlesLoop() {
             if (!audioCtx) return;
@@ -1063,6 +1096,8 @@ async function generateAudiobookWS() {
             for (const seg of scheduledSegments) {
                 if (now >= seg.startTime && now < seg.endTime) {
                     updateSegmentInfo(seg);
+                    // Track playback position using segment timeline
+                    _playbackOffset = seg.startTime;
                     break;
                 }
             }
@@ -1556,9 +1591,12 @@ function updateSegmentInfo(segment) {
 function pauseStreamingAudio() {
     audiobookState.isPlaying = false;
 
-    // Track current playback position for resume
+    // Track current playback position using segment timeline (not AudioContext.currentTime)
     if (_streamingAudioCtx && _streamingAudioCtx.state === 'running') {
-        _playbackOffset = _streamingAudioCtx.currentTime;
+        // Find the segment that's currently playing and use its startTime
+        // as the canonical playback offset in the audio timeline
+        const now = _streamingAudioCtx.currentTime;
+        // _playbackOffset is set during subtitle updates — see generateAudiobookWS
     }
 
     // WS path: suspend the AudioContext so scheduled chunks stop playing
@@ -1595,11 +1633,8 @@ function resumeStreamingAudio() {
     if (pauseBtn) pauseBtn.style.display = 'inline-block';
     if (resumeBtn) resumeBtn.style.display = 'none';
     
-    // SSE path: resume from saved playback position
+    // SSE path: resume playback (the <audio> element maintains its own position)
     if (streamingAudioElement && streamingAudioElement.paused) {
-        if (_playbackOffset > 0) {
-            streamingAudioElement.currentTime = _playbackOffset;
-        }
         streamingAudioElement.play();
     }
     
