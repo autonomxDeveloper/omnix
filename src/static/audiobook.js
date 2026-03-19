@@ -151,12 +151,29 @@ async function handleAudiobookFileUpload(event) {
             
             const data = await response.json();
             if (data.success) {
-                // Store segments directly
+                // Store segments from initial pages
                 audiobookState.segments = data.segments;
-                audiobookState.text = 'Loaded from PDF';
-                
+                audiobookState.text = data.initial_text || 'Loaded from PDF';
+
+                // Auto-assign cloned voices to detected characters
+                if (data.characters && data.available_voices) {
+                    for (const [charName, score] of Object.entries(data.characters)) {
+                        const voiceId = assignClonedVoice(charName, score, data.available_voices);
+                        if (voiceId) {
+                            audiobookState.voiceMapping[_normalizeKey(charName)] = voiceId;
+                        }
+                    }
+                }
+
                 // Show speakers section
                 displaySpeakers(data.speakers, data.segments);
+
+                // Store remaining pages for async processing
+                if (data.remaining_pages && data.remaining_pages.length > 0) {
+                    audiobookState._remainingPages = data.remaining_pages;
+                    audiobookState._availableVoices = data.available_voices || [];
+                    console.log(`[AUDIOBOOK] ${data.total_pages} total pages, ${data.remaining_pages.length} remaining for background processing`);
+                }
             } else {
                 alert('Error loading PDF: ' + data.error);
             }
@@ -164,6 +181,36 @@ async function handleAudiobookFileUpload(event) {
             alert('Error uploading file: ' + error.message);
         }
     }
+}
+
+/**
+ * Process remaining pages from a PDF upload in the background.
+ * Called after the user starts generation, to parse and append segments
+ * from pages beyond the initial batch.
+ */
+async function processRemainingPages(pages, availableVoices) {
+    if (!pages || pages.length === 0) return;
+
+    for (const pageText of pages) {
+        // Parse each page into segments on the client side
+        // by sending it to the server for dialogue parsing
+        try {
+            const response = await fetch('/api/audiobook/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: pageText })
+            });
+            const data = await response.json();
+            if (data.success && data.segments) {
+                // Append new segments
+                audiobookState.segments = audiobookState.segments.concat(data.segments);
+                audiobookState.totalSegments = audiobookState.segments.length;
+            }
+        } catch (e) {
+            console.warn('[AUDIOBOOK] Error processing remaining page:', e);
+        }
+    }
+    console.log('[AUDIOBOOK] Background page processing complete, total segments:', audiobookState.segments.length);
 }
 
 // Analyze text for speakers
@@ -697,6 +744,96 @@ let _streamingAudioCtx = null;
 // unintended SSE fallback.
 let _wsUserStopped = false;
 
+// Playback position tracking for resume
+let _playbackOffset = 0;
+
+// Progressive download state
+let _progressiveAudioChunks = [];
+
+/**
+ * Safely close an AudioContext, guarding against the "already closed" crash.
+ */
+function safeCloseAudioContext(ctx) {
+    if (ctx && ctx.state !== "closed") {
+        ctx.close().catch(() => {});
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Voice assignment from cloned voices with gender
+// ---------------------------------------------------------------------------
+
+/** Persistent map: character name → voice_id (kept across chunks). */
+const _clonedVoiceMap = {};
+
+/**
+ * Determine gender from a character's pronoun score.
+ * Requires a margin of ≥2 to decide; otherwise returns "unknown".
+ */
+function resolveGender(score) {
+    if (!score) return "unknown";
+    if ((score.male - score.female) >= 2) return "male";
+    if ((score.female - score.male) >= 2) return "female";
+    return "unknown";
+}
+
+/**
+ * Assign a cloned voice to a character based on gender scoring.
+ * Uses the available_voices list returned by the upload endpoint.
+ *
+ * @param {string} character  - Character name
+ * @param {object} score      - { male: number, female: number }
+ * @param {Array}  availableVoices - [{ id, gender }, ...]
+ * @returns {string|null} voice id or null
+ */
+function assignClonedVoice(character, score, availableVoices) {
+    if (_clonedVoiceMap[character]) return _clonedVoiceMap[character];
+    if (!availableVoices || availableVoices.length === 0) return null;
+
+    const gender = resolveGender(score);
+
+    let pool;
+    if (gender === "male") {
+        pool = availableVoices.filter(v => v.gender === "male");
+    } else if (gender === "female") {
+        pool = availableVoices.filter(v => v.gender === "female");
+    } else {
+        pool = availableVoices.filter(v => v.gender === "neutral");
+    }
+
+    // Fallback to full pool if no gender match
+    if (pool.length === 0) pool = availableVoices;
+
+    const voice = pool[Math.floor(Math.random() * pool.length)];
+    _clonedVoiceMap[character] = voice.id;
+    return voice.id;
+}
+
+/**
+ * Update the progressive download link as new audio chunks arrive.
+ */
+function updateProgressiveDownload() {
+    if (_progressiveAudioChunks.length === 0) return;
+    const blob = new Blob(_progressiveAudioChunks, { type: "audio/wav" });
+    const url = URL.createObjectURL(blob);
+
+    let link = document.getElementById("audiobook-progressive-download");
+    if (!link) {
+        link = document.createElement("a");
+        link.id = "audiobook-progressive-download";
+        link.className = "btn-secondary";
+        link.download = "audiobook_partial.wav";
+        link.textContent = "⬇ Download (in progress)";
+        const controls = document.querySelector('.audiobook-streaming-controls');
+        if (controls) controls.appendChild(link);
+    }
+    // Revoke old URL to avoid memory leak
+    if (link.dataset.blobUrl) URL.revokeObjectURL(link.dataset.blobUrl);
+    link.href = url;
+    link.dataset.blobUrl = url;
+    link.style.display = "inline-block";
+}
+
 async function generateAudiobook() {
     if (audiobookState.segments.length === 0) {
         alert('No segments to generate. Please analyze text first.');
@@ -709,6 +846,8 @@ async function generateAudiobook() {
     audiobookState.currentSegment = 0;
     audiobookState.totalSegments = audiobookState.segments.length;
     streamingShouldShowFullControls = false;
+    _progressiveAudioChunks = [];
+    _playbackOffset = 0;
 
     // Reset combined-audio state so a previous run's data isn't reused
     audioSegmentDurations = [];
@@ -729,7 +868,12 @@ async function generateAudiobook() {
     }
     
     updateProgress(0, 'Starting generation...');
-    
+
+    // Kick off background page processing (non-blocking)
+    if (audiobookState._remainingPages && audiobookState._remainingPages.length > 0) {
+        processRemainingPages(audiobookState._remainingPages, audiobookState._availableVoices);
+    }
+
     // Try WebSocket first, fall back to SSE
     try {
         await generateAudiobookWS();
@@ -967,7 +1111,7 @@ async function generateAudiobookWS() {
                 subtitleRafId = null;
             }
             if (audioCtx) {
-                try { audioCtx.close(); } catch (_) {}
+                safeCloseAudioContext(audioCtx);
                 audioCtx = null;
                 _streamingAudioCtx = null;
             }
@@ -1412,6 +1556,11 @@ function updateSegmentInfo(segment) {
 function pauseStreamingAudio() {
     audiobookState.isPlaying = false;
 
+    // Track current playback position for resume
+    if (_streamingAudioCtx && _streamingAudioCtx.state === 'running') {
+        _playbackOffset = _streamingAudioCtx.currentTime;
+    }
+
     // WS path: suspend the AudioContext so scheduled chunks stop playing
     if (_streamingAudioCtx && _streamingAudioCtx.state === 'running') {
         _streamingAudioCtx.suspend().catch(e =>
@@ -1446,8 +1595,11 @@ function resumeStreamingAudio() {
     if (pauseBtn) pauseBtn.style.display = 'inline-block';
     if (resumeBtn) resumeBtn.style.display = 'none';
     
-    // SSE path: resume from current position
+    // SSE path: resume from saved playback position
     if (streamingAudioElement && streamingAudioElement.paused) {
+        if (_playbackOffset > 0) {
+            streamingAudioElement.currentTime = _playbackOffset;
+        }
         streamingAudioElement.play();
     }
     
@@ -1472,7 +1624,7 @@ function stopStreamingAudio() {
     // then close the AudioContext to halt scheduled playback immediately.
     _wsUserStopped = true;
     if (_streamingAudioCtx) {
-        try { _streamingAudioCtx.close(); } catch (_) {}
+        safeCloseAudioContext(_streamingAudioCtx);
         _streamingAudioCtx = null;
     }
 

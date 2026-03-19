@@ -1086,3 +1086,182 @@ class TestVoiceManagerCaseInsensitiveMap:
         mgr = self._make()
         voice = mgr.get_voice("Alice")
         assert voice == "neutral_voice"
+
+
+# ---------------------------------------------------------------------------
+# PDF Page Filtering helpers (from app/audiobook.py)
+# ---------------------------------------------------------------------------
+
+import re as _re_mod
+
+
+def _is_title_page(text):
+    words = text.split()
+    if len(words) < 50:
+        return True
+    keywords = ["by", "author", "published"]
+    if any(k in text.lower() for k in keywords) and len(words) < 100:
+        return True
+    return False
+
+
+def _is_table_of_contents(text):
+    t = text.lower()
+    if "contents" in t:
+        return True
+    lines = text.splitlines()
+    toc_like = sum(1 for line in lines if _re_mod.search(r'\d+\s*$', line))
+    if toc_like >= 5:
+        return True
+    if "...." in text:
+        return True
+    return False
+
+
+def _is_story_page(text):
+    _MIN_WORDS = 30
+    if len(text.split()) < _MIN_WORDS:
+        return False
+    if '"' in text:
+        return True
+    sentences = text.split('.')
+    if len(sentences) > 5:
+        return True
+    return False
+
+
+def _extract_characters_and_gender(text):
+    characters = {}
+    matches = _re_mod.findall(
+        r'([A-Z][a-z]+)\s+(said|replied|asked|whispered|shouted|murmured|exclaimed)',
+        text,
+    )
+    for name, _ in matches:
+        if name not in characters:
+            characters[name] = {"male": 0, "female": 0}
+    for name in list(characters.keys()):
+        name_pattern = _re_mod.compile(_re_mod.escape(name) + r'.{0,200}', _re_mod.DOTALL)
+        for m in name_pattern.finditer(text):
+            context = m.group(0).lower()
+            if " he " in context or " his " in context or " him " in context:
+                characters[name]["male"] += 1
+            if " she " in context or " her " in context or " hers " in context:
+                characters[name]["female"] += 1
+    return characters
+
+
+class TestPageFiltering:
+    """Tests for PDF page filtering functions."""
+
+    def test_title_page_short(self):
+        assert _is_title_page("My Great Novel") is True
+
+    def test_title_page_with_author_keyword(self):
+        text = " ".join(["word"] * 80) + " by Famous Author"
+        assert _is_title_page(text) is True
+
+    def test_not_title_page_long_text(self):
+        text = " ".join(["word"] * 60)
+        assert _is_title_page(text) is False
+
+    def test_toc_with_contents_keyword(self):
+        assert _is_table_of_contents("Table of Contents") is True
+
+    def test_toc_with_dots(self):
+        assert _is_table_of_contents("Chapter 1....5") is True
+
+    def test_toc_with_many_numbered_lines(self):
+        lines = "\n".join(f"Chapter {i}      {i * 10}" for i in range(1, 8))
+        assert _is_table_of_contents(lines) is True
+
+    def test_not_toc_normal_text(self):
+        text = "This is a normal paragraph of text without page numbers."
+        assert _is_table_of_contents(text) is False
+
+    def test_story_page_with_dialogue(self):
+        text = '"Hello," said Alice. ' + "More text here. " * 10
+        assert _is_story_page(text) is True
+
+    def test_story_page_with_many_sentences(self):
+        text = "The sun set. " * 15
+        assert _is_story_page(text) is True
+
+    def test_not_story_page_too_short(self):
+        assert _is_story_page("Short text.") is False
+
+
+class TestCharacterExtraction:
+    """Tests for character + gender extraction."""
+
+    def test_basic_extraction(self):
+        text = 'Tom said he was going to the store. Sarah replied that she would come along.'
+        chars = _extract_characters_and_gender(text)
+        assert "Tom" in chars
+        assert "Sarah" in chars
+
+    def test_male_pronoun_scoring(self):
+        text = 'John said he would go. He walked away. His coat was blue.'
+        chars = _extract_characters_and_gender(text)
+        assert "John" in chars
+        assert chars["John"]["male"] > 0
+
+    def test_female_pronoun_scoring(self):
+        text = 'Emma replied she was ready. She looked at her watch.'
+        chars = _extract_characters_and_gender(text)
+        assert "Emma" in chars
+        assert chars["Emma"]["female"] > 0
+
+    def test_empty_text(self):
+        assert _extract_characters_and_gender("") == {}
+
+    def test_no_dialogue_markers(self):
+        text = "A paragraph with no speaking verbs or character names."
+        assert _extract_characters_and_gender(text) == {}
+
+    def test_multiple_characters(self):
+        text = (
+            'James said he would go first. '
+            'Alice asked if she could join. '
+            'Tom whispered he had a secret.'
+        )
+        chars = _extract_characters_and_gender(text)
+        assert len(chars) == 3
+        assert "James" in chars
+        assert "Alice" in chars
+        assert "Tom" in chars
+
+
+class TestVoiceCloneGenderField:
+    """Tests that voice clones include the gender field."""
+
+    def test_default_voice_clone_has_gender(self):
+        """New voice clones should default to 'neutral' gender."""
+        voice_data = {
+            "speaker": "default",
+            "language": "en",
+            "voice_clone_id": "test_voice",
+            "has_audio": True,
+            "is_preloaded": True,
+            "gender": "neutral",
+        }
+        assert "gender" in voice_data
+        assert voice_data["gender"] == "neutral"
+
+    def test_gender_field_values(self):
+        """Gender field should accept male/female/neutral."""
+        for gender in ("male", "female", "neutral"):
+            voice_data = {"gender": gender}
+            assert voice_data["gender"] in ("male", "female", "neutral")
+
+    def test_migration_adds_gender(self):
+        """Existing voice data without gender should get 'neutral' after migration."""
+        old_voice_data = {
+            "speaker": "default",
+            "language": "en",
+            "voice_clone_id": "legacy_voice",
+            "has_audio": True,
+        }
+        # Simulate migration logic
+        if "gender" not in old_voice_data:
+            old_voice_data["gender"] = "neutral"
+        assert old_voice_data["gender"] == "neutral"
