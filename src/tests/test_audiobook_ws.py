@@ -996,3 +996,40 @@ class TestSampleRateConsistency:
         assert "sampleRate: 24000" in content, (
             "audioOutput.js must use 24000 Hz sample rate"
         )
+
+
+# ---------------------------------------------------------------------------
+# PDF upload must populate textarea so AI Structure / Analyze can read it
+# ---------------------------------------------------------------------------
+
+class TestPdfUploadPopulatesTextarea:
+    """After a successful PDF upload the textarea (audiobookText.value) must be
+    populated with the extracted text.  Otherwise AI Structure / Analyze will
+    see an empty textarea and show 'Please enter or upload some text first'."""
+
+    def _get_upload_handler(self):
+        content = _read_source("src/static/audiobook.js")
+        m = re.search(
+            r'(async\s+function\s+handleAudiobookFileUpload\b.*?)(?=\nasync\s+function\s|\nfunction\s|\n//\s*[-=]{3,})',
+            content,
+            re.DOTALL,
+        )
+        assert m, "handleAudiobookFileUpload must exist in audiobook.js"
+        return m.group(1)
+
+    def test_textarea_set_after_pdf_upload(self):
+        """The PDF branch must assign audiobookText.value with the extracted text."""
+        body = self._get_upload_handler()
+        # Look for textarea assignment in the PDF branch (after the .pdf check)
+        pdf_branch = body.split(".endsWith('.pdf')")[1] if ".endsWith('.pdf')" in body else body
+        assert "audiobookText.value" in pdf_branch, (
+            "handleAudiobookFileUpload must set audiobookText.value in the PDF branch "
+            "so that AI Structure / Analyze can read the uploaded text"
+        )
+
+    def test_textarea_set_with_initial_text(self):
+        """The textarea value should come from data.initial_text."""
+        body = self._get_upload_handler()
+        assert "data.initial_text" in body and "audiobookText.value" in body, (
+            "handleAudiobookFileUpload must populate the textarea with data.initial_text"
+        )
