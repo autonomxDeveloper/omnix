@@ -973,3 +973,31 @@ if (document.readyState === 'loading') {
 } else {
     setupPodcast();
 }
+
+// ============================================================
+// VOICE STUDIO
+// ============================================================
+
+const voiceStudioBtns = [
+    document.getElementById('voiceStudioBtn'),
+    document.getElementById('voiceStudioBtnOption'),
+    document.getElementById('voiceStudioBtnCollapsed')
+].filter(btn => btn !== null);
+
+function setupVoiceStudio() {
+    if (voiceStudioBtns.length === 0) return;
+
+    voiceStudioBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (typeof openVoiceStudioModal === 'function') {
+                openVoiceStudioModal();
+            }
+        });
+    });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupVoiceStudio);
+} else {
+    setupVoiceStudio();
+}
