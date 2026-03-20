@@ -232,10 +232,13 @@ def upload():
     if 'file' in request.files:
         f = request.files['file']
         if f.filename and f.filename.lower().endswith('.pdf'):
-            import PyPDF2
-            import uuid
-            reader = PyPDF2.PdfReader(f)
-            valid_pages = extract_valid_pages(reader)
+            try:
+                import PyPDF2
+                import uuid
+                reader = PyPDF2.PdfReader(f)
+                valid_pages = extract_valid_pages(reader)
+            except Exception as e:
+                return jsonify({"success": False, "error": f"Failed to read PDF: {e}"}), 400
 
             if not valid_pages:
                 return jsonify({"success": False, "error": "No readable story content found"}), 400
