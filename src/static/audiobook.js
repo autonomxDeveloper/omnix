@@ -285,6 +285,11 @@ async function handleAudiobookFileUpload(event) {
                 audiobookState.segments = data.segments;
                 audiobookState.text = data.initial_text || 'Loaded from PDF';
 
+                // Populate the textarea so AI Structure / Analyze can read it
+                if (audiobookText && data.initial_text) {
+                    audiobookText.value = data.initial_text;
+                }
+
                 // Auto-assign cloned voices to detected characters
                 if (data.characters && data.available_voices) {
                     for (const [charName, score] of Object.entries(data.characters)) {
