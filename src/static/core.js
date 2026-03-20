@@ -642,10 +642,8 @@ function setupEventListeners() {
     const audiobookBtnCollapsed = document.getElementById('audiobookBtnCollapsed');
     if (audiobookBtnCollapsed) {
         audiobookBtnCollapsed.addEventListener('click', () => {
-            // Open audiobook modal
-            const audiobookModal = document.getElementById('audiobook-modal');
-            if (audiobookModal) {
-                audiobookModal.classList.add('active');
+            if (typeof openAudiobookModal === 'function') {
+                openAudiobookModal();
             }
         });
     }
