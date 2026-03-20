@@ -647,3 +647,61 @@ def update_voice_profiles(book_id: str):
         return jsonify({"success": True, "voices": memory.all_profiles()})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Audiobook library — list available books from resources/data/audiobooks
+# ---------------------------------------------------------------------------
+
+_AUDIOBOOK_LIBRARY_DIR = os.path.join(shared.DATA_DIR, "audiobooks")
+_ALLOWED_EXTENSIONS = {'.txt', '.pdf'}
+
+@audiobook_bp.route('/api/audiobook/library', methods=['GET'])
+def list_library():
+    """Return a list of audiobook files available in the library directory."""
+    os.makedirs(_AUDIOBOOK_LIBRARY_DIR, exist_ok=True)
+    books = []
+    try:
+        for entry in sorted(os.listdir(_AUDIOBOOK_LIBRARY_DIR)):
+            ext = os.path.splitext(entry)[1].lower()
+            if ext not in _ALLOWED_EXTENSIONS:
+                continue
+            full_path = os.path.join(_AUDIOBOOK_LIBRARY_DIR, entry)
+            if not os.path.isfile(full_path):
+                continue
+            name_without_ext = os.path.splitext(entry)[0]
+            books.append({
+                "filename": entry,
+                "title": name_without_ext.replace('_', ' ').replace('-', ' '),
+                "type": ext.lstrip('.'),
+                "size": os.path.getsize(full_path),
+            })
+    except OSError:
+        pass
+    return jsonify({"success": True, "books": books})
+
+
+@audiobook_bp.route('/api/audiobook/library/<path:filename>', methods=['GET'])
+def get_library_book(filename):
+    """Return the content of a specific audiobook from the library."""
+    # Sanitize: only allow simple filenames (no path traversal)
+    basename = os.path.basename(filename)
+    if basename != filename:
+        return jsonify({"success": False, "error": "Invalid filename"}), 400
+    ext = os.path.splitext(basename)[1].lower()
+    if ext not in _ALLOWED_EXTENSIONS:
+        return jsonify({"success": False, "error": "Unsupported file type"}), 400
+
+    full_path = os.path.join(_AUDIOBOOK_LIBRARY_DIR, basename)
+    if not os.path.isfile(full_path):
+        return jsonify({"success": False, "error": "File not found"}), 404
+
+    if ext == '.txt':
+        try:
+            with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+                text = f.read()
+            return jsonify({"success": True, "text": text, "filename": basename})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+    elif ext == '.pdf':
+        return send_file(full_path, mimetype='application/pdf')
