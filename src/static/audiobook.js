@@ -32,6 +32,16 @@ let audiobookProgress, audiobookProgressBar, audiobookProgressText;
 let audiobookPlayer, audiobookAudio;
 let audiobookVoicePanel, audiobookVoicePanelList;
 
+/**
+ * Single source of truth for retrieving audiobook text.
+ * Checks the textarea first, then falls back to audiobookState.text.
+ */
+function getAudiobookText() {
+    const ui = audiobookText ? audiobookText.value.trim() : '';
+    if (ui) return ui;
+    return audiobookState.text || '';
+}
+
 // Initialize audiobook feature
 function initAudiobook() {
     // Get DOM elements
@@ -281,13 +291,19 @@ async function handleAudiobookFileUpload(event) {
             }
             const data = await response.json();
             if (data.success) {
+                // Build best available text source (fallback chain)
+                const extractedText =
+                    data.full_text ||
+                    data.initial_text ||
+                    (data.segments ? data.segments.map(s => s.text).join('\n\n') : '');
+
                 // Store segments from initial pages
                 audiobookState.segments = data.segments;
-                audiobookState.text = data.initial_text || 'Loaded from PDF';
+                audiobookState.text = extractedText;
 
                 // Populate the textarea so AI Structure / Analyze can read it
-                if (audiobookText && data.initial_text) {
-                    audiobookText.value = data.initial_text;
+                if (audiobookText) {
+                    audiobookText.value = extractedText;
                 }
 
                 // Auto-assign cloned voices to detected characters
@@ -360,7 +376,7 @@ async function processRemainingPages(sessionId) {
 
 // Analyze text for speakers
 async function analyzeAudiobookText() {
-    const text = audiobookText ? audiobookText.value.trim() : '';
+    const text = getAudiobookText();
     
     if (!text) {
         alert('Please enter or upload some text first');
@@ -398,7 +414,7 @@ async function analyzeAudiobookText() {
 
 // AI Structure: use LLM to parse dialogue intelligently
 async function aiStructureAudiobookText() {
-    const text = audiobookText ? audiobookText.value.trim() : '';
+    const text = getAudiobookText();
     if (!text) {
         alert('Please enter or upload some text first');
         return;
