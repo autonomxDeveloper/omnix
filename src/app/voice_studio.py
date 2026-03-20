@@ -4,6 +4,8 @@ Provides a POST /api/voice_studio/generate endpoint.
 """
 
 import base64
+import json
+import os
 
 from flask import Blueprint, request, jsonify
 
@@ -136,3 +138,54 @@ def list_voices():
         voices.append({"id": "default", "name": "Default", "gender": "neutral"})
 
     return jsonify({"success": True, "voices": voices})
+
+
+@voice_studio_bp.route("/api/voice_clone", methods=["POST"])
+def create_voice_clone():
+    """Create a new voice clone from uploaded audio."""
+    try:
+        voice_id = request.form.get("voice_id") or request.form.get("name")
+        gender = request.form.get("gender", "neutral")
+        language = request.form.get("language", "en")
+        ref_text = request.form.get("ref_text", "")
+
+        if not voice_id:
+            return jsonify({"success": False, "error": "Voice name is required"}), 400
+
+        if gender not in ("male", "female", "neutral"):
+            gender = "neutral"
+
+        voice_id_clean = voice_id.strip()
+
+        # Save audio file if provided
+        clones_dir = shared.VOICE_CLONES_DIR
+        os.makedirs(clones_dir, exist_ok=True)
+
+        audio_file = request.files.get("file")
+        if audio_file:
+            audio_bytes = audio_file.read()
+            if audio_bytes:
+                wav_path = os.path.join(clones_dir, f"{voice_id_clean}.wav")
+                with open(wav_path, "wb") as f:
+                    f.write(audio_bytes)
+
+                tts_provider = shared.get_tts_provider()
+                if tts_provider and hasattr(tts_provider, "voice_clone"):
+                    tts_provider.voice_clone(voice_id_clean, audio_bytes, ref_text)
+
+        # Register in custom_voices
+        shared.custom_voices[voice_id_clean] = {
+            "speaker": "default",
+            "language": language,
+            "voice_clone_id": voice_id_clean,
+            "has_audio": True,
+            "is_preloaded": True,
+            "gender": gender,
+        }
+
+        with open(shared.VOICE_CLONES_FILE, "w") as wf:
+            json.dump(shared.custom_voices, wf, indent=2)
+
+        return jsonify({"success": True, "voice_id": voice_id_clean})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
