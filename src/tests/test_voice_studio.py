@@ -39,11 +39,13 @@ def vs_client(vs_app):
 def _fake_provider(audio=b"audio"):
     provider = MagicMock()
     provider.provider_name = "mock"
-    provider.generate_tts.return_value = {
+    mock_response = {
         "success": True,
         "audio": base64.b64encode(audio).decode("utf-8"),
         "sample_rate": 24000,
     }
+    provider.generate_tts.return_value = mock_response
+    provider.generate_audio.return_value = mock_response
     return provider
 
 
@@ -290,3 +292,125 @@ class TestVoiceStudioValidation:
                     content_type="application/json",
                 )
             assert response.status_code == 200
+
+
+# -----------------------------------------------------------------
+# POST /api/voice_clone
+# -----------------------------------------------------------------
+
+
+class TestVoiceCloneCreate:
+    """Test POST /api/voice_clone endpoint."""
+
+    def test_create_voice_clone_without_audio(self, vs_client):
+        """Should create a voice clone entry without audio file."""
+        with patch("app.voice_studio.shared") as mock_shared:
+            mock_shared.custom_voices = {}
+            mock_shared.VOICE_CLONES_DIR = "/tmp/test_voice_clones"
+            mock_shared.VOICE_CLONES_FILE = "/tmp/test_voice_clones/voice_clones.json"
+            mock_shared.get_tts_provider.return_value = None
+
+            import os
+            os.makedirs("/tmp/test_voice_clones", exist_ok=True)
+
+            response = vs_client.post(
+                "/api/voice_clone",
+                data={"voice_id": "TestVoice", "gender": "female"},
+                content_type="multipart/form-data",
+            )
+
+        assert response.status_code == 200
+        data = response.json
+        assert data["success"] is True
+        assert data["voice_id"] == "TestVoice"
+
+    def test_create_voice_clone_missing_name(self, vs_client):
+        """Should return 400 when no voice name is provided."""
+        response = vs_client.post(
+            "/api/voice_clone",
+            data={"language": "en"},
+            content_type="multipart/form-data",
+        )
+        assert response.status_code == 400
+        data = response.json
+        assert data["success"] is False
+
+    def test_create_voice_clone_with_gender(self, vs_client):
+        """Gender should be saved when creating a voice clone."""
+        with patch("app.voice_studio.shared") as mock_shared:
+            mock_shared.custom_voices = {}
+            mock_shared.VOICE_CLONES_DIR = "/tmp/test_vc_gender"
+            mock_shared.VOICE_CLONES_FILE = "/tmp/test_vc_gender/voice_clones.json"
+            mock_shared.get_tts_provider.return_value = None
+
+            import os
+            os.makedirs("/tmp/test_vc_gender", exist_ok=True)
+
+            response = vs_client.post(
+                "/api/voice_clone",
+                data={"voice_id": "MaleVoice", "gender": "male"},
+                content_type="multipart/form-data",
+            )
+
+        assert response.status_code == 200
+        assert mock_shared.custom_voices["MaleVoice"]["gender"] == "male"
+
+    def test_create_voice_clone_invalid_gender_defaults_to_neutral(self, vs_client):
+        """Invalid gender should default to neutral."""
+        with patch("app.voice_studio.shared") as mock_shared:
+            mock_shared.custom_voices = {}
+            mock_shared.VOICE_CLONES_DIR = "/tmp/test_vc_neutral"
+            mock_shared.VOICE_CLONES_FILE = "/tmp/test_vc_neutral/voice_clones.json"
+            mock_shared.get_tts_provider.return_value = None
+
+            import os
+            os.makedirs("/tmp/test_vc_neutral", exist_ok=True)
+
+            response = vs_client.post(
+                "/api/voice_clone",
+                data={"voice_id": "BadGender", "gender": "invalid"},
+                content_type="multipart/form-data",
+            )
+
+        assert response.status_code == 200
+        assert mock_shared.custom_voices["BadGender"]["gender"] == "neutral"
+
+
+# -----------------------------------------------------------------
+# Voice Studio voices include cloned voices
+# -----------------------------------------------------------------
+
+
+class TestVoiceStudioIncludesClonedVoices:
+    """Verify cloned voices appear in the Voice Studio dropdown."""
+
+    def test_cloned_voices_in_voice_studio_dropdown(self, vs_client):
+        """Cloned voices should appear in /api/voice_studio/voices."""
+        with patch("app.voice_studio.shared") as mock_shared:
+            mock_shared.custom_voices = {
+                "alice_clone": {"gender": "female", "voice_clone_id": "alice_clone"},
+                "bob_clone": {"gender": "male", "voice_clone_id": "bob_clone"},
+            }
+            mock_shared.get_tts_provider.return_value = None
+
+            response = vs_client.get("/api/voice_studio/voices")
+
+        data = response.json
+        assert data["success"] is True
+        ids = [v["id"] for v in data["voices"]]
+        assert "alice_clone" in ids
+        assert "bob_clone" in ids
+
+    def test_cloned_voice_gender_in_dropdown(self, vs_client):
+        """Cloned voice gender should be reflected in the dropdown."""
+        with patch("app.voice_studio.shared") as mock_shared:
+            mock_shared.custom_voices = {
+                "female_voice": {"gender": "female", "voice_clone_id": "female_voice"},
+            }
+            mock_shared.get_tts_provider.return_value = None
+
+            response = vs_client.get("/api/voice_studio/voices")
+
+        data = response.json
+        fv = next(v for v in data["voices"] if v["id"] == "female_voice")
+        assert fv["gender"] == "female"

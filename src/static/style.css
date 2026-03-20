@@ -4480,6 +4480,17 @@ pre:hover .code-copy-btn {
     opacity: 0.8;
 }
 
+.gender-badge {
+    font-size: 0.7rem;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    text-transform: capitalize;
+}
+
 /* Personality preview text under voice name */
 .saved-voice-personality-preview {
     font-size: 0.75rem;
