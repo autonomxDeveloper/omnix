@@ -654,7 +654,16 @@ def update_voice_profiles(book_id: str):
 # ---------------------------------------------------------------------------
 
 _AUDIOBOOK_LIBRARY_DIR = os.path.join(shared.DATA_DIR, "audiobooks")
-_ALLOWED_EXTENSIONS = {'.txt', '.pdf'}
+_ALLOWED_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac', '.wma'}
+_AUDIO_MIME_TYPES = {
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.ogg': 'audio/ogg',
+    '.m4a': 'audio/mp4',
+    '.flac': 'audio/flac',
+    '.aac': 'audio/aac',
+    '.wma': 'audio/x-ms-wma',
+}
 
 @audiobook_bp.route('/api/audiobook/library', methods=['GET'])
 def list_library():
@@ -683,7 +692,7 @@ def list_library():
 
 @audiobook_bp.route('/api/audiobook/library/<path:filename>', methods=['GET'])
 def get_library_book(filename):
-    """Return the content of a specific audiobook from the library."""
+    """Return an audiobook file from the library."""
     # Sanitize: only allow simple filenames (no path traversal)
     basename = os.path.basename(filename)
     if basename != filename:
@@ -696,12 +705,5 @@ def get_library_book(filename):
     if not os.path.isfile(full_path):
         return jsonify({"success": False, "error": "File not found"}), 404
 
-    if ext == '.txt':
-        try:
-            with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
-                text = f.read()
-            return jsonify({"success": True, "text": text, "filename": basename})
-        except Exception as e:
-            return jsonify({"success": False, "error": str(e)}), 500
-    elif ext == '.pdf':
-        return send_file(full_path, mimetype='application/pdf')
+    mimetype = _AUDIO_MIME_TYPES.get(ext, 'application/octet-stream')
+    return send_file(full_path, mimetype=mimetype)
