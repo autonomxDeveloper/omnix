@@ -1861,7 +1861,16 @@ async def audiobook_update_voice_profiles(book_id: str, request: Request):
 
 # ---------- Audiobook library (list files in resources/data/audiobooks) -----
 _AUDIOBOOK_LIBRARY_DIR = _os.path.join(shared.DATA_DIR, "audiobooks")
-_ALLOWED_BOOK_EXTENSIONS = {'.txt', '.pdf'}
+_ALLOWED_BOOK_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac', '.wma'}
+_AUDIO_MIME_TYPES = {
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.ogg': 'audio/ogg',
+    '.m4a': 'audio/mp4',
+    '.flac': 'audio/flac',
+    '.aac': 'audio/aac',
+    '.wma': 'audio/x-ms-wma',
+}
 
 @app.get("/api/audiobook/library")
 async def audiobook_list_library():
@@ -1890,7 +1899,7 @@ async def audiobook_list_library():
 
 @app.get("/api/audiobook/library/{filename:path}")
 async def audiobook_get_library_book(filename: str):
-    """Return the content of a specific audiobook from the library."""
+    """Return an audiobook file from the library."""
     basename = _os.path.basename(filename)
     if basename != filename:
         return JSONResponse({"success": False, "error": "Invalid filename"}, status_code=400)
@@ -1902,16 +1911,8 @@ async def audiobook_get_library_book(filename: str):
     if not _os.path.isfile(full_path):
         return JSONResponse({"success": False, "error": "File not found"}, status_code=404)
 
-    if ext == '.txt':
-        try:
-            with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
-                text = f.read()
-            return {"success": True, "text": text, "filename": basename}
-        except Exception as e:
-            return JSONResponse({"success": False, "error": str(e)}, status_code=500)
-    elif ext == '.pdf':
-        from starlette.responses import FileResponse
-        return FileResponse(full_path, media_type='application/pdf')
+    media_type = _AUDIO_MIME_TYPES.get(ext, 'application/octet-stream')
+    return FileResponse(full_path, media_type=media_type)
 
 
 # ============== LLAMACPP ENDPOINTS ==============

@@ -168,7 +168,7 @@ function resetAudiobookState() {
 }
 
 // ---------------------------------------------------------------------------
-// Audiobook library — list & load books from resources/data/audiobooks
+// Audiobook library — list & play audio books from resources/data/audiobooks
 // ---------------------------------------------------------------------------
 
 /**
@@ -182,24 +182,22 @@ async function loadAudiobookLibrary() {
         const resp = await fetch('/api/audiobook/library');
         const data = await resp.json();
         if (!data.success || !data.books || data.books.length === 0) {
-            container.innerHTML = '<p class="no-audiobooks">No audiobooks in the library yet. Add .txt or .pdf files to resources/data/audiobooks/</p>';
+            container.innerHTML = '<p class="no-audiobooks">No audiobooks in the library yet. Add audio files (.mp3, .wav, .ogg, .m4a, .flac, .aac, .wma) to resources/data/audiobooks/</p>';
             return;
         }
 
         container.innerHTML = data.books.map(book => {
-            const sizeKB = (book.size / 1024).toFixed(1);
-            const icon = book.type === 'pdf' ? '📕' : '📄';
+            const sizeMB = (book.size / (1024 * 1024)).toFixed(1);
             return `
                 <div class="audiobook-library-item" data-filename="${_escapeAttr(book.filename)}">
                     <div class="audiobook-item-info">
-                        <span class="audiobook-item-title">${icon} ${_escapeHtmlLib(book.title)}</span>
-                        <span class="audiobook-item-date">${book.type.toUpperCase()} · ${sizeKB} KB</span>
+                        <span class="audiobook-item-title">🎧 ${_escapeHtmlLib(book.title)}</span>
+                        <span class="audiobook-item-date">${book.type.toUpperCase()} · ${sizeMB} MB</span>
                     </div>
                     <div class="audiobook-item-actions">
-                        <button class="play-audiobook-btn" onclick="loadAudiobookFromLibrary('${_escapeAttr(book.filename)}')" title="Load into editor">
+                        <button class="play-audiobook-btn" onclick="playAudiobookFromLibraryFile('${_escapeAttr(book.filename)}')" title="Play audiobook">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                                <path d="M14 2H6C4.9 2 4 2.9 4 4v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6z" stroke="currentColor" stroke-width="2" fill="none"/>
-                                <path d="M14 2v6h6" stroke="currentColor" stroke-width="2" fill="none"/>
+                                <polygon points="5,3 19,12 5,21" stroke="currentColor" stroke-width="2" fill="currentColor"/>
                             </svg>
                         </button>
                     </div>
@@ -225,45 +223,32 @@ function _escapeAttr(str) {
 }
 
 /**
- * Load a book from the library into the audiobook editor.
+ * Play an audiobook file from the library using the browser audio player.
  */
-async function loadAudiobookFromLibrary(filename) {
+function playAudiobookFromLibraryFile(filename) {
     if (!filename) return;
 
-    const ext = filename.split('.').pop().toLowerCase();
+    const url = '/api/audiobook/library/' + encodeURIComponent(filename);
 
-    if (ext === 'txt') {
-        try {
-            const resp = await fetch('/api/audiobook/library/' + encodeURIComponent(filename));
-            const data = await resp.json();
-            if (data.success && data.text) {
-                if (audiobookText) audiobookText.value = data.text;
-                audiobookState.text = data.text;
-            } else {
-                alert('Error loading book: ' + (data.error || 'Unknown error'));
-            }
-        } catch (e) {
-            alert('Error loading book: ' + e.message);
-        }
-    } else if (ext === 'pdf') {
-        // For PDF, trigger the existing upload flow by fetching the file as a blob
-        try {
-            const resp = await fetch('/api/audiobook/library/' + encodeURIComponent(filename));
-            if (!resp.ok) throw new Error('Failed to fetch PDF');
-            const blob = await resp.blob();
-            const file = new File([blob], filename, { type: 'application/pdf' });
+    // Remove any existing library audio player
+    const existing = document.getElementById('audiobook-library-player');
+    if (existing) existing.remove();
 
-            // Create a synthetic change event for the file upload handler
-            const dt = new DataTransfer();
-            dt.items.add(file);
-            if (audiobookFile) {
-                audiobookFile.files = dt.files;
-                audiobookFile.dispatchEvent(new Event('change'));
-            }
-        } catch (e) {
-            alert('Error loading PDF: ' + e.message);
-        }
-    }
+    const playerDiv = document.createElement('div');
+    playerDiv.id = 'audiobook-library-player';
+    playerDiv.style.cssText = 'margin-top: 12px; padding: 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm);';
+    playerDiv.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+            <span style="font-size: 0.85rem; color: var(--text-primary);">🎧 Now Playing: ${_escapeHtmlLib(filename)}</span>
+            <button onclick="this.closest('#audiobook-library-player').remove()" aria-label="Close player" style="background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 1.1rem;">&times;</button>
+        </div>
+        <audio controls style="width: 100%;" src="${_escapeAttr(url)}">
+            Your browser does not support the audio element.
+        </audio>
+    `;
+
+    const container = document.getElementById('audiobook-library-section');
+    if (container) container.appendChild(playerDiv);
 }
 
 // Handle file upload
