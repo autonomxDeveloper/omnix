@@ -1029,6 +1029,183 @@ async def delete_voice_clone(voice_id: str):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+@app.post("/api/voice_clone")
+async def create_voice_clone(request: Request):
+    """Create a new voice clone from uploaded audio."""
+    try:
+        content_type = request.headers.get("content-type", "")
+
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            voice_id = form.get("voice_id") or form.get("name")
+            gender = form.get("gender", "neutral")
+            language = form.get("language", "en")
+            ref_text = form.get("ref_text", "")
+            audio_file = form.get("file")
+        else:
+            data = await request.json()
+            voice_id = data.get("voice_id") or data.get("name")
+            gender = data.get("gender", "neutral")
+            language = data.get("language", "en")
+            ref_text = data.get("ref_text", "")
+            audio_file = None
+
+        if not voice_id:
+            return JSONResponse({"success": False, "error": "Voice name is required"}, status_code=400)
+
+        if gender not in ("male", "female", "neutral"):
+            gender = "neutral"
+
+        voice_id_clean = voice_id.strip()
+
+        # Save audio file if provided
+        clones_dir = Path(shared.VOICE_CLONES_DIR)
+        clones_dir.mkdir(parents=True, exist_ok=True)
+
+        if audio_file and hasattr(audio_file, "read"):
+            audio_bytes = await audio_file.read()
+            if audio_bytes:
+                wav_path = clones_dir / f"{voice_id_clean}.wav"
+                wav_path.write_bytes(audio_bytes)
+
+                # Try voice cloning via provider
+                tts_provider = shared.get_tts_provider()
+                if tts_provider and hasattr(tts_provider, "voice_clone"):
+                    tts_provider.voice_clone(voice_id_clean, audio_bytes, ref_text)
+
+        # Register in custom_voices
+        shared.custom_voices[voice_id_clean] = {
+            "speaker": "default",
+            "language": language,
+            "voice_clone_id": voice_id_clean,
+            "has_audio": True,
+            "is_preloaded": True,
+            "gender": gender,
+        }
+
+        with open(shared.VOICE_CLONES_FILE, "w") as f:
+            json.dump(shared.custom_voices, f, indent=2)
+
+        return {"success": True, "voice_id": voice_id_clean}
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+# ----- Voice Studio endpoints -----
+
+VOICE_STUDIO_EMOTION_MAP = {
+    "neutral": {"speed": 1.0, "pitch": 0},
+    "calm": {"speed": 0.9, "pitch": -1},
+    "happy": {"speed": 1.1, "pitch": 2},
+    "sad": {"speed": 0.85, "pitch": -2},
+    "angry": {"speed": 1.2, "pitch": 1},
+    "dramatic": {"speed": 0.95, "pitch": -1},
+}
+
+VS_MAX_TEXT = 2000
+VS_SPEED_MIN, VS_SPEED_MAX = 0.7, 1.5
+VS_PITCH_MIN, VS_PITCH_MAX = -5, 5
+
+
+@app.post("/api/voice_studio/generate")
+async def voice_studio_generate(request: Request):
+    """Generate TTS audio with emotion controls for Voice Studio."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid JSON"}, status_code=400)
+
+    text = (data.get("text") or "").strip()
+    voice_id = data.get("voice_id")
+    emotion = data.get("emotion", "neutral")
+
+    if not text:
+        return JSONResponse({"success": False, "error": "Text is required"}, status_code=400)
+    if len(text) > VS_MAX_TEXT:
+        return JSONResponse({"success": False, "error": f"Text must be {VS_MAX_TEXT} characters or fewer"}, status_code=400)
+    if not voice_id:
+        return JSONResponse({"success": False, "error": "Voice is required"}, status_code=400)
+
+    try:
+        speed = float(data.get("speed", 1.0))
+        pitch = float(data.get("pitch", 0))
+    except (ValueError, TypeError):
+        return JSONResponse({"success": False, "error": "Speed and pitch must be numbers"}, status_code=400)
+
+    if not (VS_SPEED_MIN <= speed <= VS_SPEED_MAX):
+        return JSONResponse({"success": False, "error": f"Speed must be between {VS_SPEED_MIN} and {VS_SPEED_MAX}"}, status_code=400)
+    if not (VS_PITCH_MIN <= pitch <= VS_PITCH_MAX):
+        return JSONResponse({"success": False, "error": f"Pitch must be between {VS_PITCH_MIN} and {VS_PITCH_MAX}"}, status_code=400)
+
+    if emotion in VOICE_STUDIO_EMOTION_MAP:
+        emo = VOICE_STUDIO_EMOTION_MAP[emotion]
+        if speed == 1.0:
+            speed = emo["speed"]
+        if pitch == 0:
+            pitch = emo["pitch"]
+
+    try:
+        clean_speaker = voice_id.replace(" (Custom)", "").strip()
+        voice_clone_id = shared.custom_voices.get(clean_speaker, {}).get("voice_clone_id")
+        final_speaker = voice_clone_id if voice_clone_id else clean_speaker
+
+        tts_provider = shared.get_tts_provider()
+        if not tts_provider:
+            return JSONResponse({"success": False, "error": "No TTS provider available"}, status_code=500)
+
+        gen_kwargs = {"text": text, "speaker": final_speaker, "language": "en",
+                      "speed": speed, "pitch": pitch, "emotion": emotion}
+
+        if hasattr(tts_provider, "generate_tts"):
+            result = tts_provider.generate_tts(**gen_kwargs)
+        elif hasattr(tts_provider, "generate_audio"):
+            result = tts_provider.generate_audio(**gen_kwargs)
+        else:
+            return JSONResponse({"success": False, "error": "TTS provider missing generation method"}, status_code=500)
+
+        if not result or not result.get("success"):
+            err = result.get("error", "TTS generation failed") if result else "TTS generation failed"
+            return JSONResponse({"success": False, "error": err}, status_code=500)
+
+        return {"success": True, "audio_base64": result.get("audio", "")}
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/voice_studio/voices")
+async def voice_studio_voices():
+    """Return available voices for the Voice Studio dropdown."""
+    voices = []
+
+    for vid, vdata in shared.custom_voices.items():
+        voices.append({
+            "id": vid,
+            "name": vid,
+            "gender": vdata.get("gender", "neutral"),
+        })
+
+    tts_provider = shared.get_tts_provider()
+    if tts_provider:
+        try:
+            if hasattr(tts_provider, "get_speakers"):
+                for s in tts_provider.get_speakers():
+                    sid = s.get("id", s.get("name", ""))
+                    if sid and not any(v["id"] == sid for v in voices):
+                        voices.append({"id": sid, "name": s.get("name", sid), "gender": "neutral"})
+            elif hasattr(tts_provider, "get_voices"):
+                for s in tts_provider.get_voices():
+                    sid = s.get("id", s.get("name", ""))
+                    if sid and not any(v["id"] == sid for v in voices):
+                        voices.append({"id": sid, "name": s.get("name", sid), "gender": "neutral"})
+        except Exception:
+            pass
+
+    if not voices:
+        voices.append({"id": "default", "name": "Default", "gender": "neutral"})
+
+    return {"success": True, "voices": voices}
+
+
 @app.post("/api/clear")
 async def clear_session(request: Request):
     """Clear session messages"""
