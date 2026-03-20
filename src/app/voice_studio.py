@@ -33,9 +33,6 @@ def generate_voice():
 
     text = data.get("text", "").strip()
     voice_id = data.get("voice_id")
-
-    speed = float(data.get("speed", 1.0))
-    pitch = float(data.get("pitch", 0))
     emotion = data.get("emotion", "neutral")
 
     # --- validation ---
@@ -47,6 +44,12 @@ def generate_voice():
 
     if not voice_id:
         return jsonify({"success": False, "error": "Voice is required"}), 400
+
+    try:
+        speed = float(data.get("speed", 1.0))
+        pitch = float(data.get("pitch", 0))
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Speed and pitch must be numbers"}), 400
 
     if not (SPEED_MIN <= speed <= SPEED_MAX):
         return jsonify({"success": False, "error": f"Speed must be between {SPEED_MIN} and {SPEED_MAX}"}), 400
@@ -73,7 +76,9 @@ def generate_voice():
             return jsonify({"success": False, "error": "No TTS provider available"}), 500
 
         # Generate audio via the existing TTS provider
-        gen_kwargs = {"text": text, "speaker": final_speaker, "language": "en"}
+        # Include speed, pitch, and emotion for providers that support them
+        gen_kwargs = {"text": text, "speaker": final_speaker, "language": "en",
+                      "speed": speed, "pitch": pitch, "emotion": emotion}
 
         if hasattr(tts_provider, "generate_tts"):
             result = tts_provider.generate_tts(**gen_kwargs)
