@@ -274,6 +274,11 @@ async function handleAudiobookFileUpload(event) {
                 body: formData
             });
             
+            if (!response.ok) {
+                let errMsg = `Server error (${response.status})`;
+                try { const errData = await response.json(); errMsg = errData.error || errMsg; } catch (_e) { /* non-JSON error body */ }
+                throw new Error(errMsg);
+            }
             const data = await response.json();
             if (data.success) {
                 // Store segments from initial pages
@@ -415,6 +420,11 @@ async function aiStructureAudiobookText() {
             })
         });
 
+        if (!response.ok) {
+            let errMsg = `Server error (${response.status})`;
+            try { const errData = await response.json(); errMsg = errData.error || errMsg; } catch (_e) { /* non-JSON error body */ }
+            throw new Error(errMsg);
+        }
         const data = await response.json();
 
         if (data.success) {

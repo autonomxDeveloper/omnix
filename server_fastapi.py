@@ -1518,9 +1518,15 @@ async def audiobook_upload(request: Request):
         if file:
             raw = await file.read()
             if file.filename and file.filename.lower().endswith(".pdf"):
-                import PyPDF2, io, uuid as _uuid
-                reader = PyPDF2.PdfReader(io.BytesIO(raw))
-                valid_pages = _extract_valid_pages(reader)
+                try:
+                    import PyPDF2, io, uuid as _uuid
+                    reader = PyPDF2.PdfReader(io.BytesIO(raw))
+                    valid_pages = _extract_valid_pages(reader)
+                except Exception as e:
+                    return JSONResponse(
+                        {"success": False, "error": f"Failed to read PDF: {e}"},
+                        status_code=400,
+                    )
 
                 if not valid_pages:
                     return JSONResponse(
