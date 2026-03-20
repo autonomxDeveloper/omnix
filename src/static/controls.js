@@ -645,6 +645,8 @@ function showVoicePreview() {
 async function saveClonedVoice() {
     const voiceName = voiceNameInput.value.trim();
     const language = cloneLanguageSelect.value;
+    const genderSelect = document.getElementById('voiceGender');
+    const gender = genderSelect ? genderSelect.value : 'neutral';
     
     if (!voiceName) {
         alert('Please enter a voice name');
@@ -678,6 +680,7 @@ async function saveClonedVoice() {
         formData.append('file', audioBlob, fileName);
         formData.append('voice_id', voiceName);
         formData.append('ref_text', `Reference voice for ${voiceName}`);
+        formData.append('gender', gender);
         
         const response = await fetch('/api/voice_clone', { method: 'POST', body: formData });
         const data = await response.json();
@@ -770,6 +773,7 @@ function renderSavedVoices(voices, containerEl) {
         const personalityPreview = hasPersonality 
             ? (profile.personality.length > 50 ? profile.personality.substring(0, 50) + '...' : profile.personality)
             : '';
+        const genderLabel = voice.gender || 'neutral';
         
         return `
         <div class="saved-voice-item" data-voice-id="${voice.id}">
@@ -780,6 +784,7 @@ function renderSavedVoices(voices, containerEl) {
                     <path d="M12 19V23M8 23H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                 </svg>
                 <span class="saved-voice-name">${voice.id}</span>
+                <span class="gender-badge" title="Gender: ${genderLabel}">${genderLabel}</span>
                 ${hasPersonality ? '<span class="personality-badge" title="Has personality">✨</span>' : ''}
             </div>
             ${personalityPreview ? `<div class="saved-voice-personality-preview">${escapeHtml(personalityPreview)}</div>` : ''}
@@ -820,6 +825,9 @@ function editVoicePersonalityInline(voiceId) {
     
     const voiceItem = savedVoicesListEl.querySelector(`[data-voice-id="${voiceId}"]`);
     if (!voiceItem) return;
+
+    // Read the current gender from the badge
+    const currentGender = voiceItem.querySelector('.gender-badge')?.textContent?.trim() || 'neutral';
     
     // Replace with edit form
     voiceItem.classList.add('editing');
@@ -831,6 +839,14 @@ function editVoicePersonalityInline(voiceId) {
             <div class="form-group">
                 <label>Character Name (optional)</label>
                 <input type="text" class="personality-name-input" value="${escapeHtml(profile.name || voiceId)}" placeholder="e.g., Sofia">
+            </div>
+            <div class="form-group">
+                <label>Gender</label>
+                <select class="personality-gender-input model-select">
+                    <option value="neutral"${currentGender === 'neutral' ? ' selected' : ''}>Neutral</option>
+                    <option value="male"${currentGender === 'male' ? ' selected' : ''}>Male</option>
+                    <option value="female"${currentGender === 'female' ? ' selected' : ''}>Female</option>
+                </select>
             </div>
             <div class="form-group">
                 <label>Personality & Background</label>
@@ -860,9 +876,11 @@ function saveVoicePersonalityInline(voiceId) {
     
     const nameInput = voiceItem.querySelector('.personality-name-input');
     const personalityInput = voiceItem.querySelector('.personality-text-input');
+    const genderInput = voiceItem.querySelector('.personality-gender-input');
     
     const name = nameInput?.value?.trim() || voiceId;
     const personality = personalityInput?.value?.trim() || '';
+    const gender = genderInput?.value || 'neutral';
     
     // Save using the features.js function if available
     if (typeof saveVoiceProfile === 'function') {
@@ -883,6 +901,15 @@ function saveVoicePersonalityInline(voiceId) {
         };
         localStorage.setItem(voiceProfilesKey, JSON.stringify(profiles));
     }
+
+    // Update gender on the server via PUT endpoint
+    fetch(`/api/voice_clones/${encodeURIComponent(voiceId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gender: gender })
+    }).catch(function(e) {
+        console.error('[VOICE CLONE] Failed to update gender:', e);
+    });
     
     // Reload the voices list
     loadSavedVoices();
