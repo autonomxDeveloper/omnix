@@ -1027,9 +1027,86 @@ class TestPdfUploadPopulatesTextarea:
             "so that AI Structure / Analyze can read the uploaded text"
         )
 
-    def test_textarea_set_with_initial_text(self):
-        """The textarea value should come from data.initial_text."""
+    def test_fallback_chain_uses_best_source(self):
+        """The PDF handler must use a fallback chain: full_text > initial_text > segments."""
         body = self._get_upload_handler()
-        assert "data.initial_text" in body and "audiobookText.value" in body, (
-            "handleAudiobookFileUpload must populate the textarea with data.initial_text"
+        assert "full_text" in body, (
+            "handleAudiobookFileUpload must check data.full_text as the best text source"
+        )
+        assert "initial_text" in body, (
+            "handleAudiobookFileUpload must fall back to data.initial_text"
+        )
+        assert "segments" in body and ".map" in body, (
+            "handleAudiobookFileUpload must reconstruct text from segments as a final fallback"
+        )
+
+
+# ---------------------------------------------------------------------------
+# getAudiobookText helper – single source of truth for text retrieval
+# ---------------------------------------------------------------------------
+
+class TestGetAudiobookTextHelper:
+    """audiobook.js must define a getAudiobookText() helper and use it in
+    analyzeAudiobookText and aiStructureAudiobookText instead of reading
+    audiobookText.value directly."""
+
+    def _get_content(self):
+        return _read_source("src/static/audiobook.js")
+
+    def test_helper_defined(self):
+        content = self._get_content()
+        assert "function getAudiobookText()" in content, (
+            "audiobook.js must define a getAudiobookText() helper function"
+        )
+
+    def test_helper_checks_textarea(self):
+        content = self._get_content()
+        m = re.search(
+            r'function getAudiobookText\(\).*?\}',
+            content,
+            re.DOTALL,
+        )
+        assert m, "getAudiobookText must exist"
+        body = m.group(0)
+        assert "audiobookText" in body, (
+            "getAudiobookText must read from the textarea element"
+        )
+
+    def test_helper_falls_back_to_state(self):
+        content = self._get_content()
+        m = re.search(
+            r'function getAudiobookText\(\).*?\}',
+            content,
+            re.DOTALL,
+        )
+        assert m, "getAudiobookText must exist"
+        body = m.group(0)
+        assert "audiobookState.text" in body, (
+            "getAudiobookText must fall back to audiobookState.text"
+        )
+
+    def test_analyze_uses_helper(self):
+        content = self._get_content()
+        m = re.search(
+            r'(async\s+function\s+analyzeAudiobookText\b.*?)(?=\n(?:async\s+)?function\s|\n//\s*[-=]{3,})',
+            content,
+            re.DOTALL,
+        )
+        assert m, "analyzeAudiobookText must exist"
+        body = m.group(1)
+        assert "getAudiobookText()" in body, (
+            "analyzeAudiobookText must use getAudiobookText() helper"
+        )
+
+    def test_ai_structure_uses_helper(self):
+        content = self._get_content()
+        m = re.search(
+            r'(async\s+function\s+aiStructureAudiobookText\b.*?)(?=\n(?:async\s+)?function\s|\n//\s*[-=]{3,})',
+            content,
+            re.DOTALL,
+        )
+        assert m, "aiStructureAudiobookText must exist"
+        body = m.group(1)
+        assert "getAudiobookText()" in body, (
+            "aiStructureAudiobookText must use getAudiobookText() helper"
         )
