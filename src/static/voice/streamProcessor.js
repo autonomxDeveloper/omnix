@@ -16,6 +16,8 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.writeIndex = 0;
     this.readIndex = 0;
     this.availableSamples = 0;
+    this.totalSamplesPlayed = 0;
+    this.frameCount = 0;
 
     this.port.onmessage = (event) => {
       if (event.data.type === "push") {
@@ -46,10 +48,22 @@ class StreamProcessor extends AudioWorkletProcessor {
         output[i] = this.buffer[this.readIndex];
         this.readIndex = (this.readIndex + 1) % this.buffer.length;
         this.availableSamples--;
+        this.totalSamplesPlayed++;
       } else {
         // underrun — output silence
         output[i] = 0;
       }
+    }
+
+    // Report playback progress and buffer level to main thread (~every 53ms)
+    this.frameCount++;
+    if (this.frameCount >= 10) {
+      this.frameCount = 0;
+      this.port.postMessage({
+        type: "progress",
+        samplesPlayed: this.totalSamplesPlayed,
+        availableSamples: this.availableSamples,
+      });
     }
 
     return true;
