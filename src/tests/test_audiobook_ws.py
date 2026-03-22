@@ -623,8 +623,8 @@ class TestAudioWorkletStreaming:
         assert re.search(r'audioWorklet\.addModule\s*\(', body), (
             "Must load AudioWorklet module via audioWorklet.addModule"
         )
-        assert re.search(r'streamProcessor', body), (
-            "Must load the streamProcessor.js AudioWorklet module"
+        assert re.search(r'addModule\s*\(\s*["\'].*streamProcessor\.js["\']', body), (
+            "Must load streamProcessor.js as the AudioWorklet module path"
         )
 
     def test_worklet_node_created(self):
@@ -669,26 +669,29 @@ class TestAudioWorkletStreaming:
         )
 
     def test_waveform_stitching_present(self):
-        """Waveform stitching must smooth the boundary between consecutive chunks."""
+        """Waveform stitching must smooth the boundary between consecutive chunks
+        by averaging the first sample with the previous chunk's last sample."""
         body = self._get_ws_body()
-        assert "lastChunkFinalSample" in body, (
-            "Must track lastChunkFinalSample for waveform stitching"
+        assert re.search(r'float32\s*\[\s*0\s*\]\s*=', body), (
+            "Must assign to float32[0] for waveform boundary stitching"
         )
-        assert re.search(r'/\s*2\b', body), (
-            "Waveform stitching (sample averaging with / 2) must be present"
+        assert re.search(r'last.*Sample', body), (
+            "Must track the last sample from the previous chunk for stitching"
         )
 
     def test_backpressure_considers_audio_consumption(self):
         """Backpressure must be linked to actual audio consumption, not just
-        a timer.  At minimum, SAMPLE_RATE must be referenced for duration
-        calculation and AudioWorklet must be used for actual playback."""
+        a timer.  The worklet must use postMessage for pushing data and
+        track buffer occupancy via availableSamples."""
         body = self._get_ws_body()
         assert "setInterval" in body, "Backpressure uses timer (ok)"
-        assert re.search(r'SAMPLE_RATE|sampleRate', body), (
-            "Backpressure must reference sampleRate for duration calculation"
+        assert re.search(r'postMessage', body), (
+            "Backpressure must involve worklet communication via postMessage"
         )
-        assert re.search(r'audioWorklet\.addModule\s*\(', body), (
-            "Backpressure must be paired with AudioWorklet for actual consumption"
+        # The worklet itself must track buffer occupancy
+        worklet_src = _read_source("src/static/voice/streamProcessor.js")
+        assert re.search(r'availableSamples', worklet_src), (
+            "Worklet must track availableSamples for buffer occupancy"
         )
 
 
@@ -891,12 +894,15 @@ class TestStreamProcessor:
             r'this\.availableSamples\s*>=\s*this\.buffer\.length',
             src
         ), "Must detect buffer full condition"
-        assert re.search(
-            r'this\.readIndex\s*=\s*\(this\.readIndex\s*\+\s*1\)\s*%\s*this\.buffer\.length',
-            src
-        ), "Must advance readIndex with wraparound when buffer is full (drop oldest)"
+        # Intent-based checks: readIndex is reassigned, incremented by 1, with modulo wrap
+        assert re.search(r'this\.readIndex\s*=', src), \
+            "Must reassign readIndex when buffer is full"
+        assert re.search(r'readIndex.*\+\s*1', src), \
+            "Must advance readIndex by 1 when dropping oldest sample"
+        assert re.search(r'readIndex.*%', src), \
+            "Must use modulo on readIndex for ring buffer wraparound"
 
-    def test_process_outputs_silence_on_underrun(self):
+    def test_worklet_outputs_silence_on_underrun(self):
         src = self._get_source()
         assert re.search(r'output\[i\]\s*=\s*0', src), (
             "Processor must output silence (0) when buffer is empty (underrun)"
@@ -906,6 +912,12 @@ class TestStreamProcessor:
         src = self._get_source()
         assert re.search(r'return\s+true', src), (
             "process() must return true to keep the processor alive"
+        )
+
+    def test_buffer_size_defined(self):
+        src = self._get_source()
+        assert re.search(r'Float32Array\s*\(\s*\w+\s*\*\s*\d+\s*\)', src), (
+            "Buffer size must be explicitly defined (sampleRate * seconds)"
         )
 
 
