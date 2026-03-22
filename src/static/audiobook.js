@@ -1203,16 +1203,16 @@ async function generateAudiobookWS() {
         let audioCtx = null;
         let workletNode = null;
         const SAMPLE_RATE = 24000;
-        /** Virtual scheduled-end time derived from totalSamplesPushed. */
-        let scheduledTime = 0;
         let totalSamplesPushed = 0;
-        let playbackOrigin = 0;
         /** Last PCM sample value of the previous chunk, for waveform stitching. */
         let lastChunkFinalSample = 0;
-        /** Estimated buffered duration in seconds (for backpressure). */
+        /** Buffered duration in seconds — updated from worklet progress reports. */
         let bufferedSeconds = 0;
         const MAX_BUFFER_SECONDS = 8;
-        let backpressureInterval = null;
+        /** Overflow queue: chunks that couldn't be pushed due to backpressure. */
+        const overflowQueue = [];
+        /** Total samples played, reported by the AudioWorklet. */
+        let samplesPlayedByWorklet = 0;
 
         // ── PCM accumulation (for final WAV download) ─────────────────────
         /** All raw Int16Array chunks received during this session. */
@@ -1266,12 +1266,14 @@ async function generateAudiobookWS() {
                 workletNode.connect(audioCtx.destination);
                 _streamingWorkletNode = workletNode;
 
-                // Start backpressure drain timer (only drains while playing)
-                backpressureInterval = setInterval(() => {
-                    if (bufferedSeconds > 0 && audioCtx && audioCtx.state === 'running') {
-                        bufferedSeconds -= 0.1;
+                // Receive playback progress and buffer level from the AudioWorklet
+                workletNode.port.onmessage = (e) => {
+                    if (e.data.type === 'progress') {
+                        samplesPlayedByWorklet = e.data.samplesPlayed;
+                        bufferedSeconds = e.data.availableSamples / SAMPLE_RATE;
+                        drainOverflowQueue();
                     }
-                }, 100);
+                };
             }
             if (audioCtx.state === 'suspended') {
                 await audioCtx.resume();
@@ -1280,11 +1282,12 @@ async function generateAudiobookWS() {
 
         /**
          * Push a PCM int16 audio chunk into the AudioWorklet ring buffer.
-         * Handles int16→float32 conversion, validation, waveform stitching,
-         * and backpressure control.
+         * Handles int16→float32 conversion, validation, micro-crossfade for
+         * smooth transitions, and backpressure via overflow queue.
+         * Returns true if the chunk was pushed immediately, false if queued.
          */
         function pushAudioChunk(pcm16Array) {
-            if (!audioCtx || !workletNode) return;
+            if (!audioCtx || !workletNode) return true;
 
             // Convert int16 → float32, validate (skip corrupt chunks with non-finite
             // values), and hard-clamp to [-1, 1] — all in a single pass for efficiency.
@@ -1293,49 +1296,69 @@ async function generateAudiobookWS() {
                 const sample = pcm16Array[i] / 32768.0;
                 if (!Number.isFinite(sample)) {
                     console.warn('[AUDIOBOOK-WS] Skipping corrupt (non-finite) audio chunk');
-                    return;
+                    return true;
                 }
                 float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
             }
 
-            // Waveform-continuity stitching: smooth the boundary between
-            // consecutive chunks to eliminate PCM discontinuity clicks.
+            // Micro-crossfade: blend the start of this chunk with the end of the
+            // previous chunk over FADE_SAMPLES to eliminate click artifacts at
+            // chunk boundaries.
+            const FADE_SAMPLES = 128;
             if (float32.length > 0) {
-                float32[0] = (float32[0] + lastChunkFinalSample) / 2;
+                const fadeLen = Math.min(FADE_SAMPLES, float32.length);
+                for (let i = 0; i < fadeLen; i++) {
+                    const t = i / FADE_SAMPLES;
+                    float32[i] = float32[i] * t + lastChunkFinalSample * (1 - t);
+                }
                 lastChunkFinalSample = float32[float32.length - 1];
             }
 
-            // Backpressure: drop chunks if the buffer is overloaded
-            const duration = float32.length / SAMPLE_RATE;
-            if (bufferedSeconds > MAX_BUFFER_SECONDS) {
-                console.warn('[AUDIOBOOK-WS] Backpressure: dropping audio chunk');
-                return;
-            }
-            bufferedSeconds += duration;
-
-            // Track segment timing
-            if (totalSamplesPushed === 0) {
-                playbackOrigin = audioCtx.currentTime;
-            }
-            const chunkStartTime = playbackOrigin + totalSamplesPushed / SAMPLE_RATE;
+            // Track segment timing (always, even if chunk is queued)
+            const chunkStartTime = totalSamplesPushed / SAMPLE_RATE;
             totalSamplesPushed += float32.length;
-            scheduledTime = playbackOrigin + totalSamplesPushed / SAMPLE_RATE;
 
             // Latch the start time for the first chunk of the current segment
             if (pendingSegMeta !== null && pendingSegMeta.startTime < 0) {
                 pendingSegMeta.startTime = chunkStartTime;
             }
 
+            // Backpressure: queue chunks instead of dropping them
+            if (bufferedSeconds > MAX_BUFFER_SECONDS) {
+                overflowQueue.push(float32);
+                return false;
+            }
+
+            const duration = float32.length / SAMPLE_RATE;
+            bufferedSeconds += duration;
+
             workletNode.port.postMessage({
                 type: 'push',
                 samples: float32,
             });
+            return true;
+        }
+
+        /**
+         * Drain the overflow queue by pushing queued chunks to the worklet
+         * until the buffer is full again.
+         */
+        function drainOverflowQueue() {
+            while (overflowQueue.length > 0 && bufferedSeconds <= MAX_BUFFER_SECONDS) {
+                const chunk = overflowQueue.shift();
+                const duration = chunk.length / SAMPLE_RATE;
+                bufferedSeconds += duration;
+                workletNode.port.postMessage({
+                    type: 'push',
+                    samples: chunk,
+                });
+            }
         }
 
         function finalizeCurrentSegment() {
             if (pendingSegMeta !== null) {
                 if (pendingSegMeta.startTime >= 0) {
-                    pendingSegMeta.endTime = scheduledTime;
+                    pendingSegMeta.endTime = totalSamplesPushed / SAMPLE_RATE;
                     scheduledSegments.push(pendingSegMeta);
                 }
                 pendingSegMeta = null;
@@ -1344,21 +1367,22 @@ async function generateAudiobookWS() {
 
         /**
          * requestAnimationFrame loop that updates the subtitle display to match
-         * the currently playing audio based on AudioContext.currentTime.
+         * the currently playing audio based on the worklet's reported playback
+         * position (samples actually played).
          * Also updates _playbackOffset based on segment timing for accurate resume.
          */
         function updateSubtitlesLoop() {
             if (!audioCtx) return;
-            const now = audioCtx.currentTime;
+            const playbackTime = samplesPlayedByWorklet / SAMPLE_RATE;
             for (const seg of scheduledSegments) {
-                if (now >= seg.startTime && now < seg.endTime) {
+                if (playbackTime >= seg.startTime && playbackTime < seg.endTime) {
                     updateSegmentInfo(seg);
                     // Track playback position using segment timeline
                     _playbackOffset = seg.startTime;
                     break;
                 }
             }
-            if (!finished || now < scheduledTime) {
+            if (!finished || samplesPlayedByWorklet < totalSamplesPushed) {
                 subtitleRafId = requestAnimationFrame(updateSubtitlesLoop);
             }
         }
@@ -1390,10 +1414,7 @@ async function generateAudiobookWS() {
 
             // Compute where in the audio the streaming playback currently is so
             // that the full player can seek to the same position.
-            let seekToSeconds = 0;
-            if (audioCtx && scheduledSegments.length > 0 && scheduledSegments[0].startTime > 0) {
-                seekToSeconds = Math.max(0, audioCtx.currentTime - scheduledSegments[0].startTime);
-            }
+            let seekToSeconds = samplesPlayedByWorklet / SAMPLE_RATE;
             const wasPlaying = audiobookState.isPlaying;
 
             // Stop the subtitle RAF loop and tear down the AudioWorklet and
@@ -1401,10 +1422,6 @@ async function generateAudiobookWS() {
             if (subtitleRafId) {
                 cancelAnimationFrame(subtitleRafId);
                 subtitleRafId = null;
-            }
-            if (backpressureInterval) {
-                clearInterval(backpressureInterval);
-                backpressureInterval = null;
             }
             if (workletNode) {
                 workletNode.disconnect();
@@ -1524,11 +1541,11 @@ async function generateAudiobookWS() {
                             // never drain on its own when suspended.
                             if (!audiobookState.isPlaying || (audioCtx && audioCtx.state === 'suspended')) {
                                 buildAndShowFinalPlayer();
-                            } else if (audioCtx && scheduledTime > audioCtx.currentTime) {
-                                // Wait for scheduled audio to finish, then build the full player.
-                                // The extra 600 ms gives the AudioContext time to drain the last
-                                // buffer before we replace the player UI.
-                                const waitMs = (scheduledTime - audioCtx.currentTime) * 1000 + 600;
+                            } else if (bufferedSeconds > 0) {
+                                // Wait for buffered audio to finish playing, then build
+                                // the full player.  The extra 600 ms gives the worklet
+                                // time to drain the last samples.
+                                const waitMs = bufferedSeconds * 1000 + 600;
                                 updateStreamingStatus('Finishing playback…');
                                 setTimeout(buildAndShowFinalPlayer, waitMs);
                             } else {
@@ -1578,10 +1595,6 @@ async function generateAudiobookWS() {
                         if (subtitleRafId) {
                             cancelAnimationFrame(subtitleRafId);
                             subtitleRafId = null;
-                        }
-                        if (backpressureInterval) {
-                            clearInterval(backpressureInterval);
-                            backpressureInterval = null;
                         }
                         // audioCtx / workletNode already closed by stopStreamingAudio
                         workletNode = null;
