@@ -363,6 +363,31 @@ async function processRemainingPages(sessionId) {
                 if (data.success && data.segments) {
                     audiobookState.segments = audiobookState.segments.concat(data.segments);
                     audiobookState.totalSegments = audiobookState.segments.length;
+
+                    // Detect new speakers from this page and update the UI immediately
+                    const pageSpeakers = data.speakers || [];
+                    const availableVoices = audiobookState._availableVoices || [];
+                    let foundNew = false;
+                    for (const sp of pageSpeakers) {
+                        if (!sp || !sp.trim() || audiobookState.speakers[sp]) continue;
+                        const segCount = data.segments.filter(s => s.speaker === sp).length;
+                        audiobookState.speakers[sp] = {
+                            name: sp,
+                            gender: 'neutral',
+                            segment_count: segCount,
+                            suggested_voice: '',
+                        };
+                        // Background pages don't include gender scores, so use a neutral
+                        // score which falls back to the full voice pool in assignClonedVoice.
+                        const voiceId = assignClonedVoice(sp, { male: 0, female: 0 }, availableVoices);
+                        if (voiceId) {
+                            audiobookState.voiceMapping[_normalizeKey(sp)] = voiceId;
+                        }
+                        foundNew = true;
+                    }
+                    if (foundNew) {
+                        refreshSpeakersUI();
+                    }
                 }
             } catch (e) {
                 console.warn('[AUDIOBOOK] Error processing remaining page:', e);
@@ -828,9 +853,70 @@ async function displaySpeakers(speakers, segments) {
     autoSelectDefaultVoices(availableVoices);
 }
 
+/**
+ * Lightweight refresh of the "Individual Speakers" section.
+ * Appends rows for any speakers that are in audiobookState.speakers but
+ * not yet rendered in the UI.  Called when background page processing
+ * discovers new characters so the user can assign them voices without
+ * triggering a full displaySpeakers() re-render (which makes API calls
+ * and resets existing voice selections).
+ */
+function refreshSpeakersUI() {
+    if (!audiobookSpeakersList || !audiobookSpeakersSection) return;
+
+    const assignmentsDiv = audiobookSpeakersList.querySelector('.audiobook-speaker-assignments');
+    if (!assignmentsDiv) return;
+
+    // Build the set of speaker names already present in the DOM
+    const existing = new Set(
+        Array.from(assignmentsDiv.querySelectorAll('.speaker-voice-select'))
+            .map(s => s.dataset.speaker)
+    );
+
+    // Collect available voice ID strings (stored as {id, gender} objects)
+    const availableVoices = (audiobookState._availableVoices || []).map(v => v.id || v);
+
+    let added = false;
+    for (const [speakerName, speakerInfo] of Object.entries(audiobookState.speakers)) {
+        if (existing.has(speakerName)) continue;
+
+        const gender = speakerInfo.gender || 'neutral';
+        const segmentCount = speakerInfo.segment_count || 0;
+        const currentVoice = audiobookState.voiceMapping[_normalizeKey(speakerName)] || '';
+
+        const row = document.createElement('div');
+        row.className = 'speaker-assignment-row';
+        row.dataset.gender = gender;
+        const optionsHtml = availableVoices.map(v =>
+            `<option value="${_escapeHtml(v)}"${v === currentVoice ? ' selected' : ''}>${_escapeHtml(v)}</option>`
+        ).join('');
+        row.innerHTML =
+            `<div class="speaker-info">` +
+            `<span class="speaker-name">${_escapeHtml(speakerName)}</span>` +
+            `<span class="speaker-meta">${gender} • ${segmentCount} segments</span>` +
+            `</div>` +
+            `<select class="speaker-voice-select" data-speaker="${_escapeHtml(speakerName)}"` +
+            ` onchange="updateVoiceMapping('${_escapeHtml(speakerName)}', this.value)">` +
+            `<option value="">-- Auto --</option>${optionsHtml}</select>`;
+        assignmentsDiv.appendChild(row);
+        added = true;
+    }
+
+    if (added) {
+        audiobookSpeakersSection.style.display = 'block';
+        // Update the summary counts
+        const summaryDiv = audiobookSpeakersList.querySelector('.audiobook-summary');
+        if (summaryDiv) {
+            summaryDiv.innerHTML =
+                `<p><strong>Total Segments:</strong> ${audiobookState.segments.length}</p>` +
+                `<p><strong>Unique Speakers:</strong> ${Object.keys(audiobookState.speakers).length}</p>`;
+        }
+        syncVoicePanelFromSpeakerSelections();
+    }
+}
+
 // Auto-select default voices
 function autoSelectDefaultVoices(availableVoices) {
-    // Try to find female voice
     const femaleVoice = availableVoices.find(v => 
         ['sofia', 'emma', 'olivia', 'her', 'ciri', 'serena', 'sohee'].some(n => v.toLowerCase().includes(n))
     );
@@ -1193,8 +1279,6 @@ async function generateAudiobookWS() {
                 float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
             }
 
-            applyFadeFloat32(float32);
-
             const audioBuffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
             audioBuffer.getChannelData(0).set(float32);
 
@@ -1226,6 +1310,13 @@ async function generateAudiobookWS() {
             }
 
             source.start(scheduledTime);
+            // Disconnect nodes once playback finishes to prevent the Web Audio
+            // graph from accumulating thousands of stale nodes during long books,
+            // which causes static artifacts and memory pressure.
+            source.onended = () => {
+                source.disconnect();
+                gainNode.disconnect();
+            };
             // Overlap by CHUNK_OVERLAP_SECONDS to blend adjacent chunks and
             // avoid the discontinuity click between buffers.
             scheduledTime += audioBuffer.duration - CHUNK_OVERLAP_SECONDS;
