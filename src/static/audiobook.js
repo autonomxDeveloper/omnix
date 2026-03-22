@@ -1213,10 +1213,14 @@ async function generateAudiobookWS() {
         const MAX_BUFFER_SECONDS = 8;
         /** Overflow queue: chunks that couldn't be pushed due to backpressure. */
         const overflowQueue = [];
+        /** Incremental sample count in overflowQueue for O(1) duration checks. */
+        let overflowQueueSamples = 0;
         /** Maximum overflow queue duration in seconds before trimming oldest. */
         const MAX_QUEUE_SECONDS = 20;
         /** Total samples played, reported by the AudioWorklet. */
         let samplesPlayedByWorklet = 0;
+        /** Timestamp of last worklet progress report, for playback interpolation. */
+        let lastProgressTimestamp = 0;
 
         // ── PCM accumulation (for final WAV download) ─────────────────────
         /** All raw Int16Array chunks received during this session. */
@@ -1265,6 +1269,10 @@ async function generateAudiobookWS() {
                 });
                 _streamingAudioCtx = audioCtx;
 
+                // Reset crossfade state for new stream
+                previousTail = null;
+                lastChunkFinalSample = 0;
+
                 await audioCtx.audioWorklet.addModule('/static/voice/streamProcessor.js');
                 workletNode = new AudioWorkletNode(audioCtx, 'stream-processor', {
                     processorOptions: { sampleRate: SAMPLE_RATE }
@@ -1276,6 +1284,7 @@ async function generateAudiobookWS() {
                 workletNode.port.onmessage = (e) => {
                     if (e.data.type === 'progress') {
                         samplesPlayedByWorklet = e.data.samplesPlayed;
+                        lastProgressTimestamp = audioCtx ? audioCtx.currentTime : 0;
                         bufferedSeconds = e.data.availableSamples / SAMPLE_RATE;
                         drainOverflowQueue();
                     }
@@ -1310,15 +1319,25 @@ async function generateAudiobookWS() {
 
             // Micro-crossfade: blend the start of this chunk with the tail window
             // of the previous chunk over FADE_SAMPLES to eliminate click artifacts
-            // at chunk boundaries.
+            // at chunk boundaries.  Tail alignment is end-aligned so waveform
+            // phases match even when previousTail is shorter than fadeLen.
             const FADE_SAMPLES = 128;
             if (float32.length > 0) {
                 const fadeLen = Math.min(FADE_SAMPLES, float32.length);
+                const tailLen = previousTail ? previousTail.length : 0;
                 for (let i = 0; i < fadeLen; i++) {
                     const t = i / fadeLen;
-                    const prev = (previousTail && i < previousTail.length)
-                        ? previousTail[i] : lastChunkFinalSample;
-                    float32[i] = float32[i] * t + prev * (1 - t);
+                    let prev;
+                    if (previousTail && tailLen >= fadeLen) {
+                        prev = previousTail[tailLen - fadeLen + i];
+                    } else if (previousTail && tailLen > 0) {
+                        const idx = Math.max(0, i - (fadeLen - tailLen));
+                        prev = idx < tailLen ? previousTail[idx] : lastChunkFinalSample;
+                    } else {
+                        prev = lastChunkFinalSample;
+                    }
+                    const curr = float32[i];
+                    float32[i] = curr * t + prev * (1 - t);
                 }
                 previousTail = float32.slice(-FADE_SAMPLES);
                 lastChunkFinalSample = float32[float32.length - 1];
@@ -1336,6 +1355,7 @@ async function generateAudiobookWS() {
             // Backpressure: queue chunks instead of dropping them
             if (bufferedSeconds > MAX_BUFFER_SECONDS) {
                 overflowQueue.push(float32);
+                overflowQueueSamples += float32.length;
                 // Trim oldest if overflow queue exceeds MAX_QUEUE_SECONDS
                 trimOverflowQueue();
                 return false;
@@ -1353,14 +1373,13 @@ async function generateAudiobookWS() {
 
         /**
          * Trim the overflow queue if total duration exceeds MAX_QUEUE_SECONDS
-         * to prevent unbounded memory growth.
+         * to prevent unbounded memory growth.  Uses incremental
+         * overflowQueueSamples counter for O(1) duration checks.
          */
         function trimOverflowQueue() {
-            let totalSamples = 0;
-            for (const c of overflowQueue) totalSamples += c.length;
-            while (totalSamples / SAMPLE_RATE > MAX_QUEUE_SECONDS && overflowQueue.length > 1) {
+            while (overflowQueueSamples / SAMPLE_RATE > MAX_QUEUE_SECONDS && overflowQueue.length > 1) {
                 const removed = overflowQueue.shift();
-                totalSamples -= removed.length;
+                overflowQueueSamples -= removed.length;
                 console.warn('[AUDIOBOOK-WS] Overflow queue too large, trimming oldest chunk');
             }
         }
@@ -1368,14 +1387,18 @@ async function generateAudiobookWS() {
         /**
          * Drain the overflow queue by pushing queued chunks to the worklet
          * until the buffer is full again.  Checks each chunk's size before
-         * pushing to avoid overshooting the buffer limit.
+         * pushing to avoid overshooting the buffer limit.  A small allowance
+         * prevents starvation when chunks are large relative to remaining
+         * buffer space.
          */
+        const DRAIN_ALLOWANCE = 0.25; // seconds
         function drainOverflowQueue() {
             while (
                 overflowQueue.length > 0 &&
-                bufferedSeconds + (overflowQueue[0].length / SAMPLE_RATE) <= MAX_BUFFER_SECONDS
+                bufferedSeconds + (overflowQueue[0].length / SAMPLE_RATE) <= MAX_BUFFER_SECONDS + DRAIN_ALLOWANCE
             ) {
                 const chunk = overflowQueue.shift();
+                overflowQueueSamples -= chunk.length;
                 const duration = chunk.length / SAMPLE_RATE;
                 bufferedSeconds += duration;
                 workletNode.port.postMessage({
@@ -1399,11 +1422,14 @@ async function generateAudiobookWS() {
          * requestAnimationFrame loop that updates the subtitle display to match
          * the currently playing audio based on the worklet's reported playback
          * position (samples actually played).
+         * Interpolates between progress reports for smooth 60fps subtitle movement.
          * Also updates _playbackOffset based on segment timing for accurate resume.
          */
         function updateSubtitlesLoop() {
             if (!audioCtx) return;
-            const playbackTime = (samplesPlayedByWorklet || 0) / SAMPLE_RATE;
+            const baseTime = (samplesPlayedByWorklet || 0) / SAMPLE_RATE;
+            const elapsed = lastProgressTimestamp > 0 ? (audioCtx.currentTime - lastProgressTimestamp) : 0;
+            const playbackTime = baseTime + Math.max(0, elapsed);
             for (const seg of scheduledSegments) {
                 if (playbackTime >= seg.startTime && playbackTime < seg.endTime) {
                     updateSegmentInfo(seg);
@@ -1509,7 +1535,9 @@ async function generateAudiobookWS() {
                 }
                 await initAudio();
                 allPcmChunks.push(pcm16);
-                pushAudioChunk(pcm16);
+                if (!pushAudioChunk(pcm16)) {
+                    console.warn('[AUDIOBOOK-WS] pushAudioChunk returned false — chunk queued or lost');
+                }
 
                 if (!playbackStarted) {
                     playbackStarted = true;
