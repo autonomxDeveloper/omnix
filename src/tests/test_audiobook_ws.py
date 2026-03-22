@@ -669,22 +669,25 @@ class TestAudioWorkletStreaming:
         )
 
     def test_waveform_stitching_present(self):
-        """Waveform stitching must smooth the boundary between consecutive chunks
-        by averaging the first sample with the previous chunk's last sample."""
+        """Micro-crossfade must smooth the boundary between consecutive chunks
+        using a multi-sample fade with the previous chunk's last sample."""
         body = self._get_ws_body()
-        assert re.search(r'float32\s*\[\s*0\s*\]\s*=', body), (
-            "Must assign to float32[0] for waveform boundary stitching"
+        assert re.search(r'FADE_SAMPLES', body), (
+            "Must define FADE_SAMPLES for micro-crossfade at chunk boundaries"
         )
         assert re.search(r'last.*Sample', body), (
             "Must track the last sample from the previous chunk for stitching"
         )
 
     def test_backpressure_considers_audio_consumption(self):
-        """Backpressure must be linked to actual audio consumption, not just
-        a timer.  The worklet must use postMessage for pushing data and
-        track buffer occupancy via availableSamples."""
+        """Backpressure must be driven by real worklet progress reports —
+        bufferedSeconds is updated from the worklet's availableSamples, not
+        a setInterval timer.  The worklet sends postMessage progress reports
+        and tracks buffer occupancy via availableSamples."""
         body = self._get_ws_body()
-        assert "setInterval" in body, "Backpressure uses timer (ok)"
+        assert re.search(r'port\.onmessage', body), (
+            "Must receive worklet progress messages via port.onmessage"
+        )
         assert re.search(r'postMessage', body), (
             "Backpressure must involve worklet communication via postMessage"
         )
@@ -1036,29 +1039,55 @@ class TestWorkletProcessorBackwardsCompat:
 
 
 # ---------------------------------------------------------------------------
-# Audiobook: NO crossfade in pushAudioChunk (handled by worklet only)
+# Audiobook: micro-crossfade in pushAudioChunk (streamProcessor has no crossfade)
 # ---------------------------------------------------------------------------
 
-class TestAudiobookNoCrossfade:
-    """Verify audiobook.js does NOT apply crossfade in pushAudioChunk — crossfade
-    must only happen in the AudioWorklet to avoid double-blending."""
+class TestAudiobookMicroCrossfade:
+    """Verify audiobook.js applies a micro-crossfade in pushAudioChunk using a
+    tail window (previousTail) for proper blending, not just a single sample.
+    The crossfade uses FADE_SAMPLES (not the legacy CROSSFADE_LEN /
+    lastScheduledFloat32 approach)."""
 
     def _get_push_chunk_body(self):
         content = _read_source("src/static/audiobook.js")
         match = re.search(
-            r'function pushAudioChunk\s*\(.*?\{.*?(?=\n        \}\n\n        function )',
+            r'function pushAudioChunk\s*\(.*?\{.*?(?=\n        \}\n\n)',
             content, re.DOTALL
         )
         assert match, "pushAudioChunk must be defined inside generateAudiobookWS"
         return match.group(0)
 
-    def test_no_crossfade_in_push_chunk(self):
+    def test_micro_crossfade_present(self):
+        body = self._get_push_chunk_body()
+        assert "FADE_SAMPLES" in body, (
+            "pushAudioChunk must define FADE_SAMPLES for micro-crossfade"
+        )
+        assert re.search(r'lastChunkFinalSample', body), (
+            "pushAudioChunk must track lastChunkFinalSample for crossfade"
+        )
+
+    def test_crossfade_uses_tail_window(self):
+        """Crossfade must blend against a previousTail window with proper
+        end-alignment for temporal phase continuity, not just indexed from 0."""
+        body = self._get_push_chunk_body()
+        assert "previousTail" in body, (
+            "pushAudioChunk must use previousTail window for crossfade blending"
+        )
+        assert re.search(r'\.slice\s*\(\s*-\s*FADE_SAMPLES\s*\)', body), (
+            "Must store tail window via float32.slice(-FADE_SAMPLES)"
+        )
+        # Verify end-aligned indexing for proper temporal alignment
+        assert re.search(r'tailLen\s*-\s*fadeLen', body), (
+            "Crossfade must use end-aligned indexing (tailLen - fadeLen) for phase alignment"
+        )
+
+    def test_no_legacy_crossfade(self):
         body = self._get_push_chunk_body()
         assert "lastScheduledFloat32" not in body, (
-            "pushAudioChunk must NOT have crossfade — it is handled by the AudioWorklet"
+            "pushAudioChunk must NOT use legacy lastScheduledFloat32 variable"
         )
         assert "CROSSFADE_LEN" not in body, (
-            "pushAudioChunk must NOT define CROSSFADE_LEN"
+            "pushAudioChunk must NOT define legacy CROSSFADE_LEN"
         )
 
     def test_no_last_scheduled_variable(self):
@@ -1071,6 +1100,236 @@ class TestAudiobookNoCrossfade:
         body = match.group(0)
         assert "lastScheduledFloat32" not in body, (
             "generateAudiobookWS must NOT declare lastScheduledFloat32 variable"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Playback-driven audio pipeline
+# ---------------------------------------------------------------------------
+
+class TestPlaybackDrivenPipeline:
+    """Verify the audiobook pipeline is playback-driven: subtitle sync follows
+    actual audio playback position reported by the worklet, not generation rate.
+    Buffer tracking uses real worklet data, not a setInterval timer."""
+
+    def _get_ws_body(self):
+        content = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function generateAudiobookWS.*?(?=\nfunction |\n// ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match
+        return match.group(0)
+
+    def test_no_setinterval_drain_timer(self):
+        """bufferedSeconds must NOT use a setInterval drain timer — it must
+        be updated from the worklet's reported availableSamples."""
+        body = self._get_ws_body()
+        assert "setInterval" not in body, (
+            "Must NOT use setInterval for buffer drain — use worklet progress reports"
+        )
+
+    def test_samples_played_by_worklet_tracked(self):
+        """Main thread must track samplesPlayedByWorklet from worklet messages."""
+        body = self._get_ws_body()
+        assert "samplesPlayedByWorklet" in body, (
+            "Must track samplesPlayedByWorklet for playback-driven sync"
+        )
+
+    def test_subtitle_uses_playback_time(self):
+        """Subtitle loop must use samplesPlayedByWorklet-based playbackTime for
+        segment matching.  audioCtx.currentTime may be used for interpolation
+        but must NOT be used directly in segment comparisons."""
+        body = self._get_ws_body()
+        # Find the updateSubtitlesLoop function (match up to the next function def)
+        match = re.search(
+            r'function updateSubtitlesLoop\b.*?(?=\n\s+function |\Z)',
+            body, re.DOTALL
+        )
+        assert match, "updateSubtitlesLoop must exist"
+        loop_body = match.group(0)
+        assert "samplesPlayedByWorklet" in loop_body, (
+            "Subtitle loop must use samplesPlayedByWorklet for playback-driven sync"
+        )
+        # Segment comparison must use playbackTime, not raw audioCtx.currentTime
+        assert re.search(r'playbackTime\s*>=\s*seg\.startTime', loop_body), (
+            "Segment comparison must use playbackTime (derived from worklet), not audioCtx.currentTime"
+        )
+        # audioCtx.currentTime must NOT be used directly in segment condition
+        assert not re.search(r'audioCtx\.currentTime\s*>=\s*seg', loop_body), (
+            "Segment comparison must NOT use audioCtx.currentTime directly"
+        )
+
+    def test_overflow_queue_present(self):
+        """Backpressure must queue chunks instead of dropping them."""
+        body = self._get_ws_body()
+        assert "overflowQueue" in body, (
+            "Must have an overflow queue for backpressure (no dropping)"
+        )
+
+    def test_overflow_queue_bounded(self):
+        """Overflow queue must be bounded by MAX_QUEUE_SECONDS to prevent
+        unbounded memory growth.  Must use incremental sample tracking."""
+        body = self._get_ws_body()
+        assert "MAX_QUEUE_SECONDS" in body, (
+            "Must define MAX_QUEUE_SECONDS to bound overflow queue"
+        )
+        assert "trimOverflowQueue" in body, (
+            "Must have trimOverflowQueue function to enforce the limit"
+        )
+        assert "overflowQueueSamples" in body, (
+            "Must track overflowQueueSamples incrementally for O(1) duration checks"
+        )
+        assert re.search(r'>\s*MAX_QUEUE_SECONDS', body), (
+            "trimOverflowQueue must compare against MAX_QUEUE_SECONDS"
+        )
+
+    def test_drain_overflow_queue_exists(self):
+        """Must have a drainOverflowQueue function to push queued chunks."""
+        body = self._get_ws_body()
+        assert "drainOverflowQueue" in body, (
+            "Must have drainOverflowQueue function for backpressure release"
+        )
+
+    def test_drain_checks_chunk_size(self):
+        """drainOverflowQueue must check the next chunk's size before pushing
+        to avoid overshooting the buffer limit."""
+        body = self._get_ws_body()
+        match = re.search(
+            r'function drainOverflowQueue\b.*?(?=\n        function |\Z)',
+            body, re.DOTALL
+        )
+        assert match, "drainOverflowQueue must exist"
+        drain_body = match.group(0)
+        assert re.search(r'overflowQueue\[0\]\.length', drain_body), (
+            "drainOverflowQueue must check overflowQueue[0].length before pushing"
+        )
+
+    def test_no_chunk_dropping(self):
+        """pushAudioChunk must NOT drop chunks — overflow queue instead."""
+        body = self._get_ws_body()
+        assert "dropping audio chunk" not in body, (
+            "Must NOT drop audio chunks — use overflow queue instead"
+        )
+
+    def test_push_returns_false_when_no_context(self):
+        """pushAudioChunk must return false when audioCtx or workletNode is null."""
+        body = self._get_ws_body()
+        match = re.search(
+            r'function pushAudioChunk\s*\(.*?\{.*?(?=\n        \}\n\n)',
+            body, re.DOTALL
+        )
+        assert match, "pushAudioChunk must exist"
+        push_body = match.group(0)
+        assert re.search(r'return false', push_body), (
+            "pushAudioChunk must return false when audioCtx/workletNode is unavailable"
+        )
+
+    def test_worklet_reports_progress(self):
+        """The AudioWorklet must send progress messages with samplesPlayed."""
+        worklet_src = _read_source("src/static/voice/streamProcessor.js")
+        assert "totalSamplesPlayed" in worklet_src, (
+            "Worklet must track totalSamplesPlayed for progress reporting"
+        )
+        assert re.search(r'samplesPlayed', worklet_src), (
+            "Worklet must send samplesPlayed in progress messages"
+        )
+
+    def test_worklet_reports_available_samples(self):
+        """The AudioWorklet must send availableSamples in progress messages."""
+        worklet_src = _read_source("src/static/voice/streamProcessor.js")
+        assert re.search(
+            r'postMessage\s*\(\s*\{[^}]*availableSamples',
+            worklet_src
+        ), "Worklet must include availableSamples in progress messages"
+
+    def test_worklet_accepts_sample_rate(self):
+        """The StreamProcessor must accept sampleRate from processorOptions."""
+        worklet_src = _read_source("src/static/voice/streamProcessor.js")
+        assert "processorOptions" in worklet_src, (
+            "Worklet must accept processorOptions for sample rate configuration"
+        )
+
+    def test_worklet_node_passes_sample_rate(self):
+        """AudioWorkletNode must pass sampleRate via processorOptions."""
+        body = self._get_ws_body()
+        assert re.search(r'processorOptions\s*:', body), (
+            "Must pass processorOptions when creating AudioWorkletNode"
+        )
+        assert re.search(r'sampleRate\s*:', body), (
+            "processorOptions must include sampleRate"
+        )
+
+    def test_segment_timing_relative(self):
+        """Segment timing must be relative to 0 (cumulative samples pushed),
+        not offset by playbackOrigin."""
+        body = self._get_ws_body()
+        assert "playbackOrigin" not in body, (
+            "Segment timing must NOT use playbackOrigin — use relative timing from 0"
+        )
+
+    def test_samples_played_guarded(self):
+        """samplesPlayedByWorklet must be guarded against undefined with || 0."""
+        body = self._get_ws_body()
+        assert re.search(r'\(samplesPlayedByWorklet\s*\|\|\s*0\)', body), (
+            "Must guard samplesPlayedByWorklet with || 0 for safety"
+        )
+
+    def test_no_dropped_chunks(self):
+        """Audio must NEVER be silently dropped — pushAudioChunk must push to
+        overflowQueue on backpressure and return false for caller to detect."""
+        body = self._get_ws_body()
+        match = re.search(
+            r'function pushAudioChunk\s*\(.*?\{.*?(?=\n        \}\n\n)',
+            body, re.DOTALL
+        )
+        assert match, "pushAudioChunk must exist"
+        push_body = match.group(0)
+        assert "overflowQueue.push" in push_body, (
+            "pushAudioChunk must push to overflowQueue on backpressure"
+        )
+        assert "return false" in push_body, (
+            "pushAudioChunk must return false when chunk is queued or not accepted"
+        )
+
+    def test_previous_tail_reset(self):
+        """previousTail must be reset to null on new stream to prevent old
+        tail bleeding into new audio."""
+        body = self._get_ws_body()
+        assert re.search(r'previousTail\s*=\s*null', body), (
+            "previousTail must be reset to null on new stream (in initAudio)"
+        )
+
+    def test_drain_allowance(self):
+        """drainOverflowQueue must allow slight overshoot to prevent queue
+        starvation when chunks are large."""
+        body = self._get_ws_body()
+        assert "DRAIN_ALLOWANCE" in body, (
+            "Must define DRAIN_ALLOWANCE for drain overshoot tolerance"
+        )
+
+    def test_playback_time_interpolation(self):
+        """Subtitle loop must interpolate playback time between worklet
+        progress reports for smooth 60fps subtitle movement."""
+        body = self._get_ws_body()
+        assert "lastProgressTimestamp" in body, (
+            "Must track lastProgressTimestamp for playback time interpolation"
+        )
+        match = re.search(
+            r'function updateSubtitlesLoop\b.*?(?=\n\s+function |\Z)',
+            body, re.DOTALL
+        )
+        assert match, "updateSubtitlesLoop must exist"
+        loop_body = match.group(0)
+        assert "lastProgressTimestamp" in loop_body, (
+            "Subtitle loop must use lastProgressTimestamp for interpolation"
+        )
+
+    def test_caller_handles_push_return(self):
+        """The caller of pushAudioChunk must check its return value."""
+        body = self._get_ws_body()
+        assert re.search(r'if\s*\(\s*!pushAudioChunk', body), (
+            "Caller must check pushAudioChunk return value with if (!pushAudioChunk(...))"
         )
 
 
