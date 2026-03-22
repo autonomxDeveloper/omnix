@@ -404,19 +404,19 @@ class TestVoiceMappingNormalisation:
 
 class TestPcmChunkValidation:
     """Verify that the WebSocket binary handler validates PCM chunk integrity
-    before scheduling playback, to prevent squeaking noise from corrupted data."""
+    before pushing to the AudioWorklet, to prevent noise from corrupted data."""
 
     def test_odd_byte_length_check(self):
         content = _read_source("src/static/audiobook.js")
         # Must check that byteLength is even before creating Int16Array
-        assert "byteLength % 2" in content, (
+        assert re.search(r'byteLength\s*%\s*2', content), (
             "audiobook.js WS handler must reject odd-length PCM chunks"
         )
 
     def test_minimum_sample_count_check(self):
         content = _read_source("src/static/audiobook.js")
         # Must skip chunks that are too short
-        assert "pcm16.length < 100" in content, (
+        assert re.search(r'pcm16\.length\s*<\s*100', content), (
             "audiobook.js WS handler must skip chunks with fewer than 100 samples"
         )
 
@@ -430,14 +430,15 @@ class TestPcmChunkValidation:
         assert match, "generateAudiobookWS must exist"
         body = match.group(0)
         # Find the onmessage handler section
-        onmessage_match = re.search(r'ws\.onmessage.*', body, re.DOTALL)
+        onmessage_match = re.search(r'ws\.onmessage\s*=', body, re.DOTALL)
         assert onmessage_match, "Must have onmessage handler"
-        onmessage_body = onmessage_match.group(0)
-        odd_idx = onmessage_body.find("byteLength % 2")
-        schedule_call_idx = onmessage_body.find("pushAudioChunk(pcm16")
-        assert odd_idx != -1, "onmessage handler must check odd byte length"
-        assert schedule_call_idx != -1, "onmessage handler must call pushAudioChunk"
-        assert odd_idx < schedule_call_idx, "Validation must precede pushAudioChunk call"
+        onmessage_body = body[onmessage_match.start():]
+        odd_match = re.search(r'byteLength\s*%\s*2', onmessage_body)
+        push_match = re.search(r'pushAudioChunk\s*\(', onmessage_body)
+        assert odd_match, "onmessage handler must check odd byte length"
+        assert push_match, "onmessage handler must call pushAudioChunk"
+        assert odd_match.start() < push_match.start(), \
+            "Validation must precede pushAudioChunk call"
 
 
 # ---------------------------------------------------------------------------
@@ -573,17 +574,18 @@ class TestFloat32SampleValidation:
 
     def test_nan_check_present(self):
         body = self._get_push_chunk_body()
-        assert "isFinite" in body, (
+        assert re.search(r'Number\.isFinite\s*\(', body) or \
+               re.search(r'isFinite\s*\(', body), (
             "pushAudioChunk must check Number.isFinite to skip corrupt samples"
         )
 
     def test_hard_clamp_present(self):
         body = self._get_push_chunk_body()
-        # The clamp: float32[i] > 1 → 1; float32[i] < -1 → -1
-        assert "> 1" in body or "> 1.0" in body, (
+        # The clamp: sample > 1 → 1; sample < -1 → -1
+        assert re.search(r'>\s*1(\s|;|\?|:)', body), (
             "pushAudioChunk must hard-clamp values above 1"
         )
-        assert "< -1" in body or "< -1.0" in body, (
+        assert re.search(r'<\s*-1(\s|;|\?|:)', body), (
             "pushAudioChunk must hard-clamp values below -1"
         )
 
@@ -591,11 +593,12 @@ class TestFloat32SampleValidation:
         """The NaN/isFinite check must happen before postMessage to avoid
         sending corrupt data to the AudioWorklet ring buffer."""
         body = self._get_push_chunk_body()
-        nan_idx = body.find("isFinite")
-        post_idx = body.find("postMessage")
-        assert nan_idx != -1, "pushAudioChunk must call isFinite"
-        assert post_idx != -1, "pushAudioChunk must call postMessage"
-        assert nan_idx < post_idx, "isFinite check must precede postMessage"
+        nan_match = re.search(r'isFinite\s*\(', body)
+        post_match = re.search(r'\.postMessage\s*\(\s*\{[^}]*type\s*:\s*["\']push["\']', body)
+        assert nan_match, "pushAudioChunk must call isFinite"
+        assert post_match, "pushAudioChunk must postMessage with type 'push'"
+        assert nan_match.start() < post_match.start(), \
+            "isFinite check must precede postMessage"
 
 
 # ---------------------------------------------------------------------------
@@ -617,37 +620,37 @@ class TestAudioWorkletStreaming:
 
     def test_audioworklet_module_loaded(self):
         body = self._get_ws_body()
-        assert "audioWorklet.addModule" in body, (
+        assert re.search(r'audioWorklet\.addModule\s*\(', body), (
             "Must load AudioWorklet module via audioWorklet.addModule"
         )
-        assert "streamProcessor" in body, (
+        assert re.search(r'streamProcessor', body), (
             "Must load the streamProcessor.js AudioWorklet module"
         )
 
     def test_worklet_node_created(self):
         body = self._get_ws_body()
-        assert "AudioWorkletNode" in body, (
+        assert re.search(r'new\s+AudioWorkletNode\s*\(', body), (
             "Must create an AudioWorkletNode for streaming playback"
         )
-        assert "stream-processor" in body, (
+        assert re.search(r'["\']stream-processor["\']', body), (
             "Must use 'stream-processor' as the registered processor name"
         )
 
     def test_worklet_connected_to_destination(self):
         body = self._get_ws_body()
-        assert "workletNode.connect(audioCtx.destination)" in body, (
+        assert re.search(r'workletNode\.connect\s*\(\s*audioCtx\.destination\s*\)', body), (
             "AudioWorkletNode must connect to audioCtx.destination"
         )
 
     def test_push_via_postmessage(self):
         body = self._get_ws_body()
-        assert "workletNode.port.postMessage" in body, (
-            "Must push audio data via workletNode.port.postMessage"
+        assert re.search(r'\.port\.postMessage\s*\(\s*\{[^}]*type\s*:\s*["\']push["\']', body), (
+            "Must push audio data via workletNode.port.postMessage with type 'push'"
         )
 
     def test_backpressure_control(self):
         body = self._get_ws_body()
-        assert "MAX_BUFFER_SECONDS" in body, (
+        assert re.search(r'MAX_BUFFER_SECONDS\s*=\s*\d+', body), (
             "Must define MAX_BUFFER_SECONDS for backpressure control"
         )
         assert "bufferedSeconds" in body, (
@@ -660,8 +663,41 @@ class TestAudioWorkletStreaming:
         assert "createBufferSource" not in body, (
             "Must NOT use AudioBufferSourceNode — use AudioWorklet ring buffer instead"
         )
-        assert "source.start" not in body, (
+        assert not re.search(r'source\.start\s*\(', body), (
             "Must NOT use source.start() scheduling — use AudioWorklet instead"
+        )
+
+    def test_no_scheduling_logic_present(self):
+        """Continuous playback: no per-chunk AudioBufferSourceNode scheduling."""
+        body = self._get_ws_body()
+        assert "createBufferSource" not in body, (
+            "Must NOT use createBufferSource — AudioWorklet handles continuous playback"
+        )
+        assert not re.search(r'source\.start\s*\(', body), (
+            "Must NOT use source.start() — AudioWorklet handles continuous playback"
+        )
+
+    def test_waveform_stitching_present(self):
+        """Waveform stitching must smooth the boundary between consecutive chunks."""
+        body = self._get_ws_body()
+        assert "lastChunkFinalSample" in body, (
+            "Must track lastChunkFinalSample for waveform stitching"
+        )
+        assert re.search(r'/\s*2\b', body), (
+            "Waveform stitching (sample averaging with / 2) must be present"
+        )
+
+    def test_backpressure_considers_audio_consumption(self):
+        """Backpressure must be linked to actual audio consumption, not just
+        a timer.  At minimum, SAMPLE_RATE must be referenced for duration
+        calculation and AudioWorklet must be used for actual playback."""
+        body = self._get_ws_body()
+        assert "setInterval" in body, "Backpressure uses timer (ok)"
+        assert re.search(r'SAMPLE_RATE|sampleRate', body), (
+            "Backpressure must reference sampleRate for duration calculation"
+        )
+        assert re.search(r'audioWorklet\.addModule\s*\(', body), (
+            "Backpressure must be paired with AudioWorklet for actual consumption"
         )
 
 
@@ -833,37 +869,51 @@ class TestStreamProcessor:
 
     def test_registers_processor(self):
         src = self._get_source()
-        assert 'registerProcessor("stream-processor"' in src, (
-            "Must register as 'stream-processor' AudioWorklet processor"
+        assert re.search(r'registerProcessor\s*\(\s*["\']stream-processor["\']', src), (
+            "Processor must be registered with exact name 'stream-processor'"
         )
 
     def test_ring_buffer_structure(self):
         src = self._get_source()
-        assert "writeIndex" in src, "Must have writeIndex for ring buffer"
-        assert "readIndex" in src, "Must have readIndex for ring buffer"
-        assert "availableSamples" in src, "Must track availableSamples"
+        assert re.search(r'this\.writeIndex\s*=', src), "Must have writeIndex for ring buffer"
+        assert re.search(r'this\.readIndex\s*=', src), "Must have readIndex for ring buffer"
+        assert re.search(r'this\.availableSamples\s*=', src), "Must track availableSamples"
 
     def test_push_message_handler(self):
         src = self._get_source()
-        assert '"push"' in src, "Must handle 'push' messages from main thread"
-        assert "port.onmessage" in src, "Must set up port.onmessage handler"
+        assert re.search(r'["\']push["\']', src), \
+            "Must handle 'push' messages from main thread"
+        assert re.search(r'port\.onmessage\s*=', src), \
+            "Must set up port.onmessage handler"
 
     def test_backpressure_overflow_safety(self):
         src = self._get_source()
-        assert "availableSamples >= this.buffer.length" in src or \
-               "availableSamples >= self.buffer.length" in src, (
-            "Must handle buffer overflow by dropping oldest samples"
-        )
+        assert re.search(
+            r'this\.availableSamples\s*>=\s*this\.buffer\.length',
+            src
+        ), "Must handle buffer overflow when availableSamples >= buffer.length"
+
+    def test_ring_buffer_overflow_drops_oldest(self):
+        """When the ring buffer is full, must advance readIndex to drop oldest."""
+        src = self._get_source()
+        assert re.search(
+            r'this\.availableSamples\s*>=\s*this\.buffer\.length',
+            src
+        ), "Must detect buffer full condition"
+        assert re.search(
+            r'this\.readIndex\s*=\s*\(this\.readIndex\s*\+\s*1\)',
+            src
+        ), "Must advance readIndex when buffer is full (drop oldest)"
 
     def test_process_outputs_silence_on_underrun(self):
         src = self._get_source()
-        assert "output[i] = 0" in src, (
-            "Must output silence (0) when buffer is empty (underrun)"
+        assert re.search(r'output\[i\]\s*=\s*0', src), (
+            "Processor must output silence (0) when buffer is empty (underrun)"
         )
 
     def test_process_returns_true(self):
         src = self._get_source()
-        assert "return true" in src, (
+        assert re.search(r'return\s+true', src), (
             "process() must return true to keep the processor alive"
         )
 
