@@ -1123,9 +1123,9 @@ class TestPlaybackDrivenPipeline:
     def test_subtitle_uses_playback_time(self):
         """Subtitle loop must use samplesPlayedByWorklet, not audioCtx.currentTime."""
         body = self._get_ws_body()
-        # Find the updateSubtitlesLoop function
+        # Find the updateSubtitlesLoop function (match up to the next function def)
         match = re.search(
-            r'function updateSubtitlesLoop.*?\}',
+            r'function updateSubtitlesLoop\b.*?(?=\n\s+function |\Z)',
             body, re.DOTALL
         )
         assert match, "updateSubtitlesLoop must exist"
