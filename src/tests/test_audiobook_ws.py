@@ -905,10 +905,10 @@ class TestStreamProcessor:
         assert re.search(r'readIndex.*%', src), \
             "Must use modulo on readIndex for ring buffer wraparound"
 
-    def test_worklet_outputs_silence_on_underrun(self):
+    def test_worklet_outputs_smoothed_on_underrun(self):
         src = self._get_source()
-        assert re.search(r'output\[i\]\s*=\s*0', src), (
-            "Processor must output silence (0) when buffer is empty (underrun)"
+        assert "this.lastSample *= 0.98" in src and "output[i] = this.lastSample" in src, (
+            "Processor must smooth underrun output with decayed lastSample"
         )
 
     def test_process_returns_true(self):
@@ -1183,6 +1183,9 @@ class TestPlaybackDrivenPipeline:
         assert re.search(r'>\s*MAX_QUEUE_SECONDS', body), (
             "trimOverflowQueue must compare against MAX_QUEUE_SECONDS"
         )
+        assert "preserving queued audio to avoid word skips" in body, (
+            "When queue exceeds limit, code must preserve queued audio to avoid dropping words"
+        )
 
     def test_drain_overflow_queue_exists(self):
         """Must have a drainOverflowQueue function to push queued chunks."""
@@ -1233,6 +1236,9 @@ class TestPlaybackDrivenPipeline:
         )
         assert re.search(r'samplesPlayed', worklet_src), (
             "Worklet must send samplesPlayed in progress messages"
+        )
+        assert re.search(r'frameCount\s*>=\s*6', worklet_src), (
+            "Worklet progress cadence should be tighter (>=6 frames) to reduce subtitle drift"
         )
 
     def test_worklet_reports_available_samples(self):
@@ -1323,6 +1329,19 @@ class TestPlaybackDrivenPipeline:
         loop_body = match.group(0)
         assert "lastProgressTimestamp" in loop_body, (
             "Subtitle loop must use lastProgressTimestamp for interpolation"
+        )
+        assert "Math.min" in loop_body and "bufferedSeconds" in loop_body, (
+            "Interpolation must be clamped by bufferedSeconds to avoid transcript getting ahead"
+        )
+
+    def test_worklet_underrun_smoothing(self):
+        """Worklet underrun path must decay last sample instead of hard silence."""
+        worklet_src = _read_source("src/static/voice/streamProcessor.js")
+        assert "this.lastSample *= 0.98" in worklet_src, (
+            "Underrun smoothing must use exponential decay to reduce artifacts"
+        )
+        assert "output[i] = this.lastSample" in worklet_src, (
+            "Underrun path must output decayed lastSample, not abrupt zero"
         )
 
     def test_caller_handles_push_return(self):
