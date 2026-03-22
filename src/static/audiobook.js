@@ -1266,9 +1266,11 @@ async function generateAudiobookWS() {
                 workletNode.connect(audioCtx.destination);
                 _streamingWorkletNode = workletNode;
 
-                // Start backpressure drain timer
+                // Start backpressure drain timer (only drains while playing)
                 backpressureInterval = setInterval(() => {
-                    if (bufferedSeconds > 0) bufferedSeconds -= 0.1;
+                    if (bufferedSeconds > 0 && audioCtx && audioCtx.state === 'running') {
+                        bufferedSeconds -= 0.1;
+                    }
                 }, 100);
             }
             if (audioCtx.state === 'suspended') {
