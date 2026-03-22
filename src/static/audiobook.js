@@ -997,6 +997,8 @@ let audiobookWs = null;
 // pauseStreamingAudio / resumeStreamingAudio / stopStreamingAudio can
 // control it without needing access to the generateAudiobookWS closure.
 let _streamingAudioCtx = null;
+// Reference to the AudioWorkletNode used by the WS streaming path.
+let _streamingWorkletNode = null;
 // Set to true when the user explicitly stops generation so that the
 // ws.onclose handler resolves (instead of rejecting) and avoids the
 // unintended SSE fallback.
@@ -1197,14 +1199,20 @@ async function generateAudiobookWS() {
         ws.binaryType = 'arraybuffer';
         audiobookWs = ws;
 
-        // ── Scheduled-playback state ──────────────────────────────────────
+        // ── AudioWorklet streaming state ──────────────────────────────────
         let audioCtx = null;
-        /** Absolute AudioContext time when the last scheduled chunk ends. */
-        let scheduledTime = 0;
-        const PREBUFFER_SECONDS = 0.3;
+        let workletNode = null;
         const SAMPLE_RATE = 24000;
-        /** Last PCM sample value of the previous chunk, for continuity smoothing. */
+        /** Virtual scheduled-end time derived from totalSamplesPushed. */
+        let scheduledTime = 0;
+        let totalSamplesPushed = 0;
+        let playbackOrigin = 0;
+        /** Last PCM sample value of the previous chunk, for waveform stitching. */
         let lastChunkFinalSample = 0;
+        /** Estimated buffered duration in seconds (for backpressure). */
+        let bufferedSeconds = 0;
+        const MAX_BUFFER_SECONDS = 8;
+        let backpressureInterval = null;
 
         // ── PCM accumulation (for final WAV download) ─────────────────────
         /** All raw Int16Array chunks received during this session. */
@@ -1245,35 +1253,38 @@ async function generateAudiobookWS() {
             combinedAudioUrl = URL.createObjectURL(combinedAudioBlob);
         }
 
-        async function ensureCtx() {
+        async function initAudio() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({
                     sampleRate: SAMPLE_RATE,
                     latencyHint: 'interactive',
                 });
                 _streamingAudioCtx = audioCtx;
+
+                await audioCtx.audioWorklet.addModule('/static/voice/streamProcessor.js');
+                workletNode = new AudioWorkletNode(audioCtx, 'stream-processor');
+                workletNode.connect(audioCtx.destination);
+                _streamingWorkletNode = workletNode;
+
+                // Start backpressure drain timer (only drains while playing)
+                backpressureInterval = setInterval(() => {
+                    if (bufferedSeconds > 0 && audioCtx && audioCtx.state === 'running') {
+                        bufferedSeconds -= 0.1;
+                    }
+                }, 100);
             }
             if (audioCtx.state === 'suspended') {
                 await audioCtx.resume();
             }
         }
 
-        function applyFadeFloat32(samples) {
-            const fadeSize = Math.min(256, Math.floor(samples.length / 4));
-            for (let i = 0; i < fadeSize; i++) {
-                const g = i / fadeSize;
-                samples[i] *= g;
-                samples[samples.length - 1 - i] *= g;
-            }
-            return samples;
-        }
-
-        // 10 ms overlap between consecutive chunks eliminates the discontinuity
-        // click that occurs when adjacent buffers share no samples.
-        const CHUNK_OVERLAP_SECONDS = 0.01;
-
-        function scheduleChunk(pcm16Array) {
-            if (!audioCtx) return;
+        /**
+         * Push a PCM int16 audio chunk into the AudioWorklet ring buffer.
+         * Handles int16→float32 conversion, validation, waveform stitching,
+         * and backpressure control.
+         */
+        function pushAudioChunk(pcm16Array) {
+            if (!audioCtx || !workletNode) return;
 
             // Convert int16 → float32, validate (skip corrupt chunks with non-finite
             // values), and hard-clamp to [-1, 1] — all in a single pass for efficiency.
@@ -1287,67 +1298,38 @@ async function generateAudiobookWS() {
                 float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
             }
 
-            // Waveform-continuity smoothing: blend the opening samples of this chunk
-            // from the last sample of the previous chunk to the first actual sample.
-            // This eliminates the PCM discontinuity that causes click artefacts when
-            // two buffers are played back-to-back and the amplitude values differ.
-            const CONTINUITY_SAMPLES = 32; // ~1.33 ms at 24 kHz
-            const blendLen = Math.min(CONTINUITY_SAMPLES, float32.length);
-            for (let i = 0; i < blendLen; i++) {
-                const t = (i + 1) / blendLen; // reaches exactly 1.0 at last blended sample
-                float32[i] = lastChunkFinalSample * (1 - t) + float32[i] * t;
+            // Waveform-continuity stitching: smooth the boundary between
+            // consecutive chunks to eliminate PCM discontinuity clicks.
+            if (float32.length > 0) {
+                float32[0] = (float32[0] + lastChunkFinalSample) / 2;
+                lastChunkFinalSample = float32[float32.length - 1];
             }
-            // Capture before any further transforms so the next chunk blends from
-            // the actual PCM value stored in the AudioBuffer.
-            lastChunkFinalSample = float32[float32.length - 1];
 
-            const audioBuffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
-            audioBuffer.getChannelData(0).set(float32);
-
-            const source = audioCtx.createBufferSource();
-            source.buffer = audioBuffer;
-
-            // Use a GainNode with linear ramps to eliminate inter-chunk clicks.
-            // rampDuration is capped at 10 ms (0.01 s) so it is imperceptibly short
-            // on long chunks, but also capped at 10 % of the buffer duration to
-            // avoid overlapping ramps on very short chunks (< 100 ms).
-            const gainNode = audioCtx.createGain();
-            const rampDuration = Math.min(0.01, audioBuffer.duration * 0.1);
-            gainNode.gain.setValueAtTime(0, scheduledTime);
-            gainNode.gain.linearRampToValueAtTime(1, scheduledTime + rampDuration);
-            gainNode.gain.setValueAtTime(1, scheduledTime + audioBuffer.duration - rampDuration);
-            gainNode.gain.linearRampToValueAtTime(0, scheduledTime + audioBuffer.duration);
-
-            source.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-
-            // Maintain a running scheduled-end pointer to chain chunks back-to-back.
-            // The PREBUFFER guard also prevents scheduling in the past if the decoder
-            // falls far behind; the explicit lower-bound clamp ensures scheduledTime
-            // never drifts below audioCtx.currentTime due to float-point accumulation.
-            if (scheduledTime < audioCtx.currentTime + PREBUFFER_SECONDS) {
-                scheduledTime = audioCtx.currentTime + PREBUFFER_SECONDS;
+            // Backpressure: drop chunks if the buffer is overloaded
+            const duration = float32.length / SAMPLE_RATE;
+            if (bufferedSeconds > MAX_BUFFER_SECONDS) {
+                console.warn('[AUDIOBOOK-WS] Backpressure: dropping audio chunk');
+                return;
             }
+            bufferedSeconds += duration;
+
+            // Track segment timing
+            if (totalSamplesPushed === 0) {
+                playbackOrigin = audioCtx.currentTime;
+            }
+            const chunkStartTime = playbackOrigin + totalSamplesPushed / SAMPLE_RATE;
+            totalSamplesPushed += float32.length;
+            scheduledTime = playbackOrigin + totalSamplesPushed / SAMPLE_RATE;
 
             // Latch the start time for the first chunk of the current segment
             if (pendingSegMeta !== null && pendingSegMeta.startTime < 0) {
-                pendingSegMeta.startTime = scheduledTime;
+                pendingSegMeta.startTime = chunkStartTime;
             }
 
-            source.start(scheduledTime);
-            // Disconnect nodes once playback finishes to prevent the Web Audio
-            // graph from accumulating thousands of stale nodes during long books,
-            // which causes static artifacts and memory pressure.
-            source.onended = () => {
-                source.disconnect();
-                gainNode.disconnect();
-            };
-            // Advance scheduledTime by the buffer duration minus the overlap.
-            // Clamp scheduledTime up to currentTime first so backward drift from
-            // float-point accumulation never causes us to add on a stale base,
-            // while also ensuring we never schedule in the past.
-            scheduledTime = Math.max(scheduledTime, audioCtx.currentTime) +
-                audioBuffer.duration - CHUNK_OVERLAP_SECONDS;
+            workletNode.port.postMessage({
+                type: 'push',
+                samples: float32,
+            });
         }
 
         function finalizeCurrentSegment() {
@@ -1414,11 +1396,20 @@ async function generateAudiobookWS() {
             }
             const wasPlaying = audiobookState.isPlaying;
 
-            // Stop the subtitle RAF loop and tear down the AudioContext — the
-            // full player uses a plain <audio> element instead.
+            // Stop the subtitle RAF loop and tear down the AudioWorklet and
+            // AudioContext — the full player uses a plain <audio> element instead.
             if (subtitleRafId) {
                 cancelAnimationFrame(subtitleRafId);
                 subtitleRafId = null;
+            }
+            if (backpressureInterval) {
+                clearInterval(backpressureInterval);
+                backpressureInterval = null;
+            }
+            if (workletNode) {
+                workletNode.disconnect();
+                workletNode = null;
+                _streamingWorkletNode = null;
             }
             if (audioCtx) {
                 safeCloseAudioContext(audioCtx);
@@ -1469,9 +1460,9 @@ async function generateAudiobookWS() {
                     console.warn('[AUDIOBOOK-WS] Skipping too-short chunk:', pcm16.length, 'samples');
                     return;
                 }
-                await ensureCtx();
+                await initAudio();
                 allPcmChunks.push(pcm16);
-                scheduleChunk(pcm16);
+                pushAudioChunk(pcm16);
 
                 if (!playbackStarted) {
                     playbackStarted = true;
@@ -1588,7 +1579,13 @@ async function generateAudiobookWS() {
                             cancelAnimationFrame(subtitleRafId);
                             subtitleRafId = null;
                         }
-                        // audioCtx was already closed by stopStreamingAudio
+                        if (backpressureInterval) {
+                            clearInterval(backpressureInterval);
+                            backpressureInterval = null;
+                        }
+                        // audioCtx / workletNode already closed by stopStreamingAudio
+                        workletNode = null;
+                        _streamingWorkletNode = null;
                         audioCtx = null;
                         _streamingAudioCtx = null;
 
@@ -1931,8 +1928,12 @@ function stopStreamingAudio() {
     streamingAudioIndex = 0;
 
     // WS path: mark as user-stopped so ws.onclose resolves (not rejects) and
-    // then close the AudioContext to halt scheduled playback immediately.
+    // then tear down the AudioWorklet and AudioContext to halt playback.
     _wsUserStopped = true;
+    if (_streamingWorkletNode) {
+        _streamingWorkletNode.disconnect();
+        _streamingWorkletNode = null;
+    }
     if (_streamingAudioCtx) {
         safeCloseAudioContext(_streamingAudioCtx);
         _streamingAudioCtx = null;
