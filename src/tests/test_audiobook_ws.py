@@ -657,24 +657,15 @@ class TestAudioWorkletStreaming:
             "Must track bufferedSeconds for backpressure"
         )
 
-    def test_no_audio_buffer_source_node(self):
-        """The old per-chunk AudioBufferSourceNode approach must not be used."""
+    def test_no_scheduling_logic_present(self):
+        """Continuous playback via AudioWorklet: no per-chunk
+        AudioBufferSourceNode scheduling must remain."""
         body = self._get_ws_body()
         assert "createBufferSource" not in body, (
             "Must NOT use AudioBufferSourceNode — use AudioWorklet ring buffer instead"
         )
         assert not re.search(r'source\.start\s*\(', body), (
             "Must NOT use source.start() scheduling — use AudioWorklet instead"
-        )
-
-    def test_no_scheduling_logic_present(self):
-        """Continuous playback: no per-chunk AudioBufferSourceNode scheduling."""
-        body = self._get_ws_body()
-        assert "createBufferSource" not in body, (
-            "Must NOT use createBufferSource — AudioWorklet handles continuous playback"
-        )
-        assert not re.search(r'source\.start\s*\(', body), (
-            "Must NOT use source.start() — AudioWorklet handles continuous playback"
         )
 
     def test_waveform_stitching_present(self):
@@ -901,9 +892,9 @@ class TestStreamProcessor:
             src
         ), "Must detect buffer full condition"
         assert re.search(
-            r'this\.readIndex\s*=\s*\(this\.readIndex\s*\+\s*1\)',
+            r'this\.readIndex\s*=\s*\(this\.readIndex\s*\+\s*1\)\s*%\s*this\.buffer\.length',
             src
-        ), "Must advance readIndex when buffer is full (drop oldest)"
+        ), "Must advance readIndex with wraparound when buffer is full (drop oldest)"
 
     def test_process_outputs_silence_on_underrun(self):
         src = self._get_source()
