@@ -1217,6 +1217,8 @@ async function generateAudiobookWS() {
         let overflowQueueSamples = 0;
         /** Maximum overflow queue duration in seconds before warning (no audio is dropped). */
         const MAX_QUEUE_SECONDS = 20;
+        /** Cap subtitle interpolation to 0.1 seconds (100ms) so transcript can't run ahead on delayed progress messages. */
+        const MAX_INTERPOLATION_SECONDS = 0.1;
         let overflowQueueWarningEmitted = false;
         /** Total samples played, reported by the AudioWorklet. */
         let samplesPlayedByWorklet = 0;
@@ -1429,11 +1431,9 @@ async function generateAudiobookWS() {
             if (!audioCtx) return;
             const baseTime = (samplesPlayedByWorklet || 0) / SAMPLE_RATE;
             const elapsed = lastProgressTimestamp > 0 ? (audioCtx.currentTime - lastProgressTimestamp) : 0;
-            const interpolated = Math.min(
-                Math.max(0, elapsed),
-                0.1,
-                Math.max(0, bufferedSeconds)
-            );
+            const elapsedClamped = Math.max(0, elapsed);
+            const interpolationCap = Math.min(MAX_INTERPOLATION_SECONDS, bufferedSeconds);
+            const interpolated = Math.min(elapsedClamped, interpolationCap);
             const playbackTime = baseTime + interpolated;
             for (const seg of scheduledSegments) {
                 if (playbackTime >= seg.startTime && playbackTime < seg.endTime) {

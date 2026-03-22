@@ -9,6 +9,8 @@
  * to feed audio data into the buffer.
  */
 class StreamProcessor extends AudioWorkletProcessor {
+  static UNDERRUN_DECAY_FACTOR = 0.98;
+
   constructor(options) {
     super();
 
@@ -22,6 +24,7 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.totalSamplesPlayed = 0;
     this.frameCount = 0;
     this.lastSample = 0;
+    this.underrunDecayFactor = StreamProcessor.UNDERRUN_DECAY_FACTOR;
 
     this.port.onmessage = (event) => {
       if (event.data.type === "push") {
@@ -57,12 +60,13 @@ class StreamProcessor extends AudioWorkletProcessor {
         this.totalSamplesPlayed++;
       } else {
         // underrun — smooth to silence to avoid hard-edge clicks
-        this.lastSample *= 0.98;
+        this.lastSample *= this.underrunDecayFactor;
         output[i] = this.lastSample;
       }
     }
 
-    // Report playback progress and buffer level to main thread (~32ms)
+    // Report playback progress and buffer level to main thread (~16-32ms typical;
+    // exact interval depends on runtime sample rate and render quantum)
     this.frameCount++;
     if (this.frameCount >= 6) {
       this.frameCount = 0;
