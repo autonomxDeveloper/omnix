@@ -1204,6 +1204,8 @@ async function generateAudiobookWS() {
         let workletNode = null;
         const SAMPLE_RATE = 24000;
         let totalSamplesPushed = 0;
+        /** Tail window of the previous chunk for micro-crossfade blending. */
+        let previousTail = null;
         /** Last PCM sample value of the previous chunk, for waveform stitching. */
         let lastChunkFinalSample = 0;
         /** Buffered duration in seconds — updated from worklet progress reports. */
@@ -1211,6 +1213,8 @@ async function generateAudiobookWS() {
         const MAX_BUFFER_SECONDS = 8;
         /** Overflow queue: chunks that couldn't be pushed due to backpressure. */
         const overflowQueue = [];
+        /** Maximum overflow queue duration in seconds before trimming oldest. */
+        const MAX_QUEUE_SECONDS = 20;
         /** Total samples played, reported by the AudioWorklet. */
         let samplesPlayedByWorklet = 0;
 
@@ -1262,7 +1266,9 @@ async function generateAudiobookWS() {
                 _streamingAudioCtx = audioCtx;
 
                 await audioCtx.audioWorklet.addModule('/static/voice/streamProcessor.js');
-                workletNode = new AudioWorkletNode(audioCtx, 'stream-processor');
+                workletNode = new AudioWorkletNode(audioCtx, 'stream-processor', {
+                    processorOptions: { sampleRate: SAMPLE_RATE }
+                });
                 workletNode.connect(audioCtx.destination);
                 _streamingWorkletNode = workletNode;
 
@@ -1284,10 +1290,11 @@ async function generateAudiobookWS() {
          * Push a PCM int16 audio chunk into the AudioWorklet ring buffer.
          * Handles int16→float32 conversion, validation, micro-crossfade for
          * smooth transitions, and backpressure via overflow queue.
-         * Returns true if the chunk was pushed immediately, false if queued.
+         * Returns true if the chunk was pushed immediately, false if queued
+         * or not accepted.
          */
         function pushAudioChunk(pcm16Array) {
-            if (!audioCtx || !workletNode) return true;
+            if (!audioCtx || !workletNode) return false;
 
             // Convert int16 → float32, validate (skip corrupt chunks with non-finite
             // values), and hard-clamp to [-1, 1] — all in a single pass for efficiency.
@@ -1301,16 +1308,19 @@ async function generateAudiobookWS() {
                 float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
             }
 
-            // Micro-crossfade: blend the start of this chunk with the end of the
-            // previous chunk over FADE_SAMPLES to eliminate click artifacts at
-            // chunk boundaries.
+            // Micro-crossfade: blend the start of this chunk with the tail window
+            // of the previous chunk over FADE_SAMPLES to eliminate click artifacts
+            // at chunk boundaries.
             const FADE_SAMPLES = 128;
             if (float32.length > 0) {
                 const fadeLen = Math.min(FADE_SAMPLES, float32.length);
                 for (let i = 0; i < fadeLen; i++) {
                     const t = i / fadeLen;
-                    float32[i] = float32[i] * t + lastChunkFinalSample * (1 - t);
+                    const prev = (previousTail && i < previousTail.length)
+                        ? previousTail[i] : lastChunkFinalSample;
+                    float32[i] = float32[i] * t + prev * (1 - t);
                 }
+                previousTail = float32.slice(-FADE_SAMPLES);
                 lastChunkFinalSample = float32[float32.length - 1];
             }
 
@@ -1326,6 +1336,8 @@ async function generateAudiobookWS() {
             // Backpressure: queue chunks instead of dropping them
             if (bufferedSeconds > MAX_BUFFER_SECONDS) {
                 overflowQueue.push(float32);
+                // Trim oldest if overflow queue exceeds MAX_QUEUE_SECONDS
+                trimOverflowQueue();
                 return false;
             }
 
@@ -1340,11 +1352,29 @@ async function generateAudiobookWS() {
         }
 
         /**
+         * Trim the overflow queue if total duration exceeds MAX_QUEUE_SECONDS
+         * to prevent unbounded memory growth.
+         */
+        function trimOverflowQueue() {
+            let totalSamples = 0;
+            for (const c of overflowQueue) totalSamples += c.length;
+            while (totalSamples / SAMPLE_RATE > MAX_QUEUE_SECONDS && overflowQueue.length > 1) {
+                const removed = overflowQueue.shift();
+                totalSamples -= removed.length;
+                console.warn('[AUDIOBOOK-WS] Overflow queue too large, trimming oldest chunk');
+            }
+        }
+
+        /**
          * Drain the overflow queue by pushing queued chunks to the worklet
-         * until the buffer is full again.
+         * until the buffer is full again.  Checks each chunk's size before
+         * pushing to avoid overshooting the buffer limit.
          */
         function drainOverflowQueue() {
-            while (overflowQueue.length > 0 && bufferedSeconds < MAX_BUFFER_SECONDS) {
+            while (
+                overflowQueue.length > 0 &&
+                bufferedSeconds + (overflowQueue[0].length / SAMPLE_RATE) <= MAX_BUFFER_SECONDS
+            ) {
                 const chunk = overflowQueue.shift();
                 const duration = chunk.length / SAMPLE_RATE;
                 bufferedSeconds += duration;
@@ -1373,7 +1403,7 @@ async function generateAudiobookWS() {
          */
         function updateSubtitlesLoop() {
             if (!audioCtx) return;
-            const playbackTime = samplesPlayedByWorklet / SAMPLE_RATE;
+            const playbackTime = (samplesPlayedByWorklet || 0) / SAMPLE_RATE;
             for (const seg of scheduledSegments) {
                 if (playbackTime >= seg.startTime && playbackTime < seg.endTime) {
                     updateSegmentInfo(seg);
@@ -1414,7 +1444,7 @@ async function generateAudiobookWS() {
 
             // Compute where in the audio the streaming playback currently is so
             // that the full player can seek to the same position.
-            let seekToSeconds = samplesPlayedByWorklet / SAMPLE_RATE;
+            let seekToSeconds = (samplesPlayedByWorklet || 0) / SAMPLE_RATE;
             const wasPlaying = audiobookState.isPlaying;
 
             // Stop the subtitle RAF loop and tear down the AudioWorklet and
