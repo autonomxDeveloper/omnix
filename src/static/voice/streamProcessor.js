@@ -9,10 +9,13 @@
  * to feed audio data into the buffer.
  */
 class StreamProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
 
-    this.buffer = new Float32Array(sampleRate * 10); // 10 sec ring buffer
+    const sr = (options && options.processorOptions && options.processorOptions.sampleRate)
+      ? options.processorOptions.sampleRate
+      : sampleRate;
+    this.buffer = new Float32Array(sr * 10); // 10 sec ring buffer
     this.writeIndex = 0;
     this.readIndex = 0;
     this.availableSamples = 0;
