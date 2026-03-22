@@ -1067,14 +1067,18 @@ class TestAudiobookMicroCrossfade:
         )
 
     def test_crossfade_uses_tail_window(self):
-        """Crossfade must blend against a previousTail window, not just a
-        single sample, for proper waveform continuity."""
+        """Crossfade must blend against a previousTail window with proper
+        end-alignment for temporal phase continuity, not just indexed from 0."""
         body = self._get_push_chunk_body()
         assert "previousTail" in body, (
             "pushAudioChunk must use previousTail window for crossfade blending"
         )
         assert re.search(r'\.slice\s*\(\s*-\s*FADE_SAMPLES\s*\)', body), (
             "Must store tail window via float32.slice(-FADE_SAMPLES)"
+        )
+        # Verify end-aligned indexing for proper temporal alignment
+        assert re.search(r'tailLen\s*-\s*fadeLen', body), (
+            "Crossfade must use end-aligned indexing (tailLen - fadeLen) for phase alignment"
         )
 
     def test_no_legacy_crossfade(self):
@@ -1133,7 +1137,9 @@ class TestPlaybackDrivenPipeline:
         )
 
     def test_subtitle_uses_playback_time(self):
-        """Subtitle loop must use samplesPlayedByWorklet, not audioCtx.currentTime."""
+        """Subtitle loop must use samplesPlayedByWorklet-based playbackTime for
+        segment matching.  audioCtx.currentTime may be used for interpolation
+        but must NOT be used directly in segment comparisons."""
         body = self._get_ws_body()
         # Find the updateSubtitlesLoop function (match up to the next function def)
         match = re.search(
@@ -1145,8 +1151,13 @@ class TestPlaybackDrivenPipeline:
         assert "samplesPlayedByWorklet" in loop_body, (
             "Subtitle loop must use samplesPlayedByWorklet for playback-driven sync"
         )
-        assert "audioCtx.currentTime" not in loop_body, (
-            "Subtitle loop must NOT use audioCtx.currentTime — use worklet-reported playback"
+        # Segment comparison must use playbackTime, not raw audioCtx.currentTime
+        assert re.search(r'playbackTime\s*>=\s*seg\.startTime', loop_body), (
+            "Segment comparison must use playbackTime (derived from worklet), not audioCtx.currentTime"
+        )
+        # audioCtx.currentTime must NOT be used directly in segment condition
+        assert not re.search(r'audioCtx\.currentTime\s*>=\s*seg', loop_body), (
+            "Segment comparison must NOT use audioCtx.currentTime directly"
         )
 
     def test_overflow_queue_present(self):
@@ -1158,13 +1169,19 @@ class TestPlaybackDrivenPipeline:
 
     def test_overflow_queue_bounded(self):
         """Overflow queue must be bounded by MAX_QUEUE_SECONDS to prevent
-        unbounded memory growth."""
+        unbounded memory growth.  Must use incremental sample tracking."""
         body = self._get_ws_body()
         assert "MAX_QUEUE_SECONDS" in body, (
             "Must define MAX_QUEUE_SECONDS to bound overflow queue"
         )
         assert "trimOverflowQueue" in body, (
             "Must have trimOverflowQueue function to enforce the limit"
+        )
+        assert "overflowQueueSamples" in body, (
+            "Must track overflowQueueSamples incrementally for O(1) duration checks"
+        )
+        assert re.search(r'>\s*MAX_QUEUE_SECONDS', body), (
+            "trimOverflowQueue must compare against MAX_QUEUE_SECONDS"
         )
 
     def test_drain_overflow_queue_exists(self):
@@ -1256,6 +1273,63 @@ class TestPlaybackDrivenPipeline:
         body = self._get_ws_body()
         assert re.search(r'\(samplesPlayedByWorklet\s*\|\|\s*0\)', body), (
             "Must guard samplesPlayedByWorklet with || 0 for safety"
+        )
+
+    def test_no_dropped_chunks(self):
+        """Audio must NEVER be silently dropped — pushAudioChunk must push to
+        overflowQueue on backpressure and return false for caller to detect."""
+        body = self._get_ws_body()
+        match = re.search(
+            r'function pushAudioChunk\s*\(.*?\{.*?(?=\n        \}\n\n)',
+            body, re.DOTALL
+        )
+        assert match, "pushAudioChunk must exist"
+        push_body = match.group(0)
+        assert "overflowQueue.push" in push_body, (
+            "pushAudioChunk must push to overflowQueue on backpressure"
+        )
+        assert "return false" in push_body, (
+            "pushAudioChunk must return false when chunk is queued or not accepted"
+        )
+
+    def test_previous_tail_reset(self):
+        """previousTail must be reset to null on new stream to prevent old
+        tail bleeding into new audio."""
+        body = self._get_ws_body()
+        assert re.search(r'previousTail\s*=\s*null', body), (
+            "previousTail must be reset to null on new stream (in initAudio)"
+        )
+
+    def test_drain_allowance(self):
+        """drainOverflowQueue must allow slight overshoot to prevent queue
+        starvation when chunks are large."""
+        body = self._get_ws_body()
+        assert "DRAIN_ALLOWANCE" in body, (
+            "Must define DRAIN_ALLOWANCE for drain overshoot tolerance"
+        )
+
+    def test_playback_time_interpolation(self):
+        """Subtitle loop must interpolate playback time between worklet
+        progress reports for smooth 60fps subtitle movement."""
+        body = self._get_ws_body()
+        assert "lastProgressTimestamp" in body, (
+            "Must track lastProgressTimestamp for playback time interpolation"
+        )
+        match = re.search(
+            r'function updateSubtitlesLoop\b.*?(?=\n\s+function |\Z)',
+            body, re.DOTALL
+        )
+        assert match, "updateSubtitlesLoop must exist"
+        loop_body = match.group(0)
+        assert "lastProgressTimestamp" in loop_body, (
+            "Subtitle loop must use lastProgressTimestamp for interpolation"
+        )
+
+    def test_caller_handles_push_return(self):
+        """The caller of pushAudioChunk must check its return value."""
+        body = self._get_ws_body()
+        assert re.search(r'if\s*\(\s*!pushAudioChunk', body), (
+            "Caller must check pushAudioChunk return value with if (!pushAudioChunk(...))"
         )
 
 
