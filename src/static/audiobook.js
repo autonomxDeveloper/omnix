@@ -1308,7 +1308,7 @@ async function generateAudiobookWS() {
             if (float32.length > 0) {
                 const fadeLen = Math.min(FADE_SAMPLES, float32.length);
                 for (let i = 0; i < fadeLen; i++) {
-                    const t = i / FADE_SAMPLES;
+                    const t = i / fadeLen;
                     float32[i] = float32[i] * t + lastChunkFinalSample * (1 - t);
                 }
                 lastChunkFinalSample = float32[float32.length - 1];
@@ -1344,7 +1344,7 @@ async function generateAudiobookWS() {
          * until the buffer is full again.
          */
         function drainOverflowQueue() {
-            while (overflowQueue.length > 0 && bufferedSeconds <= MAX_BUFFER_SECONDS) {
+            while (overflowQueue.length > 0 && bufferedSeconds < MAX_BUFFER_SECONDS) {
                 const chunk = overflowQueue.shift();
                 const duration = chunk.length / SAMPLE_RATE;
                 bufferedSeconds += duration;
