@@ -369,8 +369,14 @@ async function processRemainingPages(sessionId) {
                     const availableVoices = audiobookState._availableVoices || [];
                     let foundNew = false;
                     for (const sp of pageSpeakers) {
-                        if (!sp || !sp.trim() || audiobookState.speakers[sp]) continue;
-                        const segCount = data.segments.filter(s => s.speaker === sp).length;
+                        const key = _normalizeKey(sp);
+                        // Use voiceMapping as the single source of truth: skip if the
+                        // speaker already has a voice assigned (even if absent from
+                        // audiobookState.speakers, which may be populated separately).
+                        if (!sp || !sp.trim() || audiobookState.voiceMapping[key]) continue;
+                        // Count segments for this speaker across all accumulated pages,
+                        // not just the current one, for accurate UI display.
+                        const segCount = audiobookState.segments.filter(s => s.speaker === sp).length;
                         audiobookState.speakers[sp] = {
                             name: sp,
                             gender: 'neutral',
@@ -381,7 +387,7 @@ async function processRemainingPages(sessionId) {
                         // score which falls back to the full voice pool in assignClonedVoice.
                         const voiceId = assignClonedVoice(sp, { male: 0, female: 0 }, availableVoices);
                         if (voiceId) {
-                            audiobookState.voiceMapping[_normalizeKey(sp)] = voiceId;
+                            audiobookState.voiceMapping[key] = voiceId;
                         }
                         foundNew = true;
                     }
@@ -1197,6 +1203,8 @@ async function generateAudiobookWS() {
         let scheduledTime = 0;
         const PREBUFFER_SECONDS = 0.3;
         const SAMPLE_RATE = 24000;
+        /** Last PCM sample value of the previous chunk, for continuity smoothing. */
+        let lastChunkFinalSample = 0;
 
         // ── PCM accumulation (for final WAV download) ─────────────────────
         /** All raw Int16Array chunks received during this session. */
@@ -1279,6 +1287,20 @@ async function generateAudiobookWS() {
                 float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
             }
 
+            // Waveform-continuity smoothing: blend the opening samples of this chunk
+            // from the last sample of the previous chunk to the first actual sample.
+            // This eliminates the PCM discontinuity that causes click artefacts when
+            // two buffers are played back-to-back and the amplitude values differ.
+            const CONTINUITY_SAMPLES = 32; // ~1.33 ms at 24 kHz
+            const blendLen = Math.min(CONTINUITY_SAMPLES, float32.length);
+            for (let i = 0; i < blendLen; i++) {
+                const t = (i + 1) / blendLen; // reaches exactly 1.0 at last blended sample
+                float32[i] = lastChunkFinalSample * (1 - t) + float32[i] * t;
+            }
+            // Capture before any further transforms so the next chunk blends from
+            // the actual PCM value stored in the AudioBuffer.
+            lastChunkFinalSample = float32[float32.length - 1];
+
             const audioBuffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
             audioBuffer.getChannelData(0).set(float32);
 
@@ -1299,7 +1321,10 @@ async function generateAudiobookWS() {
             source.connect(gainNode);
             gainNode.connect(audioCtx.destination);
 
-            // Maintain a running scheduled-end pointer to chain chunks back-to-back
+            // Maintain a running scheduled-end pointer to chain chunks back-to-back.
+            // The PREBUFFER guard also prevents scheduling in the past if the decoder
+            // falls far behind; the explicit lower-bound clamp ensures scheduledTime
+            // never drifts below audioCtx.currentTime due to float-point accumulation.
             if (scheduledTime < audioCtx.currentTime + PREBUFFER_SECONDS) {
                 scheduledTime = audioCtx.currentTime + PREBUFFER_SECONDS;
             }
@@ -1317,9 +1342,12 @@ async function generateAudiobookWS() {
                 source.disconnect();
                 gainNode.disconnect();
             };
-            // Overlap by CHUNK_OVERLAP_SECONDS to blend adjacent chunks and
-            // avoid the discontinuity click between buffers.
-            scheduledTime += audioBuffer.duration - CHUNK_OVERLAP_SECONDS;
+            // Advance scheduledTime by the buffer duration minus the overlap.
+            // Clamp scheduledTime up to currentTime first so backward drift from
+            // float-point accumulation never causes us to add on a stale base,
+            // while also ensuring we never schedule in the past.
+            scheduledTime = Math.max(scheduledTime, audioCtx.currentTime) +
+                audioBuffer.duration - CHUNK_OVERLAP_SECONDS;
         }
 
         function finalizeCurrentSegment() {
