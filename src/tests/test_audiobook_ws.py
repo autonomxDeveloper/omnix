@@ -578,6 +578,11 @@ class TestFloat32SampleValidation:
                re.search(r'isFinite\s*\(', body), (
             "pushAudioChunk must check Number.isFinite to skip corrupt samples"
         )
+        assert re.search(
+            r'if\s*\(\s*!Number\.isFinite\s*\(\s*sample\s*\)\s*\)\s*\{[^}]*return\s+false\s*;',
+            body,
+            re.DOTALL
+        ), "Corrupt sample guard must return false so skipped chunk is not treated as pushed"
 
     def test_hard_clamp_present(self):
         body = self._get_push_chunk_body()
@@ -674,6 +679,11 @@ class TestAudioWorkletStreaming:
         body = self._get_ws_body()
         assert re.search(r'FADE_SAMPLES', body), (
             "Must define FADE_SAMPLES for micro-crossfade at chunk boundaries"
+        )
+        fade_match = re.search(r'FADE_SAMPLES\s*=\s*(\d+)', body)
+        assert fade_match, "Must set FADE_SAMPLES explicitly"
+        assert int(fade_match.group(1)) >= 256, (
+            "FADE_SAMPLES should be at least 256 for smoother chunk-boundary blending"
         )
         assert re.search(r'last.*Sample', body), (
             "Must track the last sample from the previous chunk for stitching"
@@ -907,8 +917,10 @@ class TestStreamProcessor:
 
     def test_worklet_outputs_smoothed_on_underrun(self):
         src = self._get_source()
-        assert "UNDERRUN_DECAY_FACTOR = 0.98" in src, (
-            "Processor must define an explicit underrun decay factor constant"
+        match = re.search(r'UNDERRUN_DECAY_FACTOR\s*=\s*([0-9.]+)', src)
+        assert match, "Processor must define an explicit underrun decay factor constant"
+        assert float(match.group(1)) >= 0.995, (
+            "UNDERRUN_DECAY_FACTOR should be at least 0.995 for smoother underrun decay"
         )
         assert "this.underrunDecayFactor = StreamProcessor.UNDERRUN_DECAY_FACTOR" in src, (
             "Processor must initialize underrun decay factor from class-level constant"
