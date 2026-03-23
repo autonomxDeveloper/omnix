@@ -1060,9 +1060,9 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
             peak = np.max(np.abs(audio_data))
             if peak > 0.95:
                 audio_data = audio_data / peak
-            # Soft limiter — tanh smoothly saturates near ±1, avoiding
-            # the harsh distortion edge of hard clipping.
-            audio_data = np.tanh(audio_data)
+            # Soft limiter — smoothly saturates near ±1, preserving
+            # more dynamic range than tanh while preventing clipping.
+            audio_data = audio_data / (1.0 + np.abs(audio_data))
             
             # Scale to int16 range and convert to bytes
             audio_int16 = (audio_data * 32767).astype(np.int16)

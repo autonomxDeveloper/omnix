@@ -41,21 +41,59 @@ def _is_valid_audio(audio: np.ndarray) -> bool:
     return True
 
 
+def soft_clip(x: np.ndarray) -> np.ndarray:
+    """Gentle soft limiter: ``x / (1 + |x|)``.
+
+    Smoothly saturates near ±1 while preserving more dynamic range than
+    ``np.tanh``.  Unlike hard clipping (``np.clip``) it never introduces
+    discontinuities.
+    """
+    return x / (1.0 + np.abs(x))
+
+
+def find_best_offset(prev: np.ndarray, curr: np.ndarray,
+                     max_shift: int = 128) -> int:
+    """Find the sample offset in *curr* that best aligns with *prev*.
+
+    TTS chunks often start at arbitrary waveform phase, causing micro
+    discontinuities even with a raised-cosine crossfade.  This helper
+    slides *curr* by up to *max_shift* samples and returns the offset
+    that minimises the mean-squared difference against the tail of
+    *prev*, producing a smoother splice.
+    """
+    best_offset = 0
+    best_score = float('inf')
+
+    for shift in range(max_shift):
+        overlap = min(len(prev), len(curr) - shift)
+        if overlap <= 0:
+            continue
+
+        diff = prev[-overlap:] - curr[shift:shift + overlap]
+        score = np.mean(diff ** 2)
+
+        if score < best_score:
+            best_score = score
+            best_offset = shift
+
+    return best_offset
+
+
 def _normalize_audio(audio: np.ndarray) -> bytes:
     """Normalise a float waveform to 16-bit PCM bytes.
 
     Uses peak-based normalisation to avoid amplifying noise when the
     signal is already within range.  Only scales down when the peak
-    exceeds 0.95 (close to clipping).  Final limiting uses ``np.tanh``
-    for a smooth curve instead of hard clipping.
+    exceeds 0.95 (close to clipping).  Final limiting uses
+    :func:`soft_clip` for a smooth curve instead of hard clipping.
     """
     audio = audio.astype(np.float32)
     peak = np.max(np.abs(audio)) if len(audio) > 0 else 0.0
     if peak > 0.95:
         audio = audio / peak
-    # Soft limiter — tanh smoothly saturates near ±1, avoiding the
-    # harsh distortion edge of hard clipping.
-    audio = np.tanh(audio)
+    # Soft limiter — smoothly saturates near ±1, preserving more
+    # dynamic range than tanh while still preventing hard clipping.
+    audio = soft_clip(audio)
     audio_int16 = (audio * 32767).astype(np.int16)
     return audio_int16.tobytes()
 
