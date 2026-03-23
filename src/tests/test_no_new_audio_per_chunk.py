@@ -314,19 +314,37 @@ class TestAudiobookTimelineScheduling:
             "Must use fixed SSE_TARGET_SAMPLE_RATE, not dynamic sample rate"
 
     def test_play_audio_segment_crossfade(self):
-        """playAudioSegment must apply equal-power crossfade for waveform continuity."""
+        """playAudioSegment must apply equal-power crossfade with overlap trimming."""
         src = self._get_source()
         m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
         assert m
         body = m.group(0)
-        assert "fadeLen" in body or "SSE_CROSSFADE_SAMPLES" in body, \
-            "playAudioSegment must apply crossfade"
         assert "_ssePrevTail" in body, \
             "playAudioSegment must use _ssePrevTail for crossfade continuity"
         assert "Math.cos" in body and "Math.sin" in body, \
             "playAudioSegment must use equal-power (cos/sin) crossfade"
+        assert "float32.slice(overlap)" in body or ".slice(overlap)" in body, \
+            "playAudioSegment must trim overlapped region after crossfade"
+        assert "Math.min(" in body, \
+            "playAudioSegment must use Math.min for robust overlap calculation"
 
-    def test_play_streaming_audio_no_await_segment(self):
+    def test_play_audio_segment_let_float32(self):
+        """float32 must be declared with let (not const) to allow slice reassignment."""
+        src = self._get_source()
+        m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "let float32" in body, \
+            "float32 must be let (not const) for slice reassignment after crossfade"
+
+    def test_play_audio_segment_tiny_chunk_guard(self):
+        """playAudioSegment must guard against very small chunks."""
+        src = self._get_source()
+        m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "float32.length < 128" in body or "float32.length<128" in body, \
+            "playAudioSegment must skip crossfade for tiny chunks (< 128 samples)"
         """playStreamingAudio must NOT await playAudioSegment (fire-and-forget)."""
         src = self._get_source()
         m = re.search(r'(?:async )?function playStreamingAudio\b.*?\n\}', src, re.DOTALL)
@@ -425,7 +443,7 @@ class TestPodcastTimelineScheduling:
         assert "_podcastNextPlaybackTime = 0" in body
 
     def test_play_podcast_chunk_crossfade(self):
-        """playPodcastChunk must apply equal-power crossfade."""
+        """playPodcastChunk must apply equal-power crossfade with overlap trimming."""
         src = self._get_source()
         m = re.search(r'function playPodcastChunk\b.*?\n\}', src, re.DOTALL)
         assert m
@@ -434,6 +452,17 @@ class TestPodcastTimelineScheduling:
             "playPodcastChunk must use _podcastPrevTail for crossfade"
         assert "Math.cos" in body and "Math.sin" in body, \
             "playPodcastChunk must use equal-power (cos/sin) crossfade"
+        assert "float32.slice(overlap)" in body or ".slice(overlap)" in body, \
+            "playPodcastChunk must trim overlapped region after crossfade"
+
+    def test_play_podcast_chunk_let_float32(self):
+        """float32 must be declared with let in playPodcastChunk."""
+        src = self._get_source()
+        m = re.search(r'function playPodcastChunk\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "let float32" in body, \
+            "float32 must be let (not const) for slice reassignment after crossfade"
 
     def test_stop_resets_prev_tail(self):
         """stopPodcastStreaming must reset _podcastPrevTail."""

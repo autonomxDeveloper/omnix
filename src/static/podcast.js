@@ -490,28 +490,35 @@ function playPodcastChunk(chunk) {
         // Convert Int16 PCM to Float32
         const totalSamples = Math.floor(pcmBytes.length / 2);
         const byteView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
-        const float32 = new Float32Array(totalSamples);
+        let float32 = new Float32Array(totalSamples);
         for (let i = 0; i < totalSamples; i++) {
             float32[i] = byteView.getInt16(i * 2, true) / 32768.0;
         }
 
-        // Equal-power crossfade: blend start of this chunk with tail of previous chunk
-        // Cap crossfade to 25% of chunk to avoid crossfading too large a proportion
-        const fadeLen = Math.min(PODCAST_CROSSFADE_SAMPLES, Math.floor(float32.length / 4));
-        if (_podcastPrevTail && _podcastPrevTail.length === fadeLen && float32.length > fadeLen) {
-            for (let i = 0; i < fadeLen; i++) {
-                const t = i / fadeLen;
-                const fadeOut = Math.cos(t * Math.PI * 0.5);
-                const fadeIn  = Math.sin(t * Math.PI * 0.5);
-                float32[i] = _podcastPrevTail[i] * fadeOut + float32[i] * fadeIn;
-            }
-        }
-
-        // Store tail for next crossfade
-        if (float32.length >= PODCAST_CROSSFADE_SAMPLES) {
-            _podcastPrevTail = float32.slice(float32.length - PODCAST_CROSSFADE_SAMPLES);
+        // Skip crossfade for very small chunks (avoid slicing to empty)
+        if (float32.length < 128) {
+            _podcastPrevTail = float32.length > 0 ? new Float32Array(float32) : null;
+            // fall through to schedule the tiny chunk as-is
         } else {
-            _podcastPrevTail = null;
+            // Equal-power crossfade: blend start of this chunk with tail of previous chunk,
+            // then trim the overlapped region to prevent energy duplication
+            if (_podcastPrevTail && float32.length > 0) {
+                const overlap = Math.min(_podcastPrevTail.length, float32.length, PODCAST_CROSSFADE_SAMPLES);
+                if (overlap > 0) {
+                    for (let i = 0; i < overlap; i++) {
+                        const t = i / overlap;
+                        const fadeOut = Math.cos(t * Math.PI * 0.5);
+                        const fadeIn  = Math.sin(t * Math.PI * 0.5);
+                        float32[i] = _podcastPrevTail[i] * fadeOut + float32[i] * fadeIn;
+                    }
+                    // Trim overlapped portion to prevent energy duplication
+                    float32 = float32.slice(overlap);
+                }
+            }
+
+            // Store tail safely for next crossfade (after trimming)
+            const tailLen = Math.min(PODCAST_CROSSFADE_SAMPLES, float32.length);
+            _podcastPrevTail = tailLen > 0 ? float32.slice(float32.length - tailLen) : null;
         }
 
         if (sampleRate !== PODCAST_TARGET_SAMPLE_RATE) {
