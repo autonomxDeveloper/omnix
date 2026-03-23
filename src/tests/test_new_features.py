@@ -803,21 +803,268 @@ class TestAudioHardeningHelpers:
 
     def test_normalize_audio(self):
         import numpy as np
-        from app.providers.faster_qwen3_tts_provider import _normalize_audio
+        from app.providers.faster_qwen3_tts_provider import _normalize_audio, soft_clip
         audio = np.array([0.5, -0.5, 1.5], dtype=np.float32)
         result = _normalize_audio(audio)
         assert isinstance(result, bytes)
         # int16 = 2 bytes per sample
         assert len(result) == 6
-        # 1.5 should be clipped to 1.0 → 32767
+        # peak 1.5 > 0.95 → divides by 1.5 → [0.333, -0.333, 1.0]
+        # then soft_clip limits; soft_clip(1.0) = 0.5 → ~16383
         arr = np.frombuffer(result, dtype=np.int16)
-        assert arr[2] == 32767
+        np.testing.assert_allclose(arr[2], soft_clip(np.float32(1.0)) * 32767, atol=1)
+
+    def test_normalize_audio_peak_preserves_quiet(self):
+        """Peak-based normalisation must NOT amplify a quiet signal."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _normalize_audio, soft_clip
+        audio = np.array([0.1, -0.1], dtype=np.float32)
+        result = _normalize_audio(audio)
+        arr = np.frombuffer(result, dtype=np.int16)
+        # soft_clip(0.1) ≈ 0.0909 → ~2979
+        np.testing.assert_allclose(arr[0], soft_clip(np.float32(0.1)) * 32767, atol=1)
 
     def test_align_bytes(self):
         from app.providers.faster_qwen3_tts_provider import _align_bytes
         assert len(_align_bytes(b'\x00\x01\x02')) == 2
         assert len(_align_bytes(b'\x00\x01')) == 2
         assert len(_align_bytes(b'')) == 0
+
+
+class TestCrossfadeAudio:
+    """Tests for the crossfade_audio helper."""
+
+    def test_crossfade_basic(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import crossfade_audio
+        prev = np.ones(1024, dtype=np.float32)
+        curr = np.ones(1024, dtype=np.float32) * -1
+        result = crossfade_audio(prev, curr, fade_samples=512)
+        # Total length: prev[:-512] + 512 blended + curr[512:] = 512 + 512 + 512
+        assert len(result) == 1024 + 1024 - 512
+
+    def test_crossfade_short_arrays_concat(self):
+        """Arrays shorter than fade_samples should just concatenate."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import crossfade_audio
+        prev = np.ones(100, dtype=np.float32)
+        curr = np.ones(100, dtype=np.float32) * 2
+        result = crossfade_audio(prev, curr, fade_samples=512)
+        assert len(result) == 200
+        assert result[0] == 1.0
+        assert result[-1] == 2.0
+
+    def test_crossfade_none_prev(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import crossfade_audio
+        curr = np.ones(100, dtype=np.float32)
+        result = crossfade_audio(None, curr, fade_samples=512)
+        assert len(result) == 100
+
+    def test_crossfade_smooth_transition(self):
+        """Midpoint of crossfade should be roughly the average of the two signals."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import crossfade_audio
+        prev = np.ones(1024, dtype=np.float32)
+        curr = np.zeros(1024, dtype=np.float32)
+        result = crossfade_audio(prev, curr, fade_samples=512)
+        # prev[:-512] has 512 samples (all 1.0), then 512 blended samples
+        # Midpoint of blended region: index 512 + 256 = 768
+        mid = 512 + 256
+        assert 0.4 < result[mid] < 0.6
+
+
+class TestApplyFade:
+    """Tests for the apply_fade helper."""
+
+    def test_fade_edges_near_zero(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import apply_fade
+        audio = np.ones(1024, dtype=np.float32)
+        result = apply_fade(audio, fade_samples=256)
+        assert result[0] == 0.0  # fade-in starts at zero (raised-cosine)
+        assert abs(result[-1]) < 0.01  # fade-out ends near zero
+        # Middle should be untouched
+        assert result[512] == 1.0
+
+    def test_fade_short_audio_passthrough(self):
+        """Audio shorter than 2*fade_samples should pass through as a copy."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import apply_fade
+        audio = np.ones(100, dtype=np.float32)
+        result = apply_fade(audio, fade_samples=256)
+        np.testing.assert_array_equal(result, audio)
+        # Must be a copy, not the same object
+        assert result is not audio
+
+    def test_fade_does_not_mutate_input(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import apply_fade
+        audio = np.ones(1024, dtype=np.float32)
+        original = audio.copy()
+        apply_fade(audio, fade_samples=256)
+        np.testing.assert_array_equal(audio, original)
+
+
+class TestSilencePad:
+    """Tests for the silence_pad helper."""
+
+    def test_silence_appended(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import silence_pad
+        audio = np.ones(100, dtype=np.float32)
+        result = silence_pad(audio, sample_rate=24000, duration_sec=0.05)
+        expected_silence = int(0.05 * 24000)
+        assert len(result) == 100 + expected_silence
+        # Silence region should be all zeros
+        assert np.all(result[100:] == 0.0)
+
+
+class TestFindBestOffset:
+    """Tests for the find_best_offset phase-alignment helper."""
+
+    def test_identical_signals_zero_offset(self):
+        """Two identical signals should produce offset 0."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import find_best_offset
+        sig = np.sin(np.linspace(0, 4 * np.pi, 1024, dtype=np.float32))
+        offset = find_best_offset(sig, sig)
+        assert offset == 0
+
+    def test_shifted_signal_detected(self):
+        """A known shift should be detected."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import find_best_offset
+        # Create a sine wave and a shifted copy
+        t = np.linspace(0, 8 * np.pi, 2048, dtype=np.float32)
+        sig = np.sin(t)
+        shift = 30
+        prev = sig[:512]
+        curr = sig[512 - shift:]  # shifted so the overlap lines up at shift=30
+        offset = find_best_offset(prev, curr, max_shift=64)
+        # Should find the shift that best aligns the waveforms
+        assert 0 <= offset < 64
+
+    def test_short_arrays_no_crash(self):
+        """Very short arrays should not crash."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import find_best_offset
+        prev = np.array([0.1, 0.2], dtype=np.float32)
+        curr = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        offset = find_best_offset(prev, curr, max_shift=5)
+        assert isinstance(offset, int)
+        assert 0 <= offset < 5
+
+
+class TestSoftLimiter:
+    """Tests for soft_clip limiter in _normalize_audio."""
+
+    def test_soft_clip_smoother_than_clip(self):
+        """soft_clip should produce a value < 32767 for a signal at exactly 1.0."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _normalize_audio
+        audio = np.array([1.0], dtype=np.float32)
+        result = _normalize_audio(audio)
+        arr = np.frombuffer(result, dtype=np.int16)
+        # soft_clip(1.0) = 0.5 → well below 32767
+        assert arr[0] < 32767
+        assert arr[0] > 0
+
+    def test_soft_clip_preserves_small_signals(self):
+        """For small values soft_clip(x) ≈ x, so quiet audio is not distorted."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _normalize_audio, soft_clip
+        audio = np.array([0.05, -0.05], dtype=np.float32)
+        result = _normalize_audio(audio)
+        arr = np.frombuffer(result, dtype=np.int16)
+        expected = soft_clip(np.float32(0.05)) * 32767
+        np.testing.assert_allclose(arr[0], expected, atol=1)
+
+    def test_soft_clip_function(self):
+        """Direct test of the soft_clip helper."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import soft_clip
+        x = np.array([0.0, 0.5, 1.0, 2.0, -1.0], dtype=np.float32)
+        result = soft_clip(x)
+        expected = x / (1.0 + np.abs(x))
+        np.testing.assert_allclose(result, expected, atol=1e-6)
+        # All outputs bounded to (-1, 1)
+        assert np.all(np.abs(result) < 1.0)
+
+
+class TestDCOffsetCorrection:
+    """Verify stabilised DC offset removal in server_fastapi.py."""
+
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def _read_server_source(self):
+        with open(os.path.join(self._REPO_ROOT, 'server_fastapi.py'), 'r') as f:
+            return f.read()
+
+    def test_dc_offset_present_in_stream(self):
+        """The streaming loop must subtract np.mean(audio) for DC correction."""
+        import re
+        src = self._read_server_source()
+        assert re.search(r'audio\s*=\s*audio\s*-\s*mean', src), \
+            "DC offset correction (audio = audio - mean) not found in server_fastapi.py"
+
+    def test_dc_offset_guarded(self):
+        """DC offset must be guarded by chunk length and threshold checks."""
+        src = self._read_server_source()
+        assert 'len(audio) > 128' in src, \
+            "DC offset must be guarded by minimum chunk size (len(audio) > 128)"
+        assert '1e-4' in src, \
+            "DC offset must be guarded by threshold (abs(mean) > 1e-4)"
+
+
+class TestNoDoubleCrossfade:
+    """Verify server_fastapi.py uses ONE crossfade strategy (no double overlap)."""
+
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def _read_server_source(self):
+        with open(os.path.join(self._REPO_ROOT, 'server_fastapi.py'), 'r') as f:
+            return f.read()
+
+    def test_no_crossfade_audio_call_in_stream(self):
+        """The streaming loop must NOT call crossfade_audio() (uses tail-buffer instead)."""
+        src = self._read_server_source()
+        code_lines = [line for line in src.split('\n')
+                      if line.strip() and not line.strip().startswith('#')]
+        code_only = '\n'.join(code_lines)
+        assert 'crossfade_audio' not in code_only, \
+            "crossfade_audio should not be imported or called in server_fastapi.py code"
+
+    def test_uses_soft_clip_not_tanh(self):
+        """Streaming loop must use soft_clip() not np.tanh() for the gain stage."""
+        import re
+        src = self._read_server_source()
+        assert re.search(r'soft_clip\(audio', src), \
+            "soft_clip() limiter not found in server_fastapi.py"
+
+    def test_limiter_after_crossfade(self):
+        """Soft limiter must appear AFTER the crossfade block, not before."""
+        src = self._read_server_source()
+        # Find the crossfade block (fade_out/fade_in) and the limiter call
+        xfade_pos = src.find('fade_out')
+        limiter_pos = src.find('soft_clip(audio')
+        assert xfade_pos > 0 and limiter_pos > 0, \
+            "Both crossfade and soft_clip must exist in server_fastapi.py"
+        assert limiter_pos > xfade_pos, \
+            "soft_clip must appear AFTER crossfade in the streaming loop"
+
+    def test_find_best_offset_in_stream(self):
+        """Streaming loop must use find_best_offset for phase alignment."""
+        src = self._read_server_source()
+        assert 'find_best_offset' in src, \
+            "find_best_offset phase-alignment not found in server_fastapi.py"
+
+    def test_fade_only_on_first_chunk(self):
+        """apply_fade should only be called when prev_audio is None (first chunk)."""
+        import re
+        src = self._read_server_source()
+        assert re.search(r'if\s+prev_audio\s+is\s+None.*?apply_fade', src, re.DOTALL), \
+            "apply_fade should only run when prev_audio is None"
 
 
 class TestJobQueueChunkOrdering:

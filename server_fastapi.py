@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 import app.shared as shared
 from app.providers.base import ChatMessage
+from app.providers.faster_qwen3_tts_provider import apply_fade, soft_clip, find_best_offset
 
 
 # ============== CONFIG ==============
@@ -195,6 +196,8 @@ def start_tts_worker():
 
 
 FRAME_SIZE = 2400  # 100ms at 24kHz — smaller frames for smoother streaming
+TTS_GAIN = 0.85    # fixed pre-limiter gain (< 1.0 to leave headroom)
+XFADE_SAMPLES = 512  # crossfade overlap between consecutive model chunks
 
 def _generate_tts_stream(session: ConversationSession, text: str):
     """Generate TTS and send directly via WebSocket with proper chunking"""
@@ -214,6 +217,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
     
     session.tts_active = True
     buffer = np.array([], dtype=np.float32)
+    buffer_chunks: list = []          # collect chunks, concat periodically (O(n) vs O(n²))
     frames_sent = 0
     
     def _ws_send_json(data):
@@ -240,6 +244,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
         if hasattr(tts_provider, 'generate_audio_stream'):
             first_sent = False
             raw_chunks_received = 0
+            prev_audio = None  # tail held back for crossfade stitching
             
             # generate_audio_stream is a regular (synchronous) generator.
             # Run TTS generation entirely in this worker thread; dispatch
@@ -269,12 +274,67 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                     if audio.ndim > 1:
                         audio = audio.mean(axis=1)
                     
-                    # Fixed gain only — per-chunk normalization destroys
-                    # volume envelope and causes distortion when clipped
-                    audio = np.clip(audio * 0.85, -1.0, 1.0)
+                    # 1. DC offset correction – remove any bias the TTS
+                    # model may have introduced (prevents low-freq hum /
+                    # clicks).  Guard against unstable mean on tiny or
+                    # near-silent chunks.
+                    if len(audio) > 128:
+                        mean = np.mean(audio)
+                        if abs(mean) > 1e-4:
+                            audio = audio - mean
+
+                    # 2. Only apply fade-in/out on the very first chunk
+                    # (edge protection).  For subsequent chunks the
+                    # tail-buffer crossfade handles smooth transitions —
+                    # stacking both causes over-attenuation ("pulsing").
+                    if prev_audio is None:
+                        audio = apply_fade(audio, fade_samples=128)
+
+                    # 3. Tail-buffer crossfade (single strategy) -------
+                    # Blend the held-back tail of the previous chunk with
+                    # the head of this chunk using a raised-cosine ramp.
+                    # Energy-based alignment reduces phase-mismatch
+                    # artifacts between arbitrary TTS chunk boundaries.
+                    if prev_audio is not None:
+                        # Phase-align: shift curr to best-match prev tail
+                        offset = find_best_offset(prev_audio, audio)
+                        if offset > 0:
+                            audio = audio[offset:]
+
+                        overlap = min(len(prev_audio), len(audio), XFADE_SAMPLES)
+                        if overlap > 0:
+                            t = np.linspace(0.0, 1.0, overlap, dtype=np.float32)
+                            fade_in = 0.5 * (1.0 - np.cos(np.pi * t))
+                            fade_out = 1.0 - fade_in
+                            audio[:overlap] = (
+                                prev_audio[-overlap:] * fade_out
+                                + audio[:overlap] * fade_in
+                            )
+
+                    # 4. Soft limiter AFTER crossfade — crossfade can
+                    # push amplitude >1.0 even if both inputs were
+                    # limited, so we limit the final stitched waveform.
+                    audio = soft_clip(audio * TTS_GAIN)
+
+                    # Split tail for next iteration's crossfade
+                    if len(audio) > XFADE_SAMPLES:
+                        prev_audio = audio[-XFADE_SAMPLES:].copy()
+                        audio = audio[:-XFADE_SAMPLES]
+                    else:
+                        prev_audio = audio.copy()
+                        audio = np.array([], dtype=np.float32)
+
+                    # Accumulate into list buffer (O(n) total)
+                    if len(audio) > 0:
+                        buffer_chunks.append(audio)
                     
-                    buffer = np.concatenate([buffer, audio])
-                    
+                    # Flatten accumulated chunks into working buffer
+                    if buffer_chunks:
+                        if len(buffer) > 0:
+                            buffer_chunks.insert(0, buffer)
+                        buffer = np.concatenate(buffer_chunks)
+                        buffer_chunks.clear()
+
                     while len(buffer) >= FRAME_SIZE:
                         frame = buffer[:FRAME_SIZE]
                         buffer = buffer[FRAME_SIZE:]
@@ -297,6 +357,16 @@ def _generate_tts_stream(session: ConversationSession, text: str):
             
             print(f"[TTS] Generator done for '{text[:20]}...': raw_chunks={raw_chunks_received}, frames_sent={frames_sent}, remainder={len(buffer)}")
             
+            # Flush the crossfade tail that was held back for stitching
+            if prev_audio is not None and len(prev_audio) > 0:
+                buffer_chunks.append(prev_audio)
+                prev_audio = None
+            if buffer_chunks:
+                if len(buffer) > 0:
+                    buffer_chunks.insert(0, buffer)
+                buffer = np.concatenate(buffer_chunks)
+                buffer_chunks.clear()
+
             if len(buffer) > 0:
                 try:
                     fade_len = min(len(buffer), 256)
