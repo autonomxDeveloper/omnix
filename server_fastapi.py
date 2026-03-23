@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 import app.shared as shared
 from app.providers.base import ChatMessage
-from app.providers.faster_qwen3_tts_provider import crossfade_audio, apply_fade
+from app.providers.faster_qwen3_tts_provider import apply_fade
 
 
 # ============== CONFIG ==============
@@ -215,6 +215,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
     
     session.tts_active = True
     buffer = np.array([], dtype=np.float32)
+    buffer_chunks: list = []          # collect chunks, concat once (O(n) vs O(n²))
     frames_sent = 0
     
     def _ws_send_json(data):
@@ -241,7 +242,8 @@ def _generate_tts_stream(session: ConversationSession, text: str):
         if hasattr(tts_provider, 'generate_audio_stream'):
             first_sent = False
             raw_chunks_received = 0
-            prev_audio = None  # previous model-output chunk for crossfade
+            prev_audio = None  # tail held back for crossfade stitching
+            XFADE = 512
             
             # generate_audio_stream is a regular (synchronous) generator.
             # Run TTS generation entirely in this worker thread; dispatch
@@ -271,31 +273,57 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                     if audio.ndim > 1:
                         audio = audio.mean(axis=1)
                     
-                    # Fixed gain only — per-chunk normalization destroys
-                    # volume envelope and causes distortion when clipped
-                    audio = np.clip(audio * 0.85, -1.0, 1.0)
+                    # DC offset correction – remove any bias the TTS model
+                    # may have introduced (prevents low-freq hum / clicks).
+                    audio = audio - np.mean(audio)
 
-                    # Apply micro fade-in / fade-out on the raw model chunk
-                    # to eliminate edge clicks before stitching.
-                    audio = apply_fade(audio, fade_samples=256)
+                    # Soft-limiter with fixed gain.  np.tanh gives a smooth
+                    # curve near ±1 instead of the harsh edge of np.clip,
+                    # which eliminates clipping distortion.
+                    audio = np.tanh(audio * 0.85)
 
-                    # Crossfade with previous model-output chunk to smooth
-                    # waveform discontinuities at chunk boundaries.
+                    # Only apply fade-in/out on the very first chunk (edge
+                    # protection).  For subsequent chunks the tail-buffer
+                    # crossfade below handles smooth transitions — stacking
+                    # both causes over-attenuation ("pulsing").
+                    if prev_audio is None:
+                        audio = apply_fade(audio, fade_samples=128)
+
+                    # --- Tail-buffer crossfade (single strategy) ----------
+                    # Blend the held-back tail of the previous chunk with the
+                    # head of this chunk using a raised-cosine ramp.  This is
+                    # the ONLY crossfade applied — no separate
+                    # crossfade_audio() call — to avoid double-overlap.
                     if prev_audio is not None:
-                        audio = crossfade_audio(prev_audio, audio, fade_samples=512)
-                    
-                    # Keep the tail of this chunk for crossfading with the next one.
-                    # We buffer only the last 512 samples; the rest goes straight
-                    # into the frame buffer so latency is not increased.
-                    XFADE = 512
+                        overlap = min(len(prev_audio), len(audio), XFADE)
+                        if overlap > 0:
+                            t = np.linspace(0.0, 1.0, overlap, dtype=np.float32)
+                            fade_in = 0.5 * (1.0 - np.cos(np.pi * t))
+                            fade_out = 1.0 - fade_in
+                            audio[:overlap] = (
+                                prev_audio[-overlap:] * fade_out
+                                + audio[:overlap] * fade_in
+                            )
+
+                    # Split tail for next iteration's crossfade
                     if len(audio) > XFADE:
-                        prev_audio = audio[-XFADE:]
+                        prev_audio = audio[-XFADE:].copy()
                         audio = audio[:-XFADE]
                     else:
-                        prev_audio = None
+                        prev_audio = audio.copy()
+                        audio = np.array([], dtype=np.float32)
+
+                    # Accumulate into list buffer (O(n) total)
+                    if len(audio) > 0:
+                        buffer_chunks.append(audio)
                     
-                    buffer = np.concatenate([buffer, audio])
-                    
+                    # Flatten accumulated chunks into working buffer
+                    if buffer_chunks:
+                        if len(buffer) > 0:
+                            buffer_chunks.insert(0, buffer)
+                        buffer = np.concatenate(buffer_chunks)
+                        buffer_chunks.clear()
+
                     while len(buffer) >= FRAME_SIZE:
                         frame = buffer[:FRAME_SIZE]
                         buffer = buffer[FRAME_SIZE:]
@@ -320,8 +348,13 @@ def _generate_tts_stream(session: ConversationSession, text: str):
             
             # Flush the crossfade tail that was held back for stitching
             if prev_audio is not None and len(prev_audio) > 0:
-                buffer = np.concatenate([buffer, prev_audio])
+                buffer_chunks.append(prev_audio)
                 prev_audio = None
+            if buffer_chunks:
+                if len(buffer) > 0:
+                    buffer_chunks.insert(0, buffer)
+                buffer = np.concatenate(buffer_chunks)
+                buffer_chunks.clear()
 
             if len(buffer) > 0:
                 try:

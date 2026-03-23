@@ -46,13 +46,16 @@ def _normalize_audio(audio: np.ndarray) -> bytes:
 
     Uses peak-based normalisation to avoid amplifying noise when the
     signal is already within range.  Only scales down when the peak
-    exceeds 0.95 (close to clipping).
+    exceeds 0.95 (close to clipping).  Final limiting uses ``np.tanh``
+    for a smooth curve instead of hard clipping.
     """
     audio = audio.astype(np.float32)
     peak = np.max(np.abs(audio)) if len(audio) > 0 else 0.0
     if peak > 0.95:
         audio = audio / peak
-    audio = np.clip(audio, -1.0, 1.0)
+    # Soft limiter — tanh smoothly saturates near ±1, avoiding the
+    # harsh distortion edge of hard clipping.
+    audio = np.tanh(audio)
     audio_int16 = (audio * 32767).astype(np.int16)
     return audio_int16.tobytes()
 
