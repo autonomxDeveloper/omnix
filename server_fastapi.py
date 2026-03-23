@@ -283,7 +283,6 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                     # waveform discontinuities at chunk boundaries.
                     if prev_audio is not None:
                         audio = crossfade_audio(prev_audio, audio, fade_samples=512)
-                        prev_audio = None   # consumed – will be set again below
                     
                     # Keep the tail of this chunk for crossfading with the next one.
                     # We buffer only the last 512 samples; the rest goes straight
@@ -292,6 +291,8 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                     if len(audio) > XFADE:
                         prev_audio = audio[-XFADE:]
                         audio = audio[:-XFADE]
+                    else:
+                        prev_audio = None
                     
                     buffer = np.concatenate([buffer, audio])
                     
