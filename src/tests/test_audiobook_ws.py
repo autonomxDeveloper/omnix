@@ -919,8 +919,8 @@ class TestStreamProcessor:
         src = self._get_source()
         match = re.search(r'UNDERRUN_DECAY_FACTOR\s*=\s*([0-9.]+)', src)
         assert match, "Processor must define an explicit underrun decay factor constant"
-        assert float(match.group(1)) >= 0.99, (
-            "UNDERRUN_DECAY_FACTOR should be at least 0.99 for smoother underrun decay"
+        assert float(match.group(1)) >= 0.995, (
+            "UNDERRUN_DECAY_FACTOR should be at least 0.995 for smoother underrun decay"
         )
         assert "this.underrunDecayFactor = StreamProcessor.UNDERRUN_DECAY_FACTOR" in src, (
             "Processor must initialize underrun decay factor from class-level constant"
