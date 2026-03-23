@@ -490,8 +490,13 @@ function playPodcastChunk(chunk) {
                 float32[i] = byteView.getInt16(i * 2, true) / 32768.0;
             }
 
-            // Lazily create a shared AudioContext for podcast streaming
-            if (!_podcastAudioCtx || _podcastAudioCtx.state === 'closed') {
+            // Lazily create a shared AudioContext for podcast streaming;
+            // recreate if the sample rate changed from a previous chunk
+            if (!_podcastAudioCtx || _podcastAudioCtx.state === 'closed' ||
+                _podcastAudioCtx.sampleRate !== sampleRate) {
+                if (_podcastAudioCtx && _podcastAudioCtx.state !== 'closed') {
+                    _podcastAudioCtx.close().catch(() => {});
+                }
                 _podcastAudioCtx = new (window.AudioContext || window.webkitAudioContext)({
                     sampleRate: sampleRate,
                     latencyHint: 'interactive'

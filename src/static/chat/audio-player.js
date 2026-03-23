@@ -286,72 +286,68 @@ function clearTTSQueue() {
  * Play TTS audio using Web Audio API (reuses a single AudioContext)
  * Returns a promise that resolves when playback is complete
  */
-function playTTS(audioBase64, sampleRate = null) {
-    return new Promise(async (resolve, reject) => {
+async function playTTS(audioBase64, sampleRate = null) {
+    try {
+        console.log('[TTS-PLAY] Starting playback function');
+        
+        // PHASE 3: GUARD - Skip WAV playback for stream/websocket modes
+        if (window.TTS_PLAYBACK_MODE === "stream" || window.TTS_PLAYBACK_MODE === "websocket") {
+            console.log("[TTS-PLAY] Skipping WAV playback (streaming mode active)");
+            return;
+        }
+        
+        // Check if stop was requested (from voice.js)
+        if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
+            console.log('[TTS-PLAY] Skipping playback - stop requested');
+            return;
+        }
+        
+        // Validate audio data
+        if (!audioBase64 || audioBase64.length < 100) {
+            console.error('[TTS-PLAY] Invalid audio data:', audioBase64?.length);
+            return;
+        }
+        
+        // Stop any currently-playing source on the shared context
+        if (window.chatCurrentAudio) {
+            try { window.chatCurrentAudio.stop(); } catch (e) {}
+            window.chatCurrentAudio = null;
+        }
+        
+        // Decode base64 to binary
+        let arrayBuffer;
         try {
-            console.log('[TTS-PLAY] Starting playback function');
-            
-            // PHASE 3: GUARD - Skip WAV playback for stream/websocket modes
-            if (window.TTS_PLAYBACK_MODE === "stream" || window.TTS_PLAYBACK_MODE === "websocket") {
-                console.log("[TTS-PLAY] Skipping WAV playback (streaming mode active)");
-                resolve();
-                return;
+            const binaryString = atob(audioBase64);
+            const len = binaryString.length;
+            arrayBuffer = new ArrayBuffer(len);
+            const uint8Array = new Uint8Array(arrayBuffer);
+            for (let i = 0; i < len; i++) {
+                uint8Array[i] = binaryString.charCodeAt(i) & 0xFF;
             }
-            
-            // Check if stop was requested (from voice.js)
-            if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
-                console.log('[TTS-PLAY] Skipping playback - stop requested');
-                resolve();
-                return;
+            console.log('[TTS-PLAY] Decoded base64:', len, 'bytes');
+
+            // If raw PCM (not RIFF/WAV), wrap in a WAV container
+            if (!(uint8Array[0] === 0x52 && uint8Array[1] === 0x49 &&
+                  uint8Array[2] === 0x46 && uint8Array[3] === 0x46) && sampleRate) {
+                arrayBuffer = createWavBuffer(arrayBuffer, sampleRate);
+                console.log('[TTS-PLAY] Created WAV container for raw PCM, sample rate:', sampleRate);
             }
-            
-            // Validate audio data
-            if (!audioBase64 || audioBase64.length < 100) {
-                console.error('[TTS-PLAY] Invalid audio data:', audioBase64?.length);
-                resolve();
-                return;
-            }
-            
-            // Stop any currently-playing source on the shared context
-            if (window.chatCurrentAudio) {
-                try { window.chatCurrentAudio.stop(); } catch (e) {}
-                window.chatCurrentAudio = null;
-            }
-            
-            // Decode base64 to binary
-            let arrayBuffer;
-            try {
-                const binaryString = atob(audioBase64);
-                const len = binaryString.length;
-                arrayBuffer = new ArrayBuffer(len);
-                const uint8Array = new Uint8Array(arrayBuffer);
-                for (let i = 0; i < len; i++) {
-                    uint8Array[i] = binaryString.charCodeAt(i) & 0xFF;
-                }
-                console.log('[TTS-PLAY] Decoded base64:', len, 'bytes');
+        } catch (decodeError) {
+            console.error('[TTS-PLAY] Base64 decode error:', decodeError);
+            return;
+        }
 
-                // If raw PCM (not RIFF/WAV), wrap in a WAV container
-                if (!(uint8Array[0] === 0x52 && uint8Array[1] === 0x49 &&
-                      uint8Array[2] === 0x46 && uint8Array[3] === 0x46) && sampleRate) {
-                    arrayBuffer = createWavBuffer(arrayBuffer, sampleRate);
-                    console.log('[TTS-PLAY] Created WAV container for raw PCM, sample rate:', sampleRate);
-                }
-            } catch (decodeError) {
-                console.error('[TTS-PLAY] Base64 decode error:', decodeError);
-                resolve();
-                return;
-            }
+        const ctx = getWebAudioContext();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+        console.log('[TTS-PLAY] Audio decoded, duration:', audioBuffer.duration);
 
-            const ctx = getWebAudioContext();
-            const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
-            console.log('[TTS-PLAY] Audio decoded, duration:', audioBuffer.duration);
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
 
-            const source = ctx.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(ctx.destination);
+        window.chatCurrentAudio = source;
 
-            window.chatCurrentAudio = source;
-
+        await new Promise((resolve) => {
             source.onended = () => {
                 console.log('[TTS-PLAY] Audio playback ended');
                 window.chatCurrentAudio = null;
@@ -360,19 +356,17 @@ function playTTS(audioBase64, sampleRate = null) {
                 }
                 resolve();
             };
-
             source.start();
             console.log('[TTS-PLAY] Audio.start() succeeded');
-            
-        } catch (error) {
-            console.error('[TTS-PLAY] Critical error in playTTS:', error);
-            window.chatCurrentAudio = null;
-            if (typeof conversationMode !== 'undefined' && conversationMode) {
-                if (typeof micBtn !== 'undefined' && micBtn) micBtn.disabled = false;
-            }
-            resolve(); // Resolve to continue queue
+        });
+        
+    } catch (error) {
+        console.error('[TTS-PLAY] Critical error in playTTS:', error);
+        window.chatCurrentAudio = null;
+        if (typeof conversationMode !== 'undefined' && conversationMode) {
+            if (typeof micBtn !== 'undefined' && micBtn) micBtn.disabled = false;
         }
-    });
+    }
 }
 
 /**
