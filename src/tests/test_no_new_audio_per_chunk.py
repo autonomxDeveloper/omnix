@@ -345,6 +345,8 @@ class TestAudiobookTimelineScheduling:
         body = m.group(0)
         assert "float32.length < 128" in body or "float32.length<128" in body, \
             "playAudioSegment must skip crossfade for tiny chunks (< 128 samples)"
+
+    def test_play_streaming_audio_no_await_segment(self):
         """playStreamingAudio must NOT await playAudioSegment (fire-and-forget)."""
         src = self._get_source()
         m = re.search(r'(?:async )?function playStreamingAudio\b.*?\n\}', src, re.DOTALL)
