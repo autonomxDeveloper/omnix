@@ -809,9 +809,10 @@ class TestAudioHardeningHelpers:
         assert isinstance(result, bytes)
         # int16 = 2 bytes per sample
         assert len(result) == 6
-        # peak 1.5 > 0.95 → divides by 1.5 then clips; 1.5/1.5 = 1.0 → 32767
+        # peak 1.5 > 0.95 → divides by 1.5 → [0.333, -0.333, 1.0]
+        # then tanh soft-limits; tanh(1.0) ≈ 0.7616 → ~24955
         arr = np.frombuffer(result, dtype=np.int16)
-        assert arr[2] == 32767
+        np.testing.assert_allclose(arr[2], np.tanh(1.0) * 32767, atol=1)
 
     def test_normalize_audio_peak_preserves_quiet(self):
         """Peak-based normalisation must NOT amplify a quiet signal."""
@@ -820,8 +821,8 @@ class TestAudioHardeningHelpers:
         audio = np.array([0.1, -0.1], dtype=np.float32)
         result = _normalize_audio(audio)
         arr = np.frombuffer(result, dtype=np.int16)
-        # 0.1 * 32767 ≈ 3276 – allow ±1 for float→int rounding
-        np.testing.assert_allclose(arr[0], 0.1 * 32767, atol=1)
+        # tanh(0.1) ≈ 0.0997 → ~3267, close to 0.1 * 32767 ≈ 3276
+        np.testing.assert_allclose(arr[0], np.tanh(0.1) * 32767, atol=1)
 
     def test_align_bytes(self):
         from app.providers.faster_qwen3_tts_provider import _align_bytes
@@ -919,7 +920,75 @@ class TestSilencePad:
         assert np.all(result[100:] == 0.0)
 
 
-class TestJobQueueChunkOrdering:
+class TestSoftLimiter:
+    """Tests for np.tanh soft limiter in _normalize_audio."""
+
+    def test_tanh_smoother_than_clip(self):
+        """tanh should produce a value < 32767 for a signal at exactly 1.0."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _normalize_audio
+        audio = np.array([1.0], dtype=np.float32)
+        result = _normalize_audio(audio)
+        arr = np.frombuffer(result, dtype=np.int16)
+        # tanh(1.0) ≈ 0.7616 → well below 32767
+        assert arr[0] < 32767
+        assert arr[0] > 0
+
+    def test_tanh_preserves_small_signals(self):
+        """For small values tanh(x) ≈ x, so quiet audio is not distorted."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _normalize_audio
+        audio = np.array([0.05, -0.05], dtype=np.float32)
+        result = _normalize_audio(audio)
+        arr = np.frombuffer(result, dtype=np.int16)
+        expected = np.tanh(0.05) * 32767
+        np.testing.assert_allclose(arr[0], expected, atol=1)
+
+
+class TestDCOffsetCorrection:
+    """Verify DC offset removal via source-code inspection of server_fastapi.py."""
+
+    def test_dc_offset_present_in_stream(self):
+        """The streaming loop must subtract np.mean(audio) for DC correction."""
+        import re
+        with open('server_fastapi.py', 'r') as f:
+            src = f.read()
+        # Must contain DC offset removal
+        assert re.search(r'audio\s*=\s*audio\s*-\s*np\.mean\(audio\)', src), \
+            "DC offset correction (audio = audio - np.mean(audio)) not found in server_fastapi.py"
+
+
+class TestNoDoubleCrossfade:
+    """Verify server_fastapi.py uses ONE crossfade strategy (no double overlap)."""
+
+    def test_no_crossfade_audio_call_in_stream(self):
+        """The streaming loop must NOT call crossfade_audio() (uses tail-buffer instead)."""
+        import re
+        with open('server_fastapi.py', 'r') as f:
+            src = f.read()
+        # Check that crossfade_audio is not imported or called (ignoring comments)
+        code_lines = [line for line in src.split('\n')
+                      if line.strip() and not line.strip().startswith('#')]
+        code_only = '\n'.join(code_lines)
+        assert 'crossfade_audio' not in code_only, \
+            "crossfade_audio should not be imported or called in server_fastapi.py code"
+
+    def test_uses_tanh_not_clip(self):
+        """Streaming loop must use np.tanh() not np.clip() for the main gain stage."""
+        import re
+        with open('server_fastapi.py', 'r') as f:
+            src = f.read()
+        assert re.search(r'np\.tanh\(audio', src), \
+            "np.tanh() soft limiter not found in server_fastapi.py"
+
+    def test_fade_only_on_first_chunk(self):
+        """apply_fade should only be called when prev_audio is None (first chunk)."""
+        import re
+        with open('server_fastapi.py', 'r') as f:
+            src = f.read()
+        # Should have conditional: "if prev_audio is None:" followed by apply_fade
+        assert re.search(r'if\s+prev_audio\s+is\s+None.*?apply_fade', src, re.DOTALL), \
+            "apply_fade should only run when prev_audio is None"
     """Issue 3 – Job queue chunk_index and ordered retrieval."""
 
     def test_job_has_chunk_index(self):
