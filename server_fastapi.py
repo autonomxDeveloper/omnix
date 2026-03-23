@@ -196,6 +196,8 @@ def start_tts_worker():
 
 
 FRAME_SIZE = 2400  # 100ms at 24kHz — smaller frames for smoother streaming
+TTS_GAIN = 0.85    # fixed pre-limiter gain (< 1.0 to leave headroom)
+XFADE_SAMPLES = 512  # crossfade overlap between consecutive model chunks
 
 def _generate_tts_stream(session: ConversationSession, text: str):
     """Generate TTS and send directly via WebSocket with proper chunking"""
@@ -243,7 +245,6 @@ def _generate_tts_stream(session: ConversationSession, text: str):
             first_sent = False
             raw_chunks_received = 0
             prev_audio = None  # tail held back for crossfade stitching
-            XFADE = 512
             
             # generate_audio_stream is a regular (synchronous) generator.
             # Run TTS generation entirely in this worker thread; dispatch
@@ -280,7 +281,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                     # Soft-limiter with fixed gain.  np.tanh gives a smooth
                     # curve near ±1 instead of the harsh edge of np.clip,
                     # which eliminates clipping distortion.
-                    audio = np.tanh(audio * 0.85)
+                    audio = np.tanh(audio * TTS_GAIN)
 
                     # Only apply fade-in/out on the very first chunk (edge
                     # protection).  For subsequent chunks the tail-buffer
@@ -295,7 +296,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                     # the ONLY crossfade applied — no separate
                     # crossfade_audio() call — to avoid double-overlap.
                     if prev_audio is not None:
-                        overlap = min(len(prev_audio), len(audio), XFADE)
+                        overlap = min(len(prev_audio), len(audio), XFADE_SAMPLES)
                         if overlap > 0:
                             t = np.linspace(0.0, 1.0, overlap, dtype=np.float32)
                             fade_in = 0.5 * (1.0 - np.cos(np.pi * t))
@@ -306,9 +307,9 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                             )
 
                     # Split tail for next iteration's crossfade
-                    if len(audio) > XFADE:
-                        prev_audio = audio[-XFADE:].copy()
-                        audio = audio[:-XFADE]
+                    if len(audio) > XFADE_SAMPLES:
+                        prev_audio = audio[-XFADE_SAMPLES:].copy()
+                        audio = audio[:-XFADE_SAMPLES]
                     else:
                         prev_audio = audio.copy()
                         audio = np.array([], dtype=np.float32)
