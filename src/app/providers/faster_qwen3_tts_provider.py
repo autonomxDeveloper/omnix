@@ -61,6 +61,9 @@ def find_best_offset(prev: np.ndarray, curr: np.ndarray,
     that minimises the mean-squared difference against the tail of
     *prev*, producing a smoother splice.
     """
+    if prev is None or curr is None or len(prev) == 0 or len(curr) == 0:
+        return 0
+
     best_offset = 0
     best_score = float('inf')
 

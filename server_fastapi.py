@@ -217,7 +217,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
     
     session.tts_active = True
     buffer = np.array([], dtype=np.float32)
-    buffer_chunks: list = []          # collect chunks, concat once (O(n) vs O(n²))
+    buffer_chunks: list = []          # collect chunks, concat periodically (O(n) vs O(n²))
     frames_sent = 0
     
     def _ws_send_json(data):
