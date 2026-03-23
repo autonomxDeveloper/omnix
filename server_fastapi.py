@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 import app.shared as shared
 from app.providers.base import ChatMessage
-from app.providers.faster_qwen3_tts_provider import apply_fade
+from app.providers.faster_qwen3_tts_provider import apply_fade, soft_clip, find_best_offset
 
 
 # ============== CONFIG ==============
@@ -274,28 +274,33 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                     if audio.ndim > 1:
                         audio = audio.mean(axis=1)
                     
-                    # DC offset correction – remove any bias the TTS model
-                    # may have introduced (prevents low-freq hum / clicks).
-                    audio = audio - np.mean(audio)
+                    # 1. DC offset correction – remove any bias the TTS
+                    # model may have introduced (prevents low-freq hum /
+                    # clicks).  Guard against unstable mean on tiny or
+                    # near-silent chunks.
+                    if len(audio) > 128:
+                        mean = np.mean(audio)
+                        if abs(mean) > 1e-4:
+                            audio = audio - mean
 
-                    # Soft-limiter with fixed gain.  np.tanh gives a smooth
-                    # curve near ±1 instead of the harsh edge of np.clip,
-                    # which eliminates clipping distortion.
-                    audio = np.tanh(audio * TTS_GAIN)
-
-                    # Only apply fade-in/out on the very first chunk (edge
-                    # protection).  For subsequent chunks the tail-buffer
-                    # crossfade below handles smooth transitions — stacking
-                    # both causes over-attenuation ("pulsing").
+                    # 2. Only apply fade-in/out on the very first chunk
+                    # (edge protection).  For subsequent chunks the
+                    # tail-buffer crossfade handles smooth transitions —
+                    # stacking both causes over-attenuation ("pulsing").
                     if prev_audio is None:
                         audio = apply_fade(audio, fade_samples=128)
 
-                    # --- Tail-buffer crossfade (single strategy) ----------
-                    # Blend the held-back tail of the previous chunk with the
-                    # head of this chunk using a raised-cosine ramp.  This is
-                    # the ONLY crossfade applied — no separate
-                    # crossfade_audio() call — to avoid double-overlap.
+                    # 3. Tail-buffer crossfade (single strategy) -------
+                    # Blend the held-back tail of the previous chunk with
+                    # the head of this chunk using a raised-cosine ramp.
+                    # Energy-based alignment reduces phase-mismatch
+                    # artifacts between arbitrary TTS chunk boundaries.
                     if prev_audio is not None:
+                        # Phase-align: shift curr to best-match prev tail
+                        offset = find_best_offset(prev_audio, audio)
+                        if offset > 0:
+                            audio = audio[offset:]
+
                         overlap = min(len(prev_audio), len(audio), XFADE_SAMPLES)
                         if overlap > 0:
                             t = np.linspace(0.0, 1.0, overlap, dtype=np.float32)
@@ -305,6 +310,11 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                                 prev_audio[-overlap:] * fade_out
                                 + audio[:overlap] * fade_in
                             )
+
+                    # 4. Soft limiter AFTER crossfade — crossfade can
+                    # push amplitude >1.0 even if both inputs were
+                    # limited, so we limit the final stitched waveform.
+                    audio = soft_clip(audio * TTS_GAIN)
 
                     # Split tail for next iteration's crossfade
                     if len(audio) > XFADE_SAMPLES:
