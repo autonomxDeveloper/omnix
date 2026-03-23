@@ -120,7 +120,17 @@ function resetAudiobookState() {
         _streamingAudioCtx = null;
     }
 
-    // Stop any playing SSE audio element
+    // Stop SSE Web Audio API context
+    if (_sseAudioSource) {
+        try { _sseAudioSource.stop(); } catch (e) {}
+        _sseAudioSource = null;
+    }
+    if (_sseAudioCtx) {
+        safeCloseAudioContext(_sseAudioCtx);
+        _sseAudioCtx = null;
+    }
+
+    // Stop any playing SSE audio element (legacy)
     if (streamingAudioElement) {
         try { streamingAudioElement.pause(); streamingAudioElement.currentTime = 0; } catch (e) {}
     }
@@ -985,6 +995,9 @@ function _normalizeKey(name) {
 let streamingPlaybackInProgress = false;
 let streamingAudioIndex = 0;
 let streamingAudioElement = null;
+// SSE streaming path: reusable AudioContext + current source node
+let _sseAudioCtx = null;
+let _sseAudioSource = null;
 let streamingShouldShowFullControls = false;
 let voiceProfileSaveTimer = null;
 const AUDIO_EDGE_FADE_MS = 8;
@@ -1884,35 +1897,56 @@ async function playStreamingAudio() {
     }
 }
 
-// Play a single audio segment
+// Play a single audio segment using Web Audio API (reuses a single AudioContext)
 function playAudioSegment(segment) {
     return new Promise((resolve, reject) => {
         try {
-            // Convert raw PCM to WAV for playback
-            const wavBuffer = createWavBufferFromBase64(segment.audio, segment.sampleRate);
-            const blob = new Blob([wavBuffer], { type: 'audio/wav' });
-            const audioUrl = URL.createObjectURL(blob);
-            
-            if (streamingAudioElement) {
-                streamingAudioElement.pause();
-                URL.revokeObjectURL(streamingAudioElement.src);
+            // Decode base64 PCM to raw bytes
+            const binaryString = atob(segment.audio);
+            const len = binaryString.length;
+            const pcmBytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                pcmBytes[i] = binaryString.charCodeAt(i) & 0xFF;
             }
-            
-            streamingAudioElement = new Audio(audioUrl);
-            
-            streamingAudioElement.onended = () => {
-                URL.revokeObjectURL(audioUrl);
+
+            // Apply edge fade (same smoothing as before)
+            const smoothed = applyEdgeFadeToPcmBytes(pcmBytes, segment.sampleRate);
+
+            // Convert Int16 PCM to Float32
+            const totalSamples = Math.floor(smoothed.length / 2);
+            const view = new DataView(smoothed.buffer, smoothed.byteOffset, smoothed.byteLength);
+            const float32 = new Float32Array(totalSamples);
+            for (let i = 0; i < totalSamples; i++) {
+                float32[i] = view.getInt16(i * 2, true) / 32768.0;
+            }
+
+            // Lazily create a shared AudioContext for SSE streaming
+            if (!_sseAudioCtx || _sseAudioCtx.state === 'closed') {
+                _sseAudioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: segment.sampleRate,
+                    latencyHint: 'interactive'
+                });
+            }
+            if (_sseAudioCtx.state === 'suspended') {
+                _sseAudioCtx.resume();
+            }
+
+            const audioBuffer = _sseAudioCtx.createBuffer(1, float32.length, segment.sampleRate);
+            audioBuffer.getChannelData(0).set(float32);
+
+            const source = _sseAudioCtx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(_sseAudioCtx.destination);
+
+            _sseAudioSource = source;
+
+            source.onended = () => {
+                _sseAudioSource = null;
                 resolve();
             };
-            
-            streamingAudioElement.onerror = (e) => {
-                console.error('Audio playback error:', e);
-                URL.revokeObjectURL(audioUrl);
-                reject(e);
-            };
-            
-            streamingAudioElement.play();
-            
+
+            source.start();
+
         } catch (error) {
             reject(error);
         }
@@ -1955,7 +1989,12 @@ function pauseStreamingAudio() {
             console.warn('[AUDIOBOOK] AudioContext suspend failed:', e));
     }
 
-    // SSE path: pause the <audio> element
+    // SSE path: suspend the AudioContext
+    if (_sseAudioCtx && _sseAudioCtx.state === 'running') {
+        _sseAudioCtx.suspend().catch(e =>
+            console.warn('[AUDIOBOOK] SSE AudioContext suspend failed:', e));
+    }
+    // Legacy SSE path: pause the <audio> element
     if (streamingAudioElement) {
         streamingAudioElement.pause();
     }
@@ -1983,7 +2022,12 @@ function resumeStreamingAudio() {
     if (pauseBtn) pauseBtn.style.display = 'inline-block';
     if (resumeBtn) resumeBtn.style.display = 'none';
     
-    // SSE path: resume playback (the <audio> element maintains its own position)
+    // SSE path: resume the AudioContext
+    if (_sseAudioCtx && _sseAudioCtx.state === 'suspended') {
+        _sseAudioCtx.resume().catch(e =>
+            console.warn('[AUDIOBOOK] SSE AudioContext resume failed:', e));
+    }
+    // Legacy SSE path: resume playback (the <audio> element maintains its own position)
     if (streamingAudioElement && streamingAudioElement.paused) {
         streamingAudioElement.play();
     }
@@ -2027,7 +2071,16 @@ function stopStreamingAudio() {
         audiobookWs = null;
     }
 
-    // SSE path: stop the <audio> element
+    // SSE path: tear down the reusable AudioContext and stop current source
+    if (_sseAudioSource) {
+        try { _sseAudioSource.stop(); } catch (e) {}
+        _sseAudioSource = null;
+    }
+    if (_sseAudioCtx) {
+        safeCloseAudioContext(_sseAudioCtx);
+        _sseAudioCtx = null;
+    }
+    // Legacy SSE path: stop the <audio> element
     if (streamingAudioElement) {
         streamingAudioElement.pause();
         streamingAudioElement.currentTime = 0;
