@@ -299,6 +299,9 @@ def _generate_tts_stream(session: ConversationSession, text: str):
             
             if len(buffer) > 0:
                 try:
+                    fade_len = min(len(buffer), 256)
+                    fade = np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
+                    buffer[-fade_len:] *= fade
                     if len(buffer) < FRAME_SIZE:
                         buffer = np.pad(buffer, (0, FRAME_SIZE - len(buffer)))
                     _ws_send_bytes(buffer.tobytes())
@@ -2689,8 +2692,11 @@ def _generate_audiobook_tts_pcm(text: str, speaker: str = "default",
                     pcm_int16 = (frame * 32767).astype(np.int16).tobytes()
                     yield pcm_int16
 
-            # Flush remainder
+            # Flush remainder with fade-out to prevent click at boundary
             if len(buffer) > 0:
+                fade_len = min(len(buffer), 256)
+                fade = np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
+                buffer[-fade_len:] *= fade
                 if len(buffer) < AUDIOBOOK_FRAME_SIZE:
                     buffer = np.pad(buffer, (0, AUDIOBOOK_FRAME_SIZE - len(buffer)))
                 pcm_int16 = (buffer * 32767).astype(np.int16).tobytes()
