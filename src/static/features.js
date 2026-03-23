@@ -909,9 +909,22 @@ function playAudiobookFromLibrary(id) {
     const library = getAudiobookLibrary();
     const book = library.find(a => a.id === id);
     if (book && book.audioData) {
-        // Play the audio
-        const audio = new Audio('data:audio/wav;base64,' + book.audioData);
-        audio.play();
+        // Decode base64 WAV and play via Web Audio API
+        const binaryString = atob(book.audioData);
+        const len = binaryString.length;
+        const arrayBuffer = new ArrayBuffer(len);
+        const uint8 = new Uint8Array(arrayBuffer);
+        for (let i = 0; i < len; i++) {
+            uint8[i] = binaryString.charCodeAt(i) & 0xFF;
+        }
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        ctx.decodeAudioData(arrayBuffer.slice(0), (audioBuffer) => {
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(ctx.destination);
+            source.onended = () => { ctx.close().catch(() => {}); };
+            source.start();
+        });
     }
 }
 

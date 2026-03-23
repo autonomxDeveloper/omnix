@@ -387,6 +387,14 @@ function showPodcastProgress() {
 let streamingPlaybackActive = false;
 let streamingPlaybackIndex = 0;
 let streamingAudioElement = null;
+// Reusable AudioContext + timeline scheduling for streaming playback
+let _podcastAudioCtx = null;
+let _podcastNextPlaybackTime = 0;
+const PODCAST_TARGET_SAMPLE_RATE = 24000;
+const PODCAST_INITIAL_BUFFER_SEC = 0.25;
+// Crossfade state: previous chunk tail for equal-power overlap
+let _podcastPrevTail = null;
+const PODCAST_CROSSFADE_SAMPLES = 512; // ~21ms @ 24kHz
 
 // Show streaming player - like audiobook does
 function showPodcastStreamingPlayer() {
@@ -445,7 +453,7 @@ function startPodcastStreamingPlayback() {
     playNextPodcastChunk();
 }
 
-// Play next audio chunk
+// Play next audio chunk - schedules chunks on timeline as they arrive
 async function playNextPodcastChunk() {
     while (podcastState.isPlaying) {
         if (streamingPlaybackIndex >= podcastState.audioQueue.length) {
@@ -458,50 +466,102 @@ async function playNextPodcastChunk() {
         }
         
         const chunk = podcastState.audioQueue[streamingPlaybackIndex];
-        await playPodcastChunk(chunk);
+        // Schedule on timeline (fire-and-forget, no await)
+        playPodcastChunk(chunk);
         streamingPlaybackIndex++;
     }
     
     streamingPlaybackActive = false;
 }
 
-// Play a single audio chunk
+// Schedule a single audio chunk on the global timeline (fire-and-forget)
 function playPodcastChunk(chunk) {
-    return new Promise((resolve, reject) => {
-        try {
-            const wavBuffer = createWavBufferFromBase64(chunk.audio, chunk.sample_rate);
-            const blob = new Blob([wavBuffer], { type: 'audio/wav' });
-            const url = URL.createObjectURL(blob);
-            
-            if (streamingAudioElement) {
-                streamingAudioElement.pause();
-                URL.revokeObjectURL(streamingAudioElement.src);
-            }
-            
-            streamingAudioElement = new Audio(url);
-            
-            streamingAudioElement.onended = () => {
-                URL.revokeObjectURL(url);
-                resolve();
-            };
-            
-            streamingAudioElement.onerror = (e) => {
-                console.error('[PODCAST] Audio error:', e);
-                URL.revokeObjectURL(url);
-                resolve();
-            };
-            
-            streamingAudioElement.play();
-            
-            // Update status
-            updatePodcastStatus(`Playing segment ${streamingPlaybackIndex + 1}`);
-            updatePodcastSegmentInfo(chunk);
-            
-        } catch (error) {
-            console.error('[PODCAST] Error playing chunk:', error);
-            resolve();
+    try {
+        const sampleRate = chunk.sample_rate;
+
+        // Decode base64 PCM to raw bytes
+        const binaryString = atob(chunk.audio);
+        const len = binaryString.length;
+        const pcmBytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            pcmBytes[i] = binaryString.charCodeAt(i) & 0xFF;
         }
-    });
+
+        // Convert Int16 PCM to Float32
+        const totalSamples = Math.floor(pcmBytes.length / 2);
+        const byteView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+        let float32 = new Float32Array(totalSamples);
+        for (let i = 0; i < totalSamples; i++) {
+            float32[i] = byteView.getInt16(i * 2, true) / 32768.0;
+        }
+
+        // Skip crossfade for very small chunks (avoid slicing to empty)
+        if (float32.length < 128) {
+            _podcastPrevTail = float32.length > 0 ? new Float32Array(float32) : null;
+            // fall through to schedule the tiny chunk as-is
+        } else {
+            // Equal-power crossfade: blend start of this chunk with tail of previous chunk,
+            // then trim the overlapped region to prevent energy duplication
+            if (_podcastPrevTail && float32.length > 0) {
+                const overlap = Math.min(_podcastPrevTail.length, float32.length, PODCAST_CROSSFADE_SAMPLES);
+                if (overlap > 0) {
+                    for (let i = 0; i < overlap; i++) {
+                        const t = i / overlap;
+                        const fadeOut = Math.cos(t * Math.PI * 0.5);
+                        const fadeIn  = Math.sin(t * Math.PI * 0.5);
+                        float32[i] = _podcastPrevTail[i] * fadeOut + float32[i] * fadeIn;
+                    }
+                    // Trim overlapped portion to prevent energy duplication
+                    float32 = float32.slice(overlap);
+                }
+            }
+
+            // Store tail safely for next crossfade (after trimming)
+            const tailLen = Math.min(PODCAST_CROSSFADE_SAMPLES, float32.length);
+            _podcastPrevTail = tailLen > 0 ? float32.slice(float32.length - tailLen) : null;
+        }
+
+        if (sampleRate !== PODCAST_TARGET_SAMPLE_RATE) {
+            console.warn('[PODCAST] Sample rate mismatch:', sampleRate,
+                         'expected:', PODCAST_TARGET_SAMPLE_RATE);
+        }
+
+        // Lazily create a shared AudioContext (never recreate mid-stream)
+        if (!_podcastAudioCtx || _podcastAudioCtx.state === 'closed') {
+            _podcastAudioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: PODCAST_TARGET_SAMPLE_RATE,
+                latencyHint: 'interactive'
+            });
+            _podcastNextPlaybackTime = _podcastAudioCtx.currentTime + PODCAST_INITIAL_BUFFER_SEC;
+        }
+        if (_podcastAudioCtx.state === 'suspended') {
+            _podcastAudioCtx.resume();
+        }
+
+        const audioBuffer = _podcastAudioCtx.createBuffer(1, float32.length, PODCAST_TARGET_SAMPLE_RATE);
+        audioBuffer.getChannelData(0).set(float32);
+
+        const source = _podcastAudioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(_podcastAudioCtx.destination);
+
+        // Underrun protection
+        const now = _podcastAudioCtx.currentTime;
+        if (_podcastNextPlaybackTime < now) {
+            _podcastNextPlaybackTime = now + 0.05;
+        }
+
+        // Schedule on the global timeline (gapless)
+        source.start(_podcastNextPlaybackTime);
+        _podcastNextPlaybackTime += audioBuffer.duration;
+
+        // Update status
+        updatePodcastStatus(`Playing segment ${streamingPlaybackIndex + 1}`);
+        updatePodcastSegmentInfo(chunk);
+
+    } catch (error) {
+        console.error('[PODCAST] Error scheduling chunk:', error);
+    }
 }
 
 // Update podcast status
@@ -535,6 +595,10 @@ function updatePodcastTranscriptDisplay() {
 function pausePodcastStreaming() {
     podcastState.isPlaying = false;
     
+    if (_podcastAudioCtx && _podcastAudioCtx.state === 'running') {
+        _podcastAudioCtx.suspend().catch(e =>
+            console.warn('[PODCAST] AudioContext suspend failed:', e));
+    }
     if (streamingAudioElement) {
         streamingAudioElement.pause();
     }
@@ -550,6 +614,11 @@ function pausePodcastStreaming() {
 // Resume streaming
 function resumePodcastStreaming() {
     podcastState.isPlaying = true;
+    
+    if (_podcastAudioCtx && _podcastAudioCtx.state === 'suspended') {
+        _podcastAudioCtx.resume().catch(e =>
+            console.warn('[PODCAST] AudioContext resume failed:', e));
+    }
     
     const pauseBtn = document.getElementById('podcast-pause-btn');
     const resumeBtn = document.getElementById('podcast-resume-btn');
@@ -567,6 +636,15 @@ function stopPodcastStreaming() {
     streamingPlaybackActive = false;
     streamingPlaybackIndex = 0;
     
+    // Close AudioContext (kills ALL scheduled audio) and reset timeline
+    if (_podcastAudioCtx) {
+        if (_podcastAudioCtx.state !== 'closed') {
+            _podcastAudioCtx.close().catch(() => {});
+        }
+        _podcastAudioCtx = null;
+    }
+    _podcastNextPlaybackTime = 0;
+    _podcastPrevTail = null;
     if (streamingAudioElement) {
         streamingAudioElement.pause();
     }
