@@ -905,10 +905,16 @@ class TestStreamProcessor:
         assert re.search(r'readIndex.*%', src), \
             "Must use modulo on readIndex for ring buffer wraparound"
 
-    def test_worklet_outputs_silence_on_underrun(self):
+    def test_worklet_outputs_smoothed_on_underrun(self):
         src = self._get_source()
-        assert re.search(r'output\[i\]\s*=\s*0', src), (
-            "Processor must output silence (0) when buffer is empty (underrun)"
+        assert "UNDERRUN_DECAY_FACTOR = 0.98" in src, (
+            "Processor must define an explicit underrun decay factor constant"
+        )
+        assert "this.underrunDecayFactor = StreamProcessor.UNDERRUN_DECAY_FACTOR" in src, (
+            "Processor must initialize underrun decay factor from class-level constant"
+        )
+        assert "this.lastSample *= this.underrunDecayFactor" in src and "output[i] = this.lastSample" in src, (
+            "Processor must smooth underrun output with decayed lastSample"
         )
 
     def test_process_returns_true(self):
@@ -1183,6 +1189,9 @@ class TestPlaybackDrivenPipeline:
         assert re.search(r'>\s*MAX_QUEUE_SECONDS', body), (
             "trimOverflowQueue must compare against MAX_QUEUE_SECONDS"
         )
+        assert "preserving queued audio to avoid word skips" in body, (
+            "When queue exceeds limit, code must preserve queued audio to avoid dropping words"
+        )
 
     def test_drain_overflow_queue_exists(self):
         """Must have a drainOverflowQueue function to push queued chunks."""
@@ -1233,6 +1242,14 @@ class TestPlaybackDrivenPipeline:
         )
         assert re.search(r'samplesPlayed', worklet_src), (
             "Worklet must send samplesPlayed in progress messages"
+        )
+        assert re.search(r'if\s*\(\s*this\.frameCount\s*>=\s*\d+', worklet_src), (
+            "Worklet should gate progress reporting on a frame-count threshold"
+        )
+        threshold_match = re.search(r'if\s*\(\s*this\.frameCount\s*>=\s*(\d+)', worklet_src)
+        assert threshold_match, "Worklet progress threshold must be parseable"
+        assert int(threshold_match.group(1)) <= 6, (
+            "Worklet progress cadence should be tight (<=6 frames) to reduce subtitle drift"
         )
 
     def test_worklet_reports_available_samples(self):
@@ -1323,6 +1340,9 @@ class TestPlaybackDrivenPipeline:
         loop_body = match.group(0)
         assert "lastProgressTimestamp" in loop_body, (
             "Subtitle loop must use lastProgressTimestamp for interpolation"
+        )
+        assert "Math.min" in loop_body and "bufferedSeconds" in loop_body, (
+            "Interpolation must be clamped by bufferedSeconds to avoid transcript getting ahead"
         )
 
     def test_caller_handles_push_return(self):
