@@ -1215,8 +1215,11 @@ async function generateAudiobookWS() {
         const overflowQueue = [];
         /** Incremental sample count in overflowQueue for O(1) duration checks. */
         let overflowQueueSamples = 0;
-        /** Maximum overflow queue duration in seconds before trimming oldest. */
+        /** Maximum overflow queue duration in seconds before warning (no audio is dropped). */
         const MAX_QUEUE_SECONDS = 20;
+        /** Cap subtitle interpolation to 0.1 seconds (100ms) so transcript can't run ahead on delayed progress messages. */
+        const MAX_INTERPOLATION_SECONDS = 0.1;
+        let overflowQueueWarningEmitted = false;
         /** Total samples played, reported by the AudioWorklet. */
         let samplesPlayedByWorklet = 0;
         /** Timestamp of last worklet progress report, for playback interpolation. */
@@ -1377,10 +1380,9 @@ async function generateAudiobookWS() {
          * overflowQueueSamples counter for O(1) duration checks.
          */
         function trimOverflowQueue() {
-            while (overflowQueueSamples / SAMPLE_RATE > MAX_QUEUE_SECONDS && overflowQueue.length > 1) {
-                const removed = overflowQueue.shift();
-                overflowQueueSamples -= removed.length;
-                console.warn('[AUDIOBOOK-WS] Overflow queue too large, trimming oldest chunk');
+            if (overflowQueueSamples / SAMPLE_RATE > MAX_QUEUE_SECONDS && !overflowQueueWarningEmitted) {
+                overflowQueueWarningEmitted = true;
+                console.warn('[AUDIOBOOK-WS] Overflow queue exceeded limit; preserving queued audio to avoid word skips');
             }
         }
 
@@ -1429,7 +1431,10 @@ async function generateAudiobookWS() {
             if (!audioCtx) return;
             const baseTime = (samplesPlayedByWorklet || 0) / SAMPLE_RATE;
             const elapsed = lastProgressTimestamp > 0 ? (audioCtx.currentTime - lastProgressTimestamp) : 0;
-            const playbackTime = baseTime + Math.max(0, elapsed);
+            const elapsedClamped = Math.max(0, elapsed);
+            const interpolationCap = Math.min(MAX_INTERPOLATION_SECONDS, bufferedSeconds);
+            const interpolated = Math.min(elapsedClamped, interpolationCap);
+            const playbackTime = baseTime + interpolated;
             for (const seg of scheduledSegments) {
                 if (playbackTime >= seg.startTime && playbackTime < seg.endTime) {
                     updateSegmentInfo(seg);
