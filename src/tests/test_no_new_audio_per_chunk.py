@@ -313,14 +313,18 @@ class TestAudiobookTimelineScheduling:
         assert "SSE_TARGET_SAMPLE_RATE" in body, \
             "Must use fixed SSE_TARGET_SAMPLE_RATE, not dynamic sample rate"
 
-    def test_play_audio_segment_chunk_fade(self):
-        """playAudioSegment must apply per-chunk fade for click removal."""
+    def test_play_audio_segment_crossfade(self):
+        """playAudioSegment must apply equal-power crossfade for waveform continuity."""
         src = self._get_source()
         m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
         assert m
         body = m.group(0)
-        assert "fadeSamples" in body or "SSE_CHUNK_FADE_SAMPLES" in body, \
-            "playAudioSegment must apply fade-in/fade-out"
+        assert "fadeLen" in body or "SSE_CROSSFADE_SAMPLES" in body, \
+            "playAudioSegment must apply crossfade"
+        assert "_ssePrevTail" in body, \
+            "playAudioSegment must use _ssePrevTail for crossfade continuity"
+        assert "Math.cos" in body and "Math.sin" in body, \
+            "playAudioSegment must use equal-power (cos/sin) crossfade"
 
     def test_play_streaming_audio_no_await_segment(self):
         """playStreamingAudio must NOT await playAudioSegment (fire-and-forget)."""
@@ -339,6 +343,33 @@ class TestAudiobookTimelineScheduling:
         body = m.group(0)
         assert "_sseNextPlaybackTime = 0" in body, \
             "stopStreamingAudio must reset the timeline"
+
+    def test_stop_resets_prev_tail(self):
+        """stopStreamingAudio must reset _ssePrevTail for crossfade."""
+        src = self._get_source()
+        m = re.search(r'function stopStreamingAudio\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_ssePrevTail = null" in body, \
+            "stopStreamingAudio must reset _ssePrevTail"
+
+    def test_reset_state_clears_prev_tail(self):
+        """resetAudiobookState must reset _ssePrevTail."""
+        src = self._get_source()
+        m = re.search(r'function resetAudiobookState\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_ssePrevTail = null" in body, \
+            "resetAudiobookState must reset _ssePrevTail"
+
+    def test_crossfade_samples_constant(self):
+        """SSE_CROSSFADE_SAMPLES constant must exist (>=256)."""
+        src = self._get_source()
+        assert "SSE_CROSSFADE_SAMPLES" in src
+        m = re.search(r'SSE_CROSSFADE_SAMPLES\s*=\s*(\d+)', src)
+        assert m
+        assert int(m.group(1)) >= 256, \
+            "SSE_CROSSFADE_SAMPLES must be >= 256 for adequate crossfade"
 
 
 class TestPodcastTimelineScheduling:
@@ -392,6 +423,33 @@ class TestPodcastTimelineScheduling:
         assert m
         body = m.group(0)
         assert "_podcastNextPlaybackTime = 0" in body
+
+    def test_play_podcast_chunk_crossfade(self):
+        """playPodcastChunk must apply equal-power crossfade."""
+        src = self._get_source()
+        m = re.search(r'function playPodcastChunk\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_podcastPrevTail" in body, \
+            "playPodcastChunk must use _podcastPrevTail for crossfade"
+        assert "Math.cos" in body and "Math.sin" in body, \
+            "playPodcastChunk must use equal-power (cos/sin) crossfade"
+
+    def test_stop_resets_prev_tail(self):
+        """stopPodcastStreaming must reset _podcastPrevTail."""
+        src = self._get_source()
+        m = re.search(r'function stopPodcastStreaming\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_podcastPrevTail = null" in body
+
+    def test_crossfade_samples_constant(self):
+        """PODCAST_CROSSFADE_SAMPLES must exist (>=256)."""
+        src = self._get_source()
+        assert "PODCAST_CROSSFADE_SAMPLES" in src
+        m = re.search(r'PODCAST_CROSSFADE_SAMPLES\s*=\s*(\d+)', src)
+        assert m
+        assert int(m.group(1)) >= 256
 
 
 class TestChatAudioScheduling:

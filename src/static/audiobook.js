@@ -126,6 +126,7 @@ function resetAudiobookState() {
         _sseAudioCtx = null;
     }
     _sseNextPlaybackTime = 0;
+    _ssePrevTail = null;
 
     // Stop any playing SSE audio element (legacy)
     if (streamingAudioElement) {
@@ -997,7 +998,9 @@ let _sseAudioCtx = null;
 let _sseNextPlaybackTime = 0;
 const SSE_TARGET_SAMPLE_RATE = 24000;
 const SSE_INITIAL_BUFFER_SEC = 0.25;
-const SSE_CHUNK_FADE_SAMPLES = 128;
+// Crossfade state: previous chunk tail for equal-power overlap
+let _ssePrevTail = null;
+const SSE_CROSSFADE_SAMPLES = 512; // ~21ms @ 24kHz
 let streamingShouldShowFullControls = false;
 let voiceProfileSaveTimer = null;
 const AUDIO_EDGE_FADE_MS = 8;
@@ -1911,12 +1914,22 @@ function playAudioSegment(segment) {
             float32[i] = byteView.getInt16(i * 2, true) / 32768.0;
         }
 
-        // Apply fade-in/fade-out to remove boundary clicks
-        const fadeSamples = Math.min(SSE_CHUNK_FADE_SAMPLES, Math.floor(float32.length / 4));
-        for (let i = 0; i < fadeSamples; i++) {
-            const gain = i / fadeSamples;
-            float32[i] *= gain;
-            float32[float32.length - 1 - i] *= gain;
+        // Equal-power crossfade: blend start of this chunk with tail of previous chunk
+        const fadeLen = Math.min(SSE_CROSSFADE_SAMPLES, Math.floor(float32.length / 4));
+        if (_ssePrevTail && _ssePrevTail.length === fadeLen && float32.length > fadeLen) {
+            for (let i = 0; i < fadeLen; i++) {
+                const t = i / fadeLen;
+                const fadeOut = Math.cos(t * Math.PI * 0.5);
+                const fadeIn  = Math.sin(t * Math.PI * 0.5);
+                float32[i] = _ssePrevTail[i] * fadeOut + float32[i] * fadeIn;
+            }
+        }
+
+        // Store tail for next crossfade
+        if (float32.length >= SSE_CROSSFADE_SAMPLES) {
+            _ssePrevTail = float32.slice(float32.length - SSE_CROSSFADE_SAMPLES);
+        } else {
+            _ssePrevTail = null;
         }
 
         if (segment.sampleRate !== SSE_TARGET_SAMPLE_RATE) {
@@ -2082,6 +2095,7 @@ function stopStreamingAudio() {
         _sseAudioCtx = null;
     }
     _sseNextPlaybackTime = 0;
+    _ssePrevTail = null;
     // Legacy SSE path: stop the <audio> element
     if (streamingAudioElement) {
         streamingAudioElement.pause();
