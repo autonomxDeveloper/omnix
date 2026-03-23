@@ -1915,6 +1915,7 @@ function playAudioSegment(segment) {
         }
 
         // Equal-power crossfade: blend start of this chunk with tail of previous chunk
+        // Cap crossfade to 25% of chunk to avoid crossfading too large a proportion
         const fadeLen = Math.min(SSE_CROSSFADE_SAMPLES, Math.floor(float32.length / 4));
         if (_ssePrevTail && _ssePrevTail.length === fadeLen && float32.length > fadeLen) {
             for (let i = 0; i < fadeLen; i++) {
