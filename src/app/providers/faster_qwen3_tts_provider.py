@@ -73,7 +73,9 @@ def crossfade_audio(prev: np.ndarray, curr: np.ndarray,
     concatenated so no samples are lost.
     """
     if prev is None or len(prev) < fade_samples or len(curr) < fade_samples:
-        return np.concatenate([prev, curr]) if prev is not None else curr
+        if prev is not None:
+            return np.concatenate([prev, curr]) if curr is not None else prev.copy()
+        return curr if curr is not None else np.array([], dtype=np.float32)
 
     t = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
     fade_in = 0.5 * (1.0 - np.cos(np.pi * t))   # raised-cosine
@@ -98,7 +100,7 @@ def apply_fade(audio: np.ndarray, fade_samples: int = 256) -> np.ndarray:
     Returns a *copy* so the caller's original array is not mutated.
     """
     if audio is None or len(audio) < 2 * fade_samples:
-        return audio if audio is not None else np.array([], dtype=np.float32)
+        return audio.copy() if audio is not None else np.array([], dtype=np.float32)
 
     audio = audio.copy()
     n = min(fade_samples, len(audio) // 2)

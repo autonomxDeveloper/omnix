@@ -820,8 +820,8 @@ class TestAudioHardeningHelpers:
         audio = np.array([0.1, -0.1], dtype=np.float32)
         result = _normalize_audio(audio)
         arr = np.frombuffer(result, dtype=np.int16)
-        # 0.1 * 32767 ≈ 3276
-        assert arr[0] == int(0.1 * 32767)
+        # 0.1 * 32767 ≈ 3276 – allow ±1 for float→int rounding
+        np.testing.assert_allclose(arr[0], 0.1 * 32767, atol=1)
 
     def test_align_bytes(self):
         from app.providers.faster_qwen3_tts_provider import _align_bytes
@@ -887,12 +887,14 @@ class TestApplyFade:
         assert result[512] == 1.0
 
     def test_fade_short_audio_passthrough(self):
-        """Audio shorter than 2*fade_samples should pass through unchanged."""
+        """Audio shorter than 2*fade_samples should pass through as a copy."""
         import numpy as np
         from app.providers.faster_qwen3_tts_provider import apply_fade
         audio = np.ones(100, dtype=np.float32)
         result = apply_fade(audio, fade_samples=256)
         np.testing.assert_array_equal(result, audio)
+        # Must be a copy, not the same object
+        assert result is not audio
 
     def test_fade_does_not_mutate_input(self):
         import numpy as np
