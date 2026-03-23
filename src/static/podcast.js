@@ -387,6 +387,9 @@ function showPodcastProgress() {
 let streamingPlaybackActive = false;
 let streamingPlaybackIndex = 0;
 let streamingAudioElement = null;
+// Reusable AudioContext + current source node for streaming playback
+let _podcastAudioCtx = null;
+let _podcastAudioSource = null;
 
 // Show streaming player - like audiobook does
 function showPodcastStreamingPlayer() {
@@ -465,38 +468,59 @@ async function playNextPodcastChunk() {
     streamingPlaybackActive = false;
 }
 
-// Play a single audio chunk
+// Play a single audio chunk using Web Audio API (reuses a single AudioContext)
 function playPodcastChunk(chunk) {
     return new Promise((resolve, reject) => {
         try {
-            const wavBuffer = createWavBufferFromBase64(chunk.audio, chunk.sample_rate);
-            const blob = new Blob([wavBuffer], { type: 'audio/wav' });
-            const url = URL.createObjectURL(blob);
-            
-            if (streamingAudioElement) {
-                streamingAudioElement.pause();
-                URL.revokeObjectURL(streamingAudioElement.src);
+            const sampleRate = chunk.sample_rate;
+
+            // Decode base64 PCM to raw bytes
+            const binaryString = atob(chunk.audio);
+            const len = binaryString.length;
+            const pcmBytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                pcmBytes[i] = binaryString.charCodeAt(i) & 0xFF;
             }
-            
-            streamingAudioElement = new Audio(url);
-            
-            streamingAudioElement.onended = () => {
-                URL.revokeObjectURL(url);
+
+            // Convert Int16 PCM to Float32
+            const totalSamples = Math.floor(pcmBytes.length / 2);
+            const byteView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+            const float32 = new Float32Array(totalSamples);
+            for (let i = 0; i < totalSamples; i++) {
+                float32[i] = byteView.getInt16(i * 2, true) / 32768.0;
+            }
+
+            // Lazily create a shared AudioContext for podcast streaming
+            if (!_podcastAudioCtx || _podcastAudioCtx.state === 'closed') {
+                _podcastAudioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: sampleRate,
+                    latencyHint: 'interactive'
+                });
+            }
+            if (_podcastAudioCtx.state === 'suspended') {
+                _podcastAudioCtx.resume();
+            }
+
+            const audioBuffer = _podcastAudioCtx.createBuffer(1, float32.length, sampleRate);
+            audioBuffer.getChannelData(0).set(float32);
+
+            const source = _podcastAudioCtx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(_podcastAudioCtx.destination);
+
+            _podcastAudioSource = source;
+
+            source.onended = () => {
+                _podcastAudioSource = null;
                 resolve();
             };
-            
-            streamingAudioElement.onerror = (e) => {
-                console.error('[PODCAST] Audio error:', e);
-                URL.revokeObjectURL(url);
-                resolve();
-            };
-            
-            streamingAudioElement.play();
-            
+
+            source.start();
+
             // Update status
             updatePodcastStatus(`Playing segment ${streamingPlaybackIndex + 1}`);
             updatePodcastSegmentInfo(chunk);
-            
+
         } catch (error) {
             console.error('[PODCAST] Error playing chunk:', error);
             resolve();
@@ -535,6 +559,10 @@ function updatePodcastTranscriptDisplay() {
 function pausePodcastStreaming() {
     podcastState.isPlaying = false;
     
+    if (_podcastAudioCtx && _podcastAudioCtx.state === 'running') {
+        _podcastAudioCtx.suspend().catch(e =>
+            console.warn('[PODCAST] AudioContext suspend failed:', e));
+    }
     if (streamingAudioElement) {
         streamingAudioElement.pause();
     }
@@ -550,6 +578,11 @@ function pausePodcastStreaming() {
 // Resume streaming
 function resumePodcastStreaming() {
     podcastState.isPlaying = true;
+    
+    if (_podcastAudioCtx && _podcastAudioCtx.state === 'suspended') {
+        _podcastAudioCtx.resume().catch(e =>
+            console.warn('[PODCAST] AudioContext resume failed:', e));
+    }
     
     const pauseBtn = document.getElementById('podcast-pause-btn');
     const resumeBtn = document.getElementById('podcast-resume-btn');
@@ -567,6 +600,16 @@ function stopPodcastStreaming() {
     streamingPlaybackActive = false;
     streamingPlaybackIndex = 0;
     
+    if (_podcastAudioSource) {
+        try { _podcastAudioSource.stop(); } catch (e) {}
+        _podcastAudioSource = null;
+    }
+    if (_podcastAudioCtx) {
+        if (_podcastAudioCtx.state !== 'closed') {
+            _podcastAudioCtx.close().catch(() => {});
+        }
+        _podcastAudioCtx = null;
+    }
     if (streamingAudioElement) {
         streamingAudioElement.pause();
     }
