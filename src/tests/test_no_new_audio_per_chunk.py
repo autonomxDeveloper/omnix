@@ -306,8 +306,12 @@ class TestAudiobookTimelineScheduling:
         m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
         assert m
         body = m.group(0)
-        assert "sampleRate !== " not in body or "console.warn" in body, \
-            "Sample rate mismatch should warn, not recreate context"
+        # Should only warn on mismatch, not recreate the context
+        assert "_sseAudioCtx.sampleRate !== " not in body, \
+            "Must not recreate AudioContext based on sample rate comparison"
+        # The function should use the fixed target sample rate
+        assert "SSE_TARGET_SAMPLE_RATE" in body, \
+            "Must use fixed SSE_TARGET_SAMPLE_RATE, not dynamic sample rate"
 
     def test_play_audio_segment_chunk_fade(self):
         """playAudioSegment must apply per-chunk fade for click removal."""
