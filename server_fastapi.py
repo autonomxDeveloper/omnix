@@ -2815,6 +2815,9 @@ def _split_into_paragraphs(text: str, max_chars: int = 500) -> list:
         return result if result else [text]
 
 
+MAX_SENTENCE_CHARS = 500  # Max chars per sentence before further splitting
+
+
 def _split_into_sentences(text: str) -> list:
     """Split text into individual sentences for sentence-level TTS streaming.
 
@@ -2828,8 +2831,8 @@ def _split_into_sentences(text: str) -> list:
         # Safety: if a single sentence is very long, further chunk it
         result = []
         for s in sentences:
-            if len(s) > 500:
-                result.extend(_split_into_paragraphs(s, max_chars=500))
+            if len(s) > MAX_SENTENCE_CHARS:
+                result.extend(_split_into_paragraphs(s, max_chars=MAX_SENTENCE_CHARS))
             else:
                 result.append(s)
         return result if result else [text]

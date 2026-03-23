@@ -1547,7 +1547,7 @@ async function generateAudiobookWS() {
                             // Server may send total_segments for sentence-level
                             // progress when segments differ from the original
                             // dialogue-level count.
-                            if (data.total_segments != null) {
+                            if (data.total_segments !== undefined && data.total_segments !== null) {
                                 audiobookState.totalSegments = data.total_segments;
                             }
                             updateStreamingStatus('Streaming audio…');
