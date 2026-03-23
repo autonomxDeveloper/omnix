@@ -2959,7 +2959,7 @@ async def websocket_audiobook(websocket: WebSocket):
                         "index": idx,
                         "text": ss["text"][:200],
                         "speaker": ss["speaker"],
-                        "voice": ss.get("voice_name", ss["voice"]),
+                        "voice": ss.get("voice_name", "default"),
                     })
 
                     def _gen_sentence(p=ss["text"], s=ss["voice"]):
