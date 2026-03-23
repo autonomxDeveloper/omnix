@@ -42,8 +42,16 @@ def _is_valid_audio(audio: np.ndarray) -> bool:
 
 
 def _normalize_audio(audio: np.ndarray) -> bytes:
-    """Normalise a float waveform to 16-bit PCM bytes."""
+    """Normalise a float waveform to 16-bit PCM bytes.
+
+    Uses peak-based normalisation to avoid amplifying noise when the
+    signal is already within range.  Only scales down when the peak
+    exceeds 0.95 (close to clipping).
+    """
     audio = audio.astype(np.float32)
+    peak = np.max(np.abs(audio)) if len(audio) > 0 else 0.0
+    if peak > 0.95:
+        audio = audio / peak
     audio = np.clip(audio, -1.0, 1.0)
     audio_int16 = (audio * 32767).astype(np.int16)
     return audio_int16.tobytes()
@@ -55,6 +63,57 @@ def _align_bytes(audio_bytes: bytes) -> bytes:
     if remainder != 0:
         audio_bytes = audio_bytes[:-remainder]
     return audio_bytes
+
+
+def crossfade_audio(prev: np.ndarray, curr: np.ndarray,
+                    fade_samples: int = 512) -> np.ndarray:
+    """Crossfade *prev* into *curr* over *fade_samples* using a raised-cosine curve.
+
+    If either array is too short for a full crossfade the arrays are simply
+    concatenated so no samples are lost.
+    """
+    if prev is None or len(prev) < fade_samples or len(curr) < fade_samples:
+        return np.concatenate([prev, curr]) if prev is not None else curr
+
+    t = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+    fade_in = 0.5 * (1.0 - np.cos(np.pi * t))   # raised-cosine
+    fade_out = 1.0 - fade_in
+
+    prev_tail = prev[-fade_samples:] * fade_out
+    curr_head = curr[:fade_samples] * fade_in
+
+    blended = prev_tail + curr_head
+
+    return np.concatenate([
+        prev[:-fade_samples],
+        blended,
+        curr[fade_samples:],
+    ])
+
+
+def apply_fade(audio: np.ndarray, fade_samples: int = 256) -> np.ndarray:
+    """Apply a micro fade-in / fade-out to *audio* to eliminate edge clicks.
+
+    Uses a raised-cosine ramp for perceptually smooth transitions.
+    Returns a *copy* so the caller's original array is not mutated.
+    """
+    if audio is None or len(audio) < 2 * fade_samples:
+        return audio if audio is not None else np.array([], dtype=np.float32)
+
+    audio = audio.copy()
+    n = min(fade_samples, len(audio) // 2)
+    t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    ramp = 0.5 * (1.0 - np.cos(np.pi * t))   # raised-cosine ramp
+    audio[:n] *= ramp
+    audio[-n:] *= ramp[::-1]
+    return audio
+
+
+def silence_pad(audio: np.ndarray, sample_rate: int,
+                duration_sec: float = 0.05) -> np.ndarray:
+    """Append a short silence to *audio* to guard against abrupt transitions."""
+    silence = np.zeros(int(duration_sec * sample_rate), dtype=np.float32)
+    return np.concatenate([audio, silence])
 
 
 @dataclass

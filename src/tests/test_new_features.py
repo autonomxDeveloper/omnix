@@ -809,15 +809,112 @@ class TestAudioHardeningHelpers:
         assert isinstance(result, bytes)
         # int16 = 2 bytes per sample
         assert len(result) == 6
-        # 1.5 should be clipped to 1.0 → 32767
+        # peak 1.5 > 0.95 → divides by 1.5 then clips; 1.5/1.5 = 1.0 → 32767
         arr = np.frombuffer(result, dtype=np.int16)
         assert arr[2] == 32767
+
+    def test_normalize_audio_peak_preserves_quiet(self):
+        """Peak-based normalisation must NOT amplify a quiet signal."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import _normalize_audio
+        audio = np.array([0.1, -0.1], dtype=np.float32)
+        result = _normalize_audio(audio)
+        arr = np.frombuffer(result, dtype=np.int16)
+        # 0.1 * 32767 ≈ 3276
+        assert arr[0] == int(0.1 * 32767)
 
     def test_align_bytes(self):
         from app.providers.faster_qwen3_tts_provider import _align_bytes
         assert len(_align_bytes(b'\x00\x01\x02')) == 2
         assert len(_align_bytes(b'\x00\x01')) == 2
         assert len(_align_bytes(b'')) == 0
+
+
+class TestCrossfadeAudio:
+    """Tests for the crossfade_audio helper."""
+
+    def test_crossfade_basic(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import crossfade_audio
+        prev = np.ones(1024, dtype=np.float32)
+        curr = np.ones(1024, dtype=np.float32) * -1
+        result = crossfade_audio(prev, curr, fade_samples=512)
+        # Total length: prev[:-512] + 512 blended + curr[512:] = 512 + 512 + 512
+        assert len(result) == 1024 + 1024 - 512
+
+    def test_crossfade_short_arrays_concat(self):
+        """Arrays shorter than fade_samples should just concatenate."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import crossfade_audio
+        prev = np.ones(100, dtype=np.float32)
+        curr = np.ones(100, dtype=np.float32) * 2
+        result = crossfade_audio(prev, curr, fade_samples=512)
+        assert len(result) == 200
+        assert result[0] == 1.0
+        assert result[-1] == 2.0
+
+    def test_crossfade_none_prev(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import crossfade_audio
+        curr = np.ones(100, dtype=np.float32)
+        result = crossfade_audio(None, curr, fade_samples=512)
+        assert len(result) == 100
+
+    def test_crossfade_smooth_transition(self):
+        """Midpoint of crossfade should be roughly the average of the two signals."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import crossfade_audio
+        prev = np.ones(1024, dtype=np.float32)
+        curr = np.zeros(1024, dtype=np.float32)
+        result = crossfade_audio(prev, curr, fade_samples=512)
+        # prev[:-512] has 512 samples (all 1.0), then 512 blended samples
+        # Midpoint of blended region: index 512 + 256 = 768
+        mid = 512 + 256
+        assert 0.4 < result[mid] < 0.6
+
+
+class TestApplyFade:
+    """Tests for the apply_fade helper."""
+
+    def test_fade_edges_near_zero(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import apply_fade
+        audio = np.ones(1024, dtype=np.float32)
+        result = apply_fade(audio, fade_samples=256)
+        assert result[0] == 0.0  # fade-in starts at zero (raised-cosine)
+        assert abs(result[-1]) < 0.01  # fade-out ends near zero
+        # Middle should be untouched
+        assert result[512] == 1.0
+
+    def test_fade_short_audio_passthrough(self):
+        """Audio shorter than 2*fade_samples should pass through unchanged."""
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import apply_fade
+        audio = np.ones(100, dtype=np.float32)
+        result = apply_fade(audio, fade_samples=256)
+        np.testing.assert_array_equal(result, audio)
+
+    def test_fade_does_not_mutate_input(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import apply_fade
+        audio = np.ones(1024, dtype=np.float32)
+        original = audio.copy()
+        apply_fade(audio, fade_samples=256)
+        np.testing.assert_array_equal(audio, original)
+
+
+class TestSilencePad:
+    """Tests for the silence_pad helper."""
+
+    def test_silence_appended(self):
+        import numpy as np
+        from app.providers.faster_qwen3_tts_provider import silence_pad
+        audio = np.ones(100, dtype=np.float32)
+        result = silence_pad(audio, sample_rate=24000, duration_sec=0.05)
+        expected_silence = int(0.05 * 24000)
+        assert len(result) == 100 + expected_silence
+        # Silence region should be all zeros
+        assert np.all(result[100:] == 0.0)
 
 
 class TestJobQueueChunkOrdering:

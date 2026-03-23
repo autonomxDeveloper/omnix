@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 import app.shared as shared
 from app.providers.base import ChatMessage
+from app.providers.faster_qwen3_tts_provider import crossfade_audio, apply_fade
 
 
 # ============== CONFIG ==============
@@ -240,6 +241,7 @@ def _generate_tts_stream(session: ConversationSession, text: str):
         if hasattr(tts_provider, 'generate_audio_stream'):
             first_sent = False
             raw_chunks_received = 0
+            prev_audio = None  # previous model-output chunk for crossfade
             
             # generate_audio_stream is a regular (synchronous) generator.
             # Run TTS generation entirely in this worker thread; dispatch
@@ -272,6 +274,24 @@ def _generate_tts_stream(session: ConversationSession, text: str):
                     # Fixed gain only — per-chunk normalization destroys
                     # volume envelope and causes distortion when clipped
                     audio = np.clip(audio * 0.85, -1.0, 1.0)
+
+                    # Apply micro fade-in / fade-out on the raw model chunk
+                    # to eliminate edge clicks before stitching.
+                    audio = apply_fade(audio, fade_samples=256)
+
+                    # Crossfade with previous model-output chunk to smooth
+                    # waveform discontinuities at chunk boundaries.
+                    if prev_audio is not None:
+                        audio = crossfade_audio(prev_audio, audio, fade_samples=512)
+                        prev_audio = None   # consumed – will be set again below
+                    
+                    # Keep the tail of this chunk for crossfading with the next one.
+                    # We buffer only the last 512 samples; the rest goes straight
+                    # into the frame buffer so latency is not increased.
+                    XFADE = 512
+                    if len(audio) > XFADE:
+                        prev_audio = audio[-XFADE:]
+                        audio = audio[:-XFADE]
                     
                     buffer = np.concatenate([buffer, audio])
                     
@@ -297,6 +317,11 @@ def _generate_tts_stream(session: ConversationSession, text: str):
             
             print(f"[TTS] Generator done for '{text[:20]}...': raw_chunks={raw_chunks_received}, frames_sent={frames_sent}, remainder={len(buffer)}")
             
+            # Flush the crossfade tail that was held back for stitching
+            if prev_audio is not None and len(prev_audio) > 0:
+                buffer = np.concatenate([buffer, prev_audio])
+                prev_audio = None
+
             if len(buffer) > 0:
                 try:
                     fade_len = min(len(buffer), 256)

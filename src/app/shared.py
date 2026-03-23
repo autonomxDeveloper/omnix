@@ -24,6 +24,7 @@ os.makedirs(VOICE_CLONES_DIR, exist_ok=True)
 # Shared Service Constants
 TTS_BASE_URL = "http://localhost:8020"
 TTS_SAMPLE_RATE = 24000
+TARGET_SR = TTS_SAMPLE_RATE  # canonical playback sample-rate for the whole pipeline
 STT_BASE_URL = "http://localhost:8000"
 
 # Secrets file path
