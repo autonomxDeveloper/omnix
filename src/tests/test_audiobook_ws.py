@@ -170,6 +170,80 @@ class TestSplitIntoParagraphs:
         assert "def _split_into_paragraphs" in src
         assert "chunk_text" in src
 
+    def test_split_into_sentences_defined(self):
+        """server_fastapi.py must define _split_into_sentences."""
+        src = _read_source("server_fastapi.py")
+        assert "def _split_into_sentences" in src
+        assert "split_sentences" in src
+
+
+class TestSentenceBasedSegments:
+    """Test sentence-based segmentation for the audiobook WebSocket handler."""
+
+    def test_split_into_sentences_basic(self):
+        """_split_into_sentences splits text at sentence boundaries."""
+        # Can't import server_fastapi directly, test via chunk_text module
+        from audiobook.segmentation.chunk_text import split_sentences
+        result = split_sentences("Hello world. How are you? I'm fine.")
+        assert len(result) == 3
+        assert result[0] == "Hello world."
+        assert result[1] == "How are you?"
+        assert result[2] == "I'm fine."
+
+    def test_split_into_sentences_preserves_short(self):
+        """Short text with one sentence stays as one segment."""
+        from audiobook.segmentation.chunk_text import split_sentences
+        result = split_sentences("Hello world.")
+        assert len(result) == 1
+        assert result[0] == "Hello world."
+
+    def test_split_into_sentences_abbreviations(self):
+        """Don't split on abbreviations like Mr. or Dr."""
+        from audiobook.segmentation.chunk_text import split_sentences
+        result = split_sentences("Mr. Smith went home. He was tired.")
+        assert len(result) == 2
+        assert "Mr. Smith" in result[0]
+
+    def test_ws_handler_uses_sentence_segments(self):
+        """WS handler must use _split_into_sentences for sentence-level
+        segmentation."""
+        src = _read_source("server_fastapi.py")
+        match = re.search(
+            r'async def websocket_audiobook.*?(?=\nasync def |\nclass |\n# ===|\Z)',
+            src, re.DOTALL
+        )
+        assert match
+        fn_body = match.group(0)
+        assert "_split_into_sentences" in fn_body, (
+            "WS handler must use _split_into_sentences for sentence-level segments"
+        )
+
+    def test_ws_handler_sends_total_segments(self):
+        """WS handler must send total_segments in the start response."""
+        src = _read_source("server_fastapi.py")
+        match = re.search(
+            r'async def websocket_audiobook.*?(?=\nasync def |\nclass |\n# ===|\Z)',
+            src, re.DOTALL
+        )
+        assert match
+        fn_body = match.group(0)
+        assert "total_segments" in fn_body, (
+            "WS handler must send total_segments in start response"
+        )
+
+    def test_client_reads_total_segments(self):
+        """Client must read total_segments from server's start message."""
+        src = _read_source("src/static/audiobook.js")
+        match = re.search(
+            r'function generateAudiobookWS.*?(?=\nfunction |\n// ===|\Z)',
+            src, re.DOTALL
+        )
+        assert match
+        body = match.group(0)
+        assert "total_segments" in body, (
+            "Client must read total_segments from server start message"
+        )
+
 
 # ---------------------------------------------------------------------------
 # STEP 5: AudioOutput buffering (source code check)
@@ -674,19 +748,15 @@ class TestAudioWorkletStreaming:
         )
 
     def test_waveform_stitching_present(self):
-        """Micro-crossfade must smooth the boundary between consecutive chunks
-        using a multi-sample fade with the previous chunk's last sample."""
+        """pushAudioChunk must NOT apply per-chunk crossfade — the server sends
+        continuous PCM frames within each sentence-level segment, and the
+        AudioWorklet's underrun recovery handles any gaps."""
         body = self._get_ws_body()
-        assert re.search(r'FADE_SAMPLES', body), (
-            "Must define FADE_SAMPLES for micro-crossfade at chunk boundaries"
-        )
-        fade_match = re.search(r'FADE_SAMPLES\s*=\s*(\d+)', body)
-        assert fade_match, "Must set FADE_SAMPLES explicitly"
-        assert int(fade_match.group(1)) >= 256, (
-            "FADE_SAMPLES should be at least 256 for smoother chunk-boundary blending"
-        )
-        assert re.search(r'last.*Sample', body), (
-            "Must track the last sample from the previous chunk for stitching"
+        # The old FADE_SAMPLES crossfade has been intentionally removed to
+        # eliminate crackling artifacts during streaming playback.
+        assert "FADE_SAMPLES" not in body, (
+            "FADE_SAMPLES crossfade must be removed — "
+            "it caused crackling by blending already-continuous frames"
         )
 
     def test_backpressure_considers_audio_consumption(self):
@@ -1060,11 +1130,12 @@ class TestWorkletProcessorBackwardsCompat:
 # Audiobook: micro-crossfade in pushAudioChunk (streamProcessor has no crossfade)
 # ---------------------------------------------------------------------------
 
-class TestAudiobookMicroCrossfade:
-    """Verify audiobook.js applies a micro-crossfade in pushAudioChunk using a
-    tail window (previousTail) for proper blending, not just a single sample.
-    The crossfade uses FADE_SAMPLES (not the legacy CROSSFADE_LEN /
-    lastScheduledFloat32 approach)."""
+class TestAudiobookNoCrossfade:
+    """Verify audiobook.js does NOT apply per-chunk micro-crossfade in
+    pushAudioChunk — the per-chunk crossfade was removed because it modifies
+    already-continuous server frames, causing crackling artifacts during
+    streaming playback.  Sentence-level TTS on the server and the
+    AudioWorklet's underrun recovery handle transitions smoothly."""
 
     def _get_push_chunk_body(self):
         content = _read_source("src/static/audiobook.js")
@@ -1075,28 +1146,17 @@ class TestAudiobookMicroCrossfade:
         assert match, "pushAudioChunk must be defined inside generateAudiobookWS"
         return match.group(0)
 
-    def test_micro_crossfade_present(self):
+    def test_no_per_chunk_crossfade(self):
+        """pushAudioChunk must NOT apply per-chunk crossfade — server frames
+        are continuous within a sentence segment."""
         body = self._get_push_chunk_body()
-        assert "FADE_SAMPLES" in body, (
-            "pushAudioChunk must define FADE_SAMPLES for micro-crossfade"
+        assert "FADE_SAMPLES" not in body, (
+            "pushAudioChunk must NOT define FADE_SAMPLES — "
+            "per-chunk crossfade was removed to fix crackling"
         )
-        assert re.search(r'lastChunkFinalSample', body), (
-            "pushAudioChunk must track lastChunkFinalSample for crossfade"
-        )
-
-    def test_crossfade_uses_tail_window(self):
-        """Crossfade must blend against a previousTail window with proper
-        end-alignment for temporal phase continuity, not just indexed from 0."""
-        body = self._get_push_chunk_body()
-        assert "previousTail" in body, (
-            "pushAudioChunk must use previousTail window for crossfade blending"
-        )
-        assert re.search(r'\.slice\s*\(\s*-\s*FADE_SAMPLES\s*\)', body), (
-            "Must store tail window via float32.slice(-FADE_SAMPLES)"
-        )
-        # Verify end-aligned indexing for proper temporal alignment
-        assert re.search(r'tailLen\s*-\s*fadeLen', body), (
-            "Crossfade must use end-aligned indexing (tailLen - fadeLen) for phase alignment"
+        assert "previousTail" not in body, (
+            "pushAudioChunk must NOT use previousTail — "
+            "per-chunk crossfade was removed"
         )
 
     def test_no_legacy_crossfade(self):
@@ -1321,12 +1381,12 @@ class TestPlaybackDrivenPipeline:
             "pushAudioChunk must return false when chunk is queued or not accepted"
         )
 
-    def test_previous_tail_reset(self):
-        """previousTail must be reset to null on new stream to prevent old
-        tail bleeding into new audio."""
+    def test_no_previous_tail_state(self):
+        """previousTail must NOT be present — per-chunk crossfade was removed
+        to fix crackling artifacts during streaming playback."""
         body = self._get_ws_body()
-        assert re.search(r'previousTail\s*=\s*null', body), (
-            "previousTail must be reset to null on new stream (in initAudio)"
+        assert "previousTail" not in body, (
+            "previousTail must not exist — per-chunk crossfade removed"
         )
 
     def test_drain_allowance(self):
