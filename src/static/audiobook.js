@@ -1315,7 +1315,7 @@ async function generateAudiobookWS() {
                 const sample = pcm16Array[i] / 32768.0;
                 if (!Number.isFinite(sample)) {
                     console.warn('[AUDIOBOOK-WS] Skipping corrupt (non-finite) audio chunk');
-                    return true;
+                    return false;
                 }
                 float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
             }
@@ -1324,7 +1324,7 @@ async function generateAudiobookWS() {
             // of the previous chunk over FADE_SAMPLES to eliminate click artifacts
             // at chunk boundaries.  Tail alignment is end-aligned so waveform
             // phases match even when previousTail is shorter than fadeLen.
-            const FADE_SAMPLES = 128;
+            const FADE_SAMPLES = 256;
             if (float32.length > 0) {
                 const fadeLen = Math.min(FADE_SAMPLES, float32.length);
                 const tailLen = previousTail ? previousTail.length : 0;
