@@ -198,9 +198,9 @@ class TestChatAudioPlayerNoNewAudio:
         m = re.search(r'function clearTTSQueue\b.*?\n\}', src, re.DOTALL)
         assert m
         body = m.group(0)
-        # Should call .stop() on the source node, not .pause()
-        assert ".stop()" in body, \
-            "clearTTSQueue should stop the BufferSource, not pause an Audio element"
+        # Should close the AudioContext (kills all scheduled audio), not just stop a single source
+        assert ".close()" in body, \
+            "clearTTSQueue should close AudioContext to stop all scheduled audio"
 
 
 # ---------------------------------------------------------------------------
@@ -228,3 +228,194 @@ class TestFeaturesNoNewAudio:
         body = m.group(0)
         assert "AudioContext" in body or "createBufferSource" in body, \
             "playAudiobookFromLibrary should use Web Audio API"
+
+
+# ---------------------------------------------------------------------------
+# Timeline-scheduled playback tests
+# ---------------------------------------------------------------------------
+
+class TestAudiobookTimelineScheduling:
+    """audiobook.js must use time-scheduled playback, not immediate source.start()."""
+
+    def _get_source(self):
+        return _read_source("src/static/audiobook.js")
+
+    def test_next_playback_time_declared(self):
+        """_sseNextPlaybackTime timeline variable must exist."""
+        src = self._get_source()
+        assert "_sseNextPlaybackTime" in src
+
+    def test_initial_buffer_sec(self):
+        """SSE_INITIAL_BUFFER_SEC constant must exist."""
+        src = self._get_source()
+        assert "SSE_INITIAL_BUFFER_SEC" in src
+
+    def test_target_sample_rate(self):
+        """SSE_TARGET_SAMPLE_RATE constant must exist."""
+        src = self._get_source()
+        assert "SSE_TARGET_SAMPLE_RATE" in src
+
+    def test_play_audio_segment_uses_scheduled_start(self):
+        """playAudioSegment must call source.start(_sseNextPlaybackTime), not source.start()."""
+        src = self._get_source()
+        m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
+        assert m, "playAudioSegment function not found"
+        body = m.group(0)
+        assert "source.start(_sseNextPlaybackTime)" in body, \
+            "playAudioSegment must schedule on timeline, not play immediately"
+
+    def test_play_audio_segment_advances_timeline(self):
+        """playAudioSegment must advance _sseNextPlaybackTime after scheduling."""
+        src = self._get_source()
+        m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_sseNextPlaybackTime +=" in body, \
+            "playAudioSegment must advance the timeline"
+
+    def test_play_audio_segment_underrun_protection(self):
+        """playAudioSegment must have underrun protection for timeline."""
+        src = self._get_source()
+        m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_sseNextPlaybackTime < now" in body, \
+            "playAudioSegment must detect underrun"
+
+    def test_play_audio_segment_no_singleton_source(self):
+        """playAudioSegment must NOT assign _sseAudioSource (no singleton tracking)."""
+        src = self._get_source()
+        m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_sseAudioSource" not in body, \
+            "playAudioSegment must not track a singleton source"
+
+    def test_play_audio_segment_not_promise(self):
+        """playAudioSegment must not return a Promise (fire-and-forget scheduling)."""
+        src = self._get_source()
+        m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "return new Promise" not in body, \
+            "playAudioSegment must not return a Promise"
+
+    def test_play_audio_segment_no_context_recreation(self):
+        """playAudioSegment must NOT recreate AudioContext on sample rate mismatch."""
+        src = self._get_source()
+        m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "sampleRate !== " not in body or "console.warn" in body, \
+            "Sample rate mismatch should warn, not recreate context"
+
+    def test_play_audio_segment_chunk_fade(self):
+        """playAudioSegment must apply per-chunk fade for click removal."""
+        src = self._get_source()
+        m = re.search(r'function playAudioSegment\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "fadeSamples" in body or "SSE_CHUNK_FADE_SAMPLES" in body, \
+            "playAudioSegment must apply fade-in/fade-out"
+
+    def test_play_streaming_audio_no_await_segment(self):
+        """playStreamingAudio must NOT await playAudioSegment (fire-and-forget)."""
+        src = self._get_source()
+        m = re.search(r'(?:async )?function playStreamingAudio\b.*?\n\}', src, re.DOTALL)
+        assert m, "playStreamingAudio function not found"
+        body = m.group(0)
+        assert "await playAudioSegment" not in body, \
+            "playStreamingAudio must not await playAudioSegment"
+
+    def test_stop_resets_timeline(self):
+        """stopStreamingAudio must reset _sseNextPlaybackTime."""
+        src = self._get_source()
+        m = re.search(r'function stopStreamingAudio\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_sseNextPlaybackTime = 0" in body, \
+            "stopStreamingAudio must reset the timeline"
+
+
+class TestPodcastTimelineScheduling:
+    """podcast.js must use time-scheduled playback."""
+
+    def _get_source(self):
+        return _read_source("src/static/podcast.js")
+
+    def test_next_playback_time_declared(self):
+        src = self._get_source()
+        assert "_podcastNextPlaybackTime" in src
+
+    def test_play_podcast_chunk_uses_scheduled_start(self):
+        src = self._get_source()
+        m = re.search(r'function playPodcastChunk\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "source.start(_podcastNextPlaybackTime)" in body
+
+    def test_play_podcast_chunk_advances_timeline(self):
+        src = self._get_source()
+        m = re.search(r'function playPodcastChunk\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_podcastNextPlaybackTime +=" in body
+
+    def test_play_podcast_chunk_not_promise(self):
+        src = self._get_source()
+        m = re.search(r'function playPodcastChunk\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "return new Promise" not in body
+
+    def test_play_podcast_chunk_no_singleton_source(self):
+        src = self._get_source()
+        m = re.search(r'function playPodcastChunk\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_podcastAudioSource" not in body
+
+    def test_play_next_no_await_chunk(self):
+        src = self._get_source()
+        m = re.search(r'(?:async )?function playNextPodcastChunk\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "await playPodcastChunk" not in body
+
+    def test_stop_resets_timeline(self):
+        src = self._get_source()
+        m = re.search(r'function stopPodcastStreaming\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "_podcastNextPlaybackTime = 0" in body
+
+
+class TestChatAudioScheduling:
+    """chat/audio-player.js TTS queue must use timeline scheduling."""
+
+    def _get_source(self):
+        return _read_source("src/static/chat/audio-player.js")
+
+    def test_tts_queue_uses_scheduled_start(self):
+        src = self._get_source()
+        m = re.search(r'(?:async )?function playTTSQueue\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "source.start(startTime)" in body or "source.start(webAudioNextStartTime)" in body, \
+            "playTTSQueue must use scheduled start, not immediate"
+
+    def test_tts_queue_advances_timeline(self):
+        src = self._get_source()
+        m = re.search(r'(?:async )?function playTTSQueue\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "webAudioNextStartTime" in body, \
+            "playTTSQueue must advance webAudioNextStartTime"
+
+    def test_clear_tts_queue_resets_timeline(self):
+        src = self._get_source()
+        m = re.search(r'function clearTTSQueue\b.*?\n\}', src, re.DOTALL)
+        assert m
+        body = m.group(0)
+        assert "webAudioNextStartTime = 0" in body, \
+            "clearTTSQueue must reset the timeline"

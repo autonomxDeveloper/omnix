@@ -221,10 +221,7 @@ async function playTTSQueue() {
         if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
             console.log('[TTS-QUEUE] Stop requested, clearing queue');
             ttsAudioQueue = [];
-            if (ttsCurrentAudio) {
-                try { ttsCurrentAudio.stop(); } catch (e) {}
-                ttsCurrentAudio = null;
-            }
+            ttsCurrentAudio = null;
             break;
         }
         
@@ -249,12 +246,18 @@ async function playTTSQueue() {
             source.connect(ctx.destination);
             ttsCurrentAudio = source;
 
+            // Use timeline scheduling for gapless playback
+            const currentTime = ctx.currentTime;
+            const startTime = Math.max(currentTime, webAudioNextStartTime);
+            source.start(startTime);
+            webAudioNextStartTime = startTime + audioBuffer.duration;
+
+            // Wait for this chunk to finish before pulling next from queue
             await new Promise((resolve) => {
                 source.onended = () => {
                     ttsCurrentAudio = null;
                     resolve();
                 };
-                source.start();
             });
         } catch (e) {
             console.error('[TTS-QUEUE] Playback error:', e);
@@ -272,9 +275,12 @@ async function playTTSQueue() {
 function clearTTSQueue() {
     ttsAudioQueue = [];
     ttsIsPlayingQueue = false;
-    if (ttsCurrentAudio) {
-        try { ttsCurrentAudio.stop(); } catch (e) {}
-        ttsCurrentAudio = null;
+    ttsCurrentAudio = null;
+    webAudioNextStartTime = 0;
+    // Close and recreate context to kill all scheduled audio
+    if (webAudioContext) {
+        try { webAudioContext.close(); } catch (e) {}
+        webAudioContext = null;
     }
 }
 

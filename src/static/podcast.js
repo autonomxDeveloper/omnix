@@ -387,9 +387,12 @@ function showPodcastProgress() {
 let streamingPlaybackActive = false;
 let streamingPlaybackIndex = 0;
 let streamingAudioElement = null;
-// Reusable AudioContext + current source node for streaming playback
+// Reusable AudioContext + timeline scheduling for streaming playback
 let _podcastAudioCtx = null;
-let _podcastAudioSource = null;
+let _podcastNextPlaybackTime = 0;
+const PODCAST_TARGET_SAMPLE_RATE = 24000;
+const PODCAST_INITIAL_BUFFER_SEC = 0.25;
+const PODCAST_CHUNK_FADE_SAMPLES = 128;
 
 // Show streaming player - like audiobook does
 function showPodcastStreamingPlayer() {
@@ -448,7 +451,7 @@ function startPodcastStreamingPlayback() {
     playNextPodcastChunk();
 }
 
-// Play next audio chunk
+// Play next audio chunk - schedules chunks on timeline as they arrive
 async function playNextPodcastChunk() {
     while (podcastState.isPlaying) {
         if (streamingPlaybackIndex >= podcastState.audioQueue.length) {
@@ -461,76 +464,84 @@ async function playNextPodcastChunk() {
         }
         
         const chunk = podcastState.audioQueue[streamingPlaybackIndex];
-        await playPodcastChunk(chunk);
+        // Schedule on timeline (fire-and-forget, no await)
+        playPodcastChunk(chunk);
         streamingPlaybackIndex++;
     }
     
     streamingPlaybackActive = false;
 }
 
-// Play a single audio chunk using Web Audio API (reuses a single AudioContext)
+// Schedule a single audio chunk on the global timeline (fire-and-forget)
 function playPodcastChunk(chunk) {
-    return new Promise((resolve, reject) => {
-        try {
-            const sampleRate = chunk.sample_rate;
+    try {
+        const sampleRate = chunk.sample_rate;
 
-            // Decode base64 PCM to raw bytes
-            const binaryString = atob(chunk.audio);
-            const len = binaryString.length;
-            const pcmBytes = new Uint8Array(len);
-            for (let i = 0; i < len; i++) {
-                pcmBytes[i] = binaryString.charCodeAt(i) & 0xFF;
-            }
-
-            // Convert Int16 PCM to Float32
-            const totalSamples = Math.floor(pcmBytes.length / 2);
-            const byteView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
-            const float32 = new Float32Array(totalSamples);
-            for (let i = 0; i < totalSamples; i++) {
-                float32[i] = byteView.getInt16(i * 2, true) / 32768.0;
-            }
-
-            // Lazily create a shared AudioContext for podcast streaming;
-            // recreate if the sample rate changed from a previous chunk
-            if (!_podcastAudioCtx || _podcastAudioCtx.state === 'closed' ||
-                _podcastAudioCtx.sampleRate !== sampleRate) {
-                if (_podcastAudioCtx && _podcastAudioCtx.state !== 'closed') {
-                    _podcastAudioCtx.close().catch(() => {});
-                }
-                _podcastAudioCtx = new (window.AudioContext || window.webkitAudioContext)({
-                    sampleRate: sampleRate,
-                    latencyHint: 'interactive'
-                });
-            }
-            if (_podcastAudioCtx.state === 'suspended') {
-                _podcastAudioCtx.resume();
-            }
-
-            const audioBuffer = _podcastAudioCtx.createBuffer(1, float32.length, sampleRate);
-            audioBuffer.getChannelData(0).set(float32);
-
-            const source = _podcastAudioCtx.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(_podcastAudioCtx.destination);
-
-            _podcastAudioSource = source;
-
-            source.onended = () => {
-                _podcastAudioSource = null;
-                resolve();
-            };
-
-            source.start();
-
-            // Update status
-            updatePodcastStatus(`Playing segment ${streamingPlaybackIndex + 1}`);
-            updatePodcastSegmentInfo(chunk);
-
-        } catch (error) {
-            console.error('[PODCAST] Error playing chunk:', error);
-            resolve();
+        // Decode base64 PCM to raw bytes
+        const binaryString = atob(chunk.audio);
+        const len = binaryString.length;
+        const pcmBytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            pcmBytes[i] = binaryString.charCodeAt(i) & 0xFF;
         }
-    });
+
+        // Convert Int16 PCM to Float32
+        const totalSamples = Math.floor(pcmBytes.length / 2);
+        const byteView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+        const float32 = new Float32Array(totalSamples);
+        for (let i = 0; i < totalSamples; i++) {
+            float32[i] = byteView.getInt16(i * 2, true) / 32768.0;
+        }
+
+        // Apply fade-in/fade-out to remove boundary clicks
+        const fadeSamples = Math.min(PODCAST_CHUNK_FADE_SAMPLES, Math.floor(float32.length / 4));
+        for (let i = 0; i < fadeSamples; i++) {
+            const gain = i / fadeSamples;
+            float32[i] *= gain;
+            float32[float32.length - 1 - i] *= gain;
+        }
+
+        if (sampleRate !== PODCAST_TARGET_SAMPLE_RATE) {
+            console.warn('[PODCAST] Sample rate mismatch:', sampleRate,
+                         'expected:', PODCAST_TARGET_SAMPLE_RATE);
+        }
+
+        // Lazily create a shared AudioContext (never recreate mid-stream)
+        if (!_podcastAudioCtx || _podcastAudioCtx.state === 'closed') {
+            _podcastAudioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: PODCAST_TARGET_SAMPLE_RATE,
+                latencyHint: 'interactive'
+            });
+            _podcastNextPlaybackTime = _podcastAudioCtx.currentTime + PODCAST_INITIAL_BUFFER_SEC;
+        }
+        if (_podcastAudioCtx.state === 'suspended') {
+            _podcastAudioCtx.resume();
+        }
+
+        const audioBuffer = _podcastAudioCtx.createBuffer(1, float32.length, PODCAST_TARGET_SAMPLE_RATE);
+        audioBuffer.getChannelData(0).set(float32);
+
+        const source = _podcastAudioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(_podcastAudioCtx.destination);
+
+        // Underrun protection
+        const now = _podcastAudioCtx.currentTime;
+        if (_podcastNextPlaybackTime < now) {
+            _podcastNextPlaybackTime = now + 0.05;
+        }
+
+        // Schedule on the global timeline (gapless)
+        source.start(_podcastNextPlaybackTime);
+        _podcastNextPlaybackTime += audioBuffer.duration;
+
+        // Update status
+        updatePodcastStatus(`Playing segment ${streamingPlaybackIndex + 1}`);
+        updatePodcastSegmentInfo(chunk);
+
+    } catch (error) {
+        console.error('[PODCAST] Error scheduling chunk:', error);
+    }
 }
 
 // Update podcast status
@@ -605,16 +616,14 @@ function stopPodcastStreaming() {
     streamingPlaybackActive = false;
     streamingPlaybackIndex = 0;
     
-    if (_podcastAudioSource) {
-        try { _podcastAudioSource.stop(); } catch (e) {}
-        _podcastAudioSource = null;
-    }
+    // Close AudioContext (kills ALL scheduled audio) and reset timeline
     if (_podcastAudioCtx) {
         if (_podcastAudioCtx.state !== 'closed') {
             _podcastAudioCtx.close().catch(() => {});
         }
         _podcastAudioCtx = null;
     }
+    _podcastNextPlaybackTime = 0;
     if (streamingAudioElement) {
         streamingAudioElement.pause();
     }
