@@ -10,6 +10,7 @@
  */
 class StreamProcessor extends AudioWorkletProcessor {
   static UNDERRUN_DECAY_FACTOR = 0.995;
+  static UNDERRUN_RECOVERY_LEN = 64; // ~2.7ms crossfade on recovery
 
   constructor(options) {
     super();
@@ -25,6 +26,12 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.frameCount = 0;
     this.lastSample = 0;
     this.underrunDecayFactor = StreamProcessor.UNDERRUN_DECAY_FACTOR;
+
+    // Underrun recovery state: smoothly blend from decayed silence to
+    // new buffer data when audio resumes after a buffer underrun.
+    this.wasUnderrun = false;
+    this.recoveryRemaining = 0;
+    this.recoveryBaseSample = 0;
 
     this.port.onmessage = (event) => {
       if (event.data.type === "push") {
@@ -53,13 +60,30 @@ class StreamProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < output.length; i++) {
       if (this.availableSamples > 0) {
         const sample = this.buffer[this.readIndex];
-        output[i] = sample;
-        this.lastSample = sample;
         this.readIndex = (this.readIndex + 1) % this.buffer.length;
         this.availableSamples--;
         this.totalSamplesPlayed++;
+
+        // Detect transition from underrun back to data and start recovery
+        if (this.wasUnderrun) {
+          this.wasUnderrun = false;
+          this.recoveryBaseSample = this.lastSample;
+          this.recoveryRemaining = StreamProcessor.UNDERRUN_RECOVERY_LEN;
+        }
+
+        if (this.recoveryRemaining > 0) {
+          // Raised-cosine blend from decayed lastSample to buffer data
+          const t = 1.0 - this.recoveryRemaining / StreamProcessor.UNDERRUN_RECOVERY_LEN;
+          const w = 0.5 * (1.0 - Math.cos(Math.PI * t));
+          output[i] = this.recoveryBaseSample * (1.0 - w) + sample * w;
+          this.recoveryRemaining--;
+        } else {
+          output[i] = sample;
+        }
+        this.lastSample = output[i];
       } else {
         // underrun — smooth to silence to avoid hard-edge clicks
+        this.wasUnderrun = true;
         this.lastSample *= this.underrunDecayFactor;
         output[i] = this.lastSample;
       }

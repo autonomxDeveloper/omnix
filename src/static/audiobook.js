@@ -1322,14 +1322,16 @@ async function generateAudiobookWS() {
 
             // Micro-crossfade: blend the start of this chunk with the tail window
             // of the previous chunk over FADE_SAMPLES to eliminate click artifacts
-            // at chunk boundaries.  Tail alignment is end-aligned so waveform
-            // phases match even when previousTail is shorter than fadeLen.
+            // at chunk boundaries.  Uses a raised-cosine curve for perceptually
+            // smoother transitions (avoids the power dip of linear crossfade).
+            // Tail alignment is end-aligned so waveform phases match even when
+            // previousTail is shorter than fadeLen.
             const FADE_SAMPLES = 256;
             if (float32.length > 0) {
                 const fadeLen = Math.min(FADE_SAMPLES, float32.length);
                 const tailLen = previousTail ? previousTail.length : 0;
                 for (let i = 0; i < fadeLen; i++) {
-                    const t = i / fadeLen;
+                    const t = 0.5 * (1 - Math.cos(Math.PI * i / fadeLen));
                     let prev;
                     if (previousTail && tailLen >= fadeLen) {
                         prev = previousTail[tailLen - fadeLen + i];
