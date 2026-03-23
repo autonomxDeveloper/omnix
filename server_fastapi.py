@@ -2815,6 +2815,28 @@ def _split_into_paragraphs(text: str, max_chars: int = 500) -> list:
         return result if result else [text]
 
 
+def _split_into_sentences(text: str) -> list:
+    """Split text into individual sentences for sentence-level TTS streaming.
+
+    Each sentence becomes its own segment so that subtitle transitions
+    happen at natural sentence boundaries rather than mid-sentence.
+    Falls back to ``_split_into_paragraphs`` if import fails.
+    """
+    try:
+        from audiobook.segmentation.chunk_text import split_sentences
+        sentences = split_sentences(text)
+        # Safety: if a single sentence is very long, further chunk it
+        result = []
+        for s in sentences:
+            if len(s) > 500:
+                result.extend(_split_into_paragraphs(s, max_chars=500))
+            else:
+                result.append(s)
+        return result if result else [text]
+    except ImportError:
+        return _split_into_paragraphs(text)
+
+
 @app.websocket("/ws/audiobook")
 async def websocket_audiobook(websocket: WebSocket):
     """WebSocket endpoint for audiobook TTS streaming.
@@ -2868,11 +2890,12 @@ async def websocket_audiobook(websocket: WebSocket):
                 # Accumulate all PCM bytes so we can save the final WAV
                 all_pcm_bytes: list = []
 
-                await websocket.send_json({"type": "start"})
+                # Pre-compute sentence-level segments so we can send
+                # total_segments upfront for accurate progress.
+                sentence_segments: list = []
 
                 if segments:
-                    # Segment-based generation (structured audiobook)
-                    for i, seg in enumerate(segments):
+                    for seg in segments:
                         speaker_name = seg.get("speaker", "Narrator")
                         seg_text = seg.get("text", "")
                         if not seg_text.strip():
@@ -2897,46 +2920,53 @@ async def websocket_audiobook(websocket: WebSocket):
                         )
                         final_speaker = vid if vid else (v_name or "default")
 
-                        await websocket.send_json({
-                            "type": "segment",
-                            "index": i,
-                            "text": seg_text[:200],
-                            "speaker": speaker_name,
-                        })
-
-                        # Split long segments into manageable paragraphs
-                        paragraphs = _split_into_paragraphs(
+                        # Split into sentences for smooth transitions
+                        sentences = _split_into_sentences(
                             shared.remove_emojis(seg_text)
                         )
-                        for para in paragraphs:
-                            def _gen_para(p=para, s=final_speaker):
-                                return list(_generate_audiobook_tts_pcm(p, speaker=s))
-
-                            chunks = await loop.run_in_executor(None, _gen_para)
-                            for chunk in chunks:
-                                all_pcm_bytes.append(chunk)
-                                await websocket.send_bytes(chunk)
+                        for sent in sentences:
+                            sentence_segments.append({
+                                "text": sent,
+                                "speaker": speaker_name,
+                                "voice": final_speaker,
+                            })
 
                 elif plain_text:
-                    # Plain text mode — split into paragraphs
-                    paragraphs = _split_into_paragraphs(
+                    sentences = _split_into_sentences(
                         shared.remove_emojis(plain_text)
                     )
-                    for idx, para in enumerate(paragraphs):
-                        await websocket.send_json({
-                            "type": "segment",
-                            "index": idx,
-                            "text": para[:200],
+                    for sent in sentences:
+                        sentence_segments.append({
+                            "text": sent,
                             "speaker": "Narrator",
+                            "voice": "default",
                         })
 
-                        def _gen_plain(p=para):
-                            return list(_generate_audiobook_tts_pcm(p))
+                await websocket.send_json({
+                    "type": "start",
+                    "total_segments": len(sentence_segments),
+                })
 
-                        chunks = await loop.run_in_executor(None, _gen_plain)
-                        for chunk in chunks:
-                            all_pcm_bytes.append(chunk)
-                            await websocket.send_bytes(chunk)
+                # Generate TTS for each sentence-level segment
+                for idx, ss in enumerate(sentence_segments):
+                    await websocket.send_json({
+                        "type": "segment",
+                        "index": idx,
+                        "text": ss["text"][:200],
+                        "speaker": ss["speaker"],
+                    })
+
+                    def _gen_sentence(p=ss["text"], s=ss["voice"]):
+                        return list(
+                            _generate_audiobook_tts_pcm(p, speaker=s)
+                        )
+
+                    chunks = await loop.run_in_executor(
+                        None, _gen_sentence
+                    )
+                    for chunk in chunks:
+                        all_pcm_bytes.append(chunk)
+                        await websocket.send_bytes(chunk)
 
                 # Save accumulated PCM as a WAV file for the download endpoint
                 if all_pcm_bytes:

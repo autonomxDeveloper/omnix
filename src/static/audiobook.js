@@ -1220,10 +1220,6 @@ async function generateAudiobookWS() {
         let workletNode = null;
         const SAMPLE_RATE = 24000;
         let totalSamplesPushed = 0;
-        /** Tail window of the previous chunk for micro-crossfade blending. */
-        let previousTail = null;
-        /** Last PCM sample value of the previous chunk, for waveform stitching. */
-        let lastChunkFinalSample = 0;
         /** Buffered duration in seconds — updated from worklet progress reports. */
         let bufferedSeconds = 0;
         const MAX_BUFFER_SECONDS = 8;
@@ -1288,10 +1284,6 @@ async function generateAudiobookWS() {
                 });
                 _streamingAudioCtx = audioCtx;
 
-                // Reset crossfade state for new stream
-                previousTail = null;
-                lastChunkFinalSample = 0;
-
                 await audioCtx.audioWorklet.addModule('/static/voice/streamProcessor.js');
                 workletNode = new AudioWorkletNode(audioCtx, 'stream-processor', {
                     processorOptions: { sampleRate: SAMPLE_RATE }
@@ -1316,10 +1308,16 @@ async function generateAudiobookWS() {
 
         /**
          * Push a PCM int16 audio chunk into the AudioWorklet ring buffer.
-         * Handles int16→float32 conversion, validation, micro-crossfade for
-         * smooth transitions, and backpressure via overflow queue.
+         * Handles int16→float32 conversion, validation, and backpressure
+         * via overflow queue.
          * Returns true if the chunk was pushed immediately, false if queued
          * or not accepted.
+         *
+         * Note: No per-chunk crossfade is applied here.  The server sends
+         * continuous PCM frames within each sentence-level segment, so
+         * consecutive chunks are already seamless.  Sentence boundaries
+         * have natural pauses from the TTS model and the AudioWorklet's
+         * underrun recovery handles any gaps smoothly.
          */
         function pushAudioChunk(pcm16Array) {
             if (!audioCtx || !workletNode) return false;
@@ -1334,34 +1332,6 @@ async function generateAudiobookWS() {
                     return false;
                 }
                 float32[i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
-            }
-
-            // Micro-crossfade: blend the start of this chunk with the tail window
-            // of the previous chunk over FADE_SAMPLES to eliminate click artifacts
-            // at chunk boundaries.  Uses a raised-cosine curve for perceptually
-            // smoother transitions (avoids the power dip of linear crossfade).
-            // Tail alignment is end-aligned so waveform phases match even when
-            // previousTail is shorter than fadeLen.
-            const FADE_SAMPLES = 256;
-            if (float32.length > 0) {
-                const fadeLen = Math.min(FADE_SAMPLES, float32.length);
-                const tailLen = previousTail ? previousTail.length : 0;
-                for (let i = 0; i < fadeLen; i++) {
-                    const t = 0.5 * (1 - Math.cos(Math.PI * i / fadeLen));
-                    let prev;
-                    if (previousTail && tailLen >= fadeLen) {
-                        prev = previousTail[tailLen - fadeLen + i];
-                    } else if (previousTail && tailLen > 0) {
-                        const idx = Math.max(0, i - (fadeLen - tailLen));
-                        prev = idx < tailLen ? previousTail[idx] : lastChunkFinalSample;
-                    } else {
-                        prev = lastChunkFinalSample;
-                    }
-                    const curr = float32[i];
-                    float32[i] = curr * t + prev * (1 - t);
-                }
-                previousTail = float32.slice(-FADE_SAMPLES);
-                lastChunkFinalSample = float32[float32.length - 1];
             }
 
             // Track segment timing (always, even if chunk is queued)
@@ -1574,6 +1544,12 @@ async function generateAudiobookWS() {
 
                     switch (data.type) {
                         case 'start':
+                            // Server may send total_segments for sentence-level
+                            // progress when segments differ from the original
+                            // dialogue-level count.
+                            if (data.total_segments != null) {
+                                audiobookState.totalSegments = data.total_segments;
+                            }
                             updateStreamingStatus('Streaming audio…');
                             break;
 
