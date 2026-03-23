@@ -9,7 +9,7 @@
  * to feed audio data into the buffer.
  */
 class StreamProcessor extends AudioWorkletProcessor {
-  static UNDERRUN_DECAY_FACTOR = 0.98;
+  static UNDERRUN_DECAY_FACTOR = 0.995;
 
   constructor(options) {
     super();
