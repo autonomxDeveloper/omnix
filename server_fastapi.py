@@ -2932,6 +2932,7 @@ async def websocket_audiobook(websocket: WebSocket):
                                 "text": sent,
                                 "speaker": speaker_name,
                                 "voice": final_speaker,
+                                "voice_name": v_name or "default",
                             })
 
                 elif plain_text:
@@ -2943,6 +2944,7 @@ async def websocket_audiobook(websocket: WebSocket):
                             "text": sent,
                             "speaker": "Narrator",
                             "voice": "default",
+                            "voice_name": "default",
                         })
 
                 await websocket.send_json({
@@ -2957,6 +2959,7 @@ async def websocket_audiobook(websocket: WebSocket):
                         "index": idx,
                         "text": ss["text"][:200],
                         "speaker": ss["speaker"],
+                        "voice": ss.get("voice_name", ss["voice"]),
                     })
 
                     def _gen_sentence(p=ss["text"], s=ss["voice"]):
