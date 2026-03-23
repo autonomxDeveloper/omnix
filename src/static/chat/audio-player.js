@@ -221,7 +221,10 @@ async function playTTSQueue() {
         if (typeof stopAudioRequested !== 'undefined' && stopAudioRequested) {
             console.log('[TTS-QUEUE] Stop requested, clearing queue');
             ttsAudioQueue = [];
-            ttsCurrentAudio = null;
+            if (ttsCurrentAudio) {
+                try { ttsCurrentAudio.stop(); } catch (e) {}
+                ttsCurrentAudio = null;
+            }
             break;
         }
         
@@ -279,7 +282,7 @@ function clearTTSQueue() {
     webAudioNextStartTime = 0;
     // Close and recreate context to kill all scheduled audio
     if (webAudioContext) {
-        try { webAudioContext.close(); } catch (e) {}
+        webAudioContext.close().catch(() => {});
         webAudioContext = null;
     }
 }
