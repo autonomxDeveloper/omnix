@@ -948,12 +948,16 @@ class TestSoftLimiter:
 class TestDCOffsetCorrection:
     """Verify DC offset removal via source-code inspection of server_fastapi.py."""
 
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def _read_server_source(self):
+        with open(os.path.join(self._REPO_ROOT, 'server_fastapi.py'), 'r') as f:
+            return f.read()
+
     def test_dc_offset_present_in_stream(self):
         """The streaming loop must subtract np.mean(audio) for DC correction."""
         import re
-        with open('server_fastapi.py', 'r') as f:
-            src = f.read()
-        # Must contain DC offset removal
+        src = self._read_server_source()
         assert re.search(r'audio\s*=\s*audio\s*-\s*np\.mean\(audio\)', src), \
             "DC offset correction (audio = audio - np.mean(audio)) not found in server_fastapi.py"
 
@@ -961,12 +965,15 @@ class TestDCOffsetCorrection:
 class TestNoDoubleCrossfade:
     """Verify server_fastapi.py uses ONE crossfade strategy (no double overlap)."""
 
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def _read_server_source(self):
+        with open(os.path.join(self._REPO_ROOT, 'server_fastapi.py'), 'r') as f:
+            return f.read()
+
     def test_no_crossfade_audio_call_in_stream(self):
         """The streaming loop must NOT call crossfade_audio() (uses tail-buffer instead)."""
-        import re
-        with open('server_fastapi.py', 'r') as f:
-            src = f.read()
-        # Check that crossfade_audio is not imported or called (ignoring comments)
+        src = self._read_server_source()
         code_lines = [line for line in src.split('\n')
                       if line.strip() and not line.strip().startswith('#')]
         code_only = '\n'.join(code_lines)
@@ -976,19 +983,19 @@ class TestNoDoubleCrossfade:
     def test_uses_tanh_not_clip(self):
         """Streaming loop must use np.tanh() not np.clip() for the main gain stage."""
         import re
-        with open('server_fastapi.py', 'r') as f:
-            src = f.read()
+        src = self._read_server_source()
         assert re.search(r'np\.tanh\(audio', src), \
             "np.tanh() soft limiter not found in server_fastapi.py"
 
     def test_fade_only_on_first_chunk(self):
         """apply_fade should only be called when prev_audio is None (first chunk)."""
         import re
-        with open('server_fastapi.py', 'r') as f:
-            src = f.read()
-        # Should have conditional: "if prev_audio is None:" followed by apply_fade
+        src = self._read_server_source()
         assert re.search(r'if\s+prev_audio\s+is\s+None.*?apply_fade', src, re.DOTALL), \
             "apply_fade should only run when prev_audio is None"
+
+
+class TestJobQueueChunkOrdering:
     """Issue 3 – Job queue chunk_index and ordered retrieval."""
 
     def test_job_has_chunk_index(self):
