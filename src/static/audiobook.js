@@ -1920,8 +1920,13 @@ function playAudioSegment(segment) {
                 float32[i] = view.getInt16(i * 2, true) / 32768.0;
             }
 
-            // Lazily create a shared AudioContext for SSE streaming
-            if (!_sseAudioCtx || _sseAudioCtx.state === 'closed') {
+            // Lazily create a shared AudioContext for SSE streaming;
+            // recreate if the sample rate changed from a previous segment
+            if (!_sseAudioCtx || _sseAudioCtx.state === 'closed' ||
+                _sseAudioCtx.sampleRate !== segment.sampleRate) {
+                if (_sseAudioCtx && _sseAudioCtx.state !== 'closed') {
+                    _sseAudioCtx.close().catch(() => {});
+                }
                 _sseAudioCtx = new (window.AudioContext || window.webkitAudioContext)({
                     sampleRate: segment.sampleRate,
                     latencyHint: 'interactive'
