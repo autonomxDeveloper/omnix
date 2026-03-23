@@ -41,10 +41,62 @@ def _is_valid_audio(audio: np.ndarray) -> bool:
     return True
 
 
+def soft_clip(x: np.ndarray) -> np.ndarray:
+    """Gentle soft limiter: ``x / (1 + |x|)``.
+
+    Smoothly saturates near ±1 while preserving more dynamic range than
+    ``np.tanh``.  Unlike hard clipping (``np.clip``) it never introduces
+    discontinuities.
+    """
+    return x / (1.0 + np.abs(x))
+
+
+def find_best_offset(prev: np.ndarray, curr: np.ndarray,
+                     max_shift: int = 128) -> int:
+    """Find the sample offset in *curr* that best aligns with *prev*.
+
+    TTS chunks often start at arbitrary waveform phase, causing micro
+    discontinuities even with a raised-cosine crossfade.  This helper
+    slides *curr* by up to *max_shift* samples and returns the offset
+    that minimises the mean-squared difference against the tail of
+    *prev*, producing a smoother splice.
+    """
+    if prev is None or curr is None or len(prev) == 0 or len(curr) == 0:
+        return 0
+
+    best_offset = 0
+    best_score = float('inf')
+
+    for shift in range(max_shift):
+        overlap = min(len(prev), len(curr) - shift)
+        if overlap <= 0:
+            continue
+
+        diff = prev[-overlap:] - curr[shift:shift + overlap]
+        score = np.mean(diff ** 2)
+
+        if score < best_score:
+            best_score = score
+            best_offset = shift
+
+    return best_offset
+
+
 def _normalize_audio(audio: np.ndarray) -> bytes:
-    """Normalise a float waveform to 16-bit PCM bytes."""
+    """Normalise a float waveform to 16-bit PCM bytes.
+
+    Uses peak-based normalisation to avoid amplifying noise when the
+    signal is already within range.  Only scales down when the peak
+    exceeds 0.95 (close to clipping).  Final limiting uses
+    :func:`soft_clip` for a smooth curve instead of hard clipping.
+    """
     audio = audio.astype(np.float32)
-    audio = np.clip(audio, -1.0, 1.0)
+    peak = np.max(np.abs(audio)) if len(audio) > 0 else 0.0
+    if peak > 0.95:
+        audio = audio / peak
+    # Soft limiter — smoothly saturates near ±1, preserving more
+    # dynamic range than tanh while still preventing hard clipping.
+    audio = soft_clip(audio)
     audio_int16 = (audio * 32767).astype(np.int16)
     return audio_int16.tobytes()
 
@@ -55,6 +107,59 @@ def _align_bytes(audio_bytes: bytes) -> bytes:
     if remainder != 0:
         audio_bytes = audio_bytes[:-remainder]
     return audio_bytes
+
+
+def crossfade_audio(prev: np.ndarray, curr: np.ndarray,
+                    fade_samples: int = 512) -> np.ndarray:
+    """Crossfade *prev* into *curr* over *fade_samples* using a raised-cosine curve.
+
+    If either array is too short for a full crossfade the arrays are simply
+    concatenated so no samples are lost.
+    """
+    if prev is None or len(prev) < fade_samples or len(curr) < fade_samples:
+        if prev is not None:
+            return np.concatenate([prev, curr]) if curr is not None else prev.copy()
+        return curr if curr is not None else np.array([], dtype=np.float32)
+
+    t = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+    fade_in = 0.5 * (1.0 - np.cos(np.pi * t))   # raised-cosine
+    fade_out = 1.0 - fade_in
+
+    prev_tail = prev[-fade_samples:] * fade_out
+    curr_head = curr[:fade_samples] * fade_in
+
+    blended = prev_tail + curr_head
+
+    return np.concatenate([
+        prev[:-fade_samples],
+        blended,
+        curr[fade_samples:],
+    ])
+
+
+def apply_fade(audio: np.ndarray, fade_samples: int = 256) -> np.ndarray:
+    """Apply a micro fade-in / fade-out to *audio* to eliminate edge clicks.
+
+    Uses a raised-cosine ramp for perceptually smooth transitions.
+    Returns a *copy* so the caller's original array is not mutated.
+    """
+    if audio is None or len(audio) < 2 * fade_samples:
+        return audio.copy() if audio is not None else np.array([], dtype=np.float32)
+
+    audio = audio.copy()
+    n = min(fade_samples, len(audio) // 2)
+    t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    ramp = 0.5 * (1.0 - np.cos(np.pi * t))   # raised-cosine ramp
+    audio[:n] *= ramp
+    audio[-n:] *= ramp[::-1]
+    return audio
+
+
+def silence_pad(audio: np.ndarray, sample_rate: int,
+                duration_sec: float = 0.05) -> np.ndarray:
+    """Append a short silence to *audio* to guard against abrupt transitions."""
+    silence = np.zeros(int(duration_sec * sample_rate), dtype=np.float32)
+    return np.concatenate([audio, silence])
 
 
 @dataclass

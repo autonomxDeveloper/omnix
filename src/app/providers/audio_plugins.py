@@ -1039,7 +1039,11 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
             raise e
     
     def _process_audio_chunk(self, audio_chunk) -> bytes:
-        """Process a single audio chunk and convert to PCM bytes."""
+        """Process a single audio chunk and convert to PCM bytes.
+
+        Uses peak-based normalisation: only scales down when the peak
+        exceeds 0.95 to avoid amplifying noise on quiet chunks.
+        """
         try:
             # Convert audio chunk to numpy array if needed
             if isinstance(audio_chunk, np.ndarray):
@@ -1051,8 +1055,14 @@ class FasterQwen3TTSTTS(BaseTTSProvider):
             if audio_data.size == 0:
                 return b''
             
-            # Clip audio to prevent distortion
-            audio_data = np.clip(audio_data, -1.0, 1.0)
+            # Peak-based normalisation — prevent clipping without
+            # amplifying noise on low-amplitude chunks.
+            peak = np.max(np.abs(audio_data))
+            if peak > 0.95:
+                audio_data = audio_data / peak
+            # Soft limiter — smoothly saturates near ±1, preserving
+            # more dynamic range than tanh while preventing clipping.
+            audio_data = audio_data / (1.0 + np.abs(audio_data))
             
             # Scale to int16 range and convert to bytes
             audio_int16 = (audio_data * 32767).astype(np.int16)
