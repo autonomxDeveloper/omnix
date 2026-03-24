@@ -340,6 +340,43 @@ class TestWebSocketEndpointDefined:
         assert '"segment"' in fn_body or "'segment'" in fn_body
         assert '"index"' in fn_body or "'index'" in fn_body
 
+    def test_segment_message_includes_voice(self):
+        """WS segment message must include the resolved voice name."""
+        content = _read_source("server_fastapi.py")
+
+        match = re.search(
+            r'async def websocket_audiobook.*?(?=\nasync def |\nclass |\n# ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match
+        fn_body = match.group(0)
+
+        # The send_json block for segment type must include voice
+        seg_send = re.search(
+            r'send_json\(\{[^}]*"type":\s*"segment"[^}]*\}',
+            fn_body, re.DOTALL
+        )
+        assert seg_send, "segment send_json block not found"
+        assert '"voice"' in seg_send.group(0), (
+            "segment message must include 'voice' so client transcript "
+            "shows the resolved voice, not the stale pre-mapping voice"
+        )
+
+    def test_sentence_segments_store_voice_name(self):
+        """sentence_segments entries must carry voice_name for display."""
+        content = _read_source("server_fastapi.py")
+
+        match = re.search(
+            r'async def websocket_audiobook.*?(?=\nasync def |\nclass |\n# ===|\Z)',
+            content, re.DOTALL
+        )
+        assert match
+        fn_body = match.group(0)
+        assert '"voice_name"' in fn_body, (
+            "sentence_segments must store voice_name (human-readable) "
+            "separately from voice (TTS speaker id)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # STEP 6: Deprecation comments on old endpoints
