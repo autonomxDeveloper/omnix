@@ -158,6 +158,15 @@ async function sendMessage() {
             }
         }
 
+        // Extract and apply RPG game state updates from AI response
+        if (window.GameState?.isEnabled()) {
+            const { cleanText, update } = window.GameState.extractGameUpdate(streamedContent);
+            if (update) {
+                window.GameState.applyUpdate(update);
+                streamedContent = cleanText;
+            }
+        }
+
         const generationTimeMs = startTime ? (Date.now() - startTime) : null;
         const tokensGenerated = streamedContent ? Math.ceil(streamedContent.length / 4) : 0;
         const tokenSpeed = generationTimeMs > 0 && tokensGenerated > 0 ? (tokensGenerated / (generationTimeMs / 1000)) : 0;
@@ -244,6 +253,11 @@ async function sendMessage() {
             if (voiceProfile?.personality && !systemPrompt.includes(voiceProfile.name)) {
                 systemPrompt = `${systemPrompt}\n\n## Current Character: ${voiceProfile.name}\n${voiceProfile.personality}`;
             }
+        }
+        
+        // Inject RPG game state context into system prompt
+        if (window.GameState?.isEnabled()) {
+            systemPrompt += window.GameState.buildContextBlock();
         }
         
         let processedAttachments = [];
@@ -361,6 +375,17 @@ async function sendMessage() {
             }
         }
         window.SessionManager?.renderSessionList?.();
+        
+        // Persist RPG game state to the session
+        if (window.GameState?.isEnabled() && safeSessionId) {
+            try {
+                await fetch(`/api/sessions/${safeSessionId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ game_state: window.GameState.serialize() })
+                });
+            } catch (e) { console.error('Error saving game state:', e); }
+        }
     }
 }
 

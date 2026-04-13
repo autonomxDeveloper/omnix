@@ -309,6 +309,18 @@
                 </div>
             </main>
 
+            <!-- RPG Game Panel (right side overlay) -->
+            <aside id="gamePanel" class="game-panel">
+                <div class="game-panel-header">
+                    <span class="game-panel-title">🎮 Character</span>
+                    <button class="game-panel-close" onclick="window.GameState?.hidePanel()" title="Hide panel">×</button>
+                </div>
+                <div class="game-panel-body"></div>
+                <div class="game-panel-footer">
+                    <button class="game-panel-reset-btn" onclick="if(confirm('Reset game state? This cannot be undone.')){window.GameState?.resetState()}" title="Reset game">↺ Reset</button>
+                </div>
+            </aside>
+
 
             <!-- Input Area -->
             <footer class="input-area">
@@ -1457,6 +1469,7 @@ Morgan: Indeed, it reminds me of home."></textarea>
     <script src="{{ url_for('static', filename='features.js') }}"></script>
     <script src="{{ url_for('static', filename='websocket.js') }}"></script>
     <script src="{{ url_for('static', filename='chat/chat-api.js') }}"></script>
+    <script src="{{ url_for('static', filename='chat/game-state.js') }}"></script>
     <script src="{{ url_for('static', filename='chat/session-manager.js') }}"></script>
     <script src="{{ url_for('static', filename='chat/message-renderer.js') }}"></script>
     <script src="{{ url_for('static', filename='chat/audio-player.js') }}"></script>
