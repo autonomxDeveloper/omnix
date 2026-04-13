@@ -5002,8 +5002,7 @@ pre:hover .code-copy-btn {
 }
 
 /* Adjust chat container when game panel is visible */
-.game-panel.visible ~ .main-content .chat-container,
-.game-panel.visible ~ .chat-container {
+body.game-panel-open .chat-container {
     margin-right: 300px;
 }
 
@@ -5011,10 +5010,9 @@ pre:hover .code-copy-btn {
 @media (max-width: 768px) {
     .game-panel {
         width: 260px;
-        right: -280px;
+        right: -260px;
     }
-    .game-panel.visible ~ .main-content .chat-container,
-    .game-panel.visible ~ .chat-container {
+    body.game-panel-open .chat-container {
         margin-right: 0;
     }
 }

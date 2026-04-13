@@ -68,7 +68,10 @@
             _state.gold = Math.max(0, update.gold);
         }
         if (typeof update.gold_change === 'number') {
+            const prev = _state.gold;
             _state.gold = Math.max(0, _state.gold + update.gold_change);
+            if (update.gold_change > 0) addLog(`+${update.gold_change} gold`);
+            else if (update.gold_change < 0) addLog(`${update.gold_change} gold`);
         }
 
         // XP
@@ -93,6 +96,8 @@
         // HP
         if (typeof update.hp_change === 'number') {
             c.hp = Math.max(0, Math.min(c.max_hp, c.hp + update.hp_change));
+            if (update.hp_change > 0) addLog(`+${update.hp_change} HP`);
+            else if (update.hp_change < 0) addLog(`${update.hp_change} HP`);
         }
         if (typeof update.hp === 'number') {
             c.hp = Math.max(0, Math.min(c.max_hp, update.hp));
@@ -212,11 +217,13 @@ RULES:
     function showPanel() {
         const panel = document.getElementById('gamePanel');
         if (panel) panel.classList.add('visible');
+        document.body.classList.add('game-panel-open');
     }
 
     function hidePanel() {
         const panel = document.getElementById('gamePanel');
         if (panel) panel.classList.remove('visible');
+        document.body.classList.remove('game-panel-open');
     }
 
     function renderPanel() {
@@ -290,12 +297,13 @@ RULES:
 
     function load(saved) {
         if (!saved || typeof saved !== 'object') return;
-        _state = structuredClone({ ...structuredClone(DEFAULT_GAME_STATE), ...saved });
+        const defaults = structuredClone(DEFAULT_GAME_STATE);
+        _state = { ...defaults, ...saved };
         // Ensure nested objects are merged properly
         if (saved.character) {
-            _state.character = { ...structuredClone(DEFAULT_GAME_STATE.character), ...saved.character };
+            _state.character = { ...defaults.character, ...saved.character };
             if (saved.character.stats) {
-                _state.character.stats = { ...structuredClone(DEFAULT_GAME_STATE.character.stats), ...saved.character.stats };
+                _state.character.stats = { ...defaults.character.stats, ...saved.character.stats };
             }
         }
         if (saved.inventory) _state.inventory = [...saved.inventory];
