@@ -294,6 +294,15 @@ async function loadSession(id) {
             if (session.system_prompt) {
                 systemPromptInput.value = session.system_prompt;
             }
+
+            // Load RPG game state if present
+            if (window.GameState) {
+                if (session.game_state) {
+                    window.GameState.load(session.game_state);
+                } else {
+                    window.GameState.disable();
+                }
+            }
         }
     } catch (error) {
         console.error('Error loading session:', error);

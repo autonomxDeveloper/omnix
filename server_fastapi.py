@@ -891,6 +891,8 @@ async def update_session(session_id: str, request: Request):
         shared.sessions_data[session_id]['title'] = data['title']
     if 'system_prompt' in data:
         shared.sessions_data[session_id]['system_prompt'] = data['system_prompt']
+    if 'game_state' in data:
+        shared.sessions_data[session_id]['game_state'] = data['game_state']
     shared.sessions_data[session_id]['updated_at'] = datetime.now().isoformat()
     shared.save_sessions(shared.sessions_data)
     return {"success": True}
