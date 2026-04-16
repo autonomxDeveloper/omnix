@@ -33,7 +33,6 @@ export function useChatStream(sessionId: string | null) {
 
       // Optimistic: show user message in UI immediately
       setPendingUserMessage(text)
-      setStreaming(true)
       clearStreamContent()
 
       const abort = new AbortController()
@@ -53,6 +52,9 @@ export function useChatStream(sessionId: string | null) {
         )
 
         if (!stream) return
+
+        // Only set streaming after successful stream establishment
+        setStreaming(true)
 
         const reader = stream.getReader()
         const decoder = new TextDecoder()

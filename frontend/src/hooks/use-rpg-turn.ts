@@ -22,7 +22,7 @@ export function useRpgTurn(sessionId: string | null) {
 
   const turnMutation = useMutation({
     mutationFn: (action: string) => {
-      if (!sessionId) throw new Error('No active RPG session')
+      if (!sessionId) throw new Error('No active RPG session. Please start a new adventure or load an existing one.')
       return rpgSessionApi.turn(sessionId, action)
     },
     onMutate: () => {
