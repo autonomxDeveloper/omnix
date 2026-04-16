@@ -6,7 +6,7 @@ import { Swords, MessageCircle, Compass, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { RpgChoice } from '@/types/rpg'
 
-const typeIcons: Record<string, React.ComponentType<{ className?: string }>> = {
+const typeIcons: Record<string, React.ComponentType<{ className?: string; style?: React.CSSProperties }>> = {
   combat: Swords,
   dialogue: MessageCircle,
   explore: Compass,

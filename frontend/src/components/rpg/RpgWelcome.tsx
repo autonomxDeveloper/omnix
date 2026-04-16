@@ -26,7 +26,7 @@ export function RpgWelcome() {
           rpgStore.setChoices(data.choices as typeof rpgStore.choices)
         }
         if (data.player) {
-          rpgPlayerStore.setPlayer(data.player as Record<string, unknown> as typeof rpgPlayerStore.player)
+          rpgPlayerStore.setPlayer(data.player as unknown as typeof rpgPlayerStore.player)
         }
       }
     } catch (err) {

@@ -53,7 +53,7 @@ export function AdventureBuilder() {
           rpgStore.addNarration({ type: 'narration', content: result.narration as string, turn: 0 })
         }
         if (result.choices) rpgStore.setChoices(result.choices as typeof rpgStore.choices)
-        if (result.player) rpgPlayerStore.setPlayer(result.player as Record<string, unknown> as typeof rpgPlayerStore.player)
+        if (result.player) rpgPlayerStore.setPlayer(result.player as unknown as typeof rpgPlayerStore.player)
       }
     } catch (err) {
       console.error('Failed to launch adventure:', err)
