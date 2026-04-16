@@ -87,3 +87,7 @@ chatterbox/
 faster-qwen3-tts-main/
 tts/*.wav
 src/data/rpg_sessions/*.json
+
+# Frontend
+node_modules/
+frontend/dist/
