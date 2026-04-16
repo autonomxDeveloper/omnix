@@ -458,7 +458,10 @@ async def root():
 @app.get("/assets/{path:path}")
 async def serve_frontend_assets(path: str):
     """Serve Vite-built frontend assets"""
-    file_path = frontend_dist / 'assets' / path
+    file_path = (frontend_dist / 'assets' / path).resolve()
+    # Prevent path traversal
+    if not str(file_path).startswith(str(frontend_dist.resolve())):
+        return HTMLResponse("Forbidden", status_code=403)
     if file_path.exists() and file_path.is_file():
         return FileResponse(file_path)
     return HTMLResponse("Not Found", status_code=404)
