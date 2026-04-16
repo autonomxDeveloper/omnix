@@ -422,6 +422,7 @@ BASE_DIR = Path(__file__).parent
 static_dir = BASE_DIR / 'src' / 'static'
 templates_dir = BASE_DIR / 'src' / 'templates'
 index_file = templates_dir / 'index.html'
+frontend_dist = BASE_DIR / 'frontend' / 'dist'
 
 # Cache for processed index.html
 _index_html_cache = None
@@ -445,11 +446,25 @@ def get_index_html():
 
 @app.get("/")
 async def root():
-    """Serve the main HTML page"""
+    """Serve the new React SPA if built, otherwise fall back to legacy HTML"""
+    spa_index = frontend_dist / 'index.html'
+    if spa_index.exists():
+        return FileResponse(spa_index)
     content = get_index_html()
     if content:
         return HTMLResponse(content)
     return HTMLResponse("<h1>Omnix</h1><p>Static files not found</p>")
+
+@app.get("/assets/{path:path}")
+async def serve_frontend_assets(path: str):
+    """Serve Vite-built frontend assets"""
+    file_path = (frontend_dist / 'assets' / path).resolve()
+    # Prevent path traversal
+    if not str(file_path).startswith(str(frontend_dist.resolve())):
+        return HTMLResponse("Forbidden", status_code=403)
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(file_path)
+    return HTMLResponse("Not Found", status_code=404)
 
 @app.get("/static/{path:path}")
 async def serve_static(path: str):
@@ -3605,6 +3620,19 @@ async def download_audiobook_ws(job_id: str):
     if not os.path.exists(path):
         return JSONResponse({"error": "Audio file not found"}, status_code=404)
     return FileResponse(path, media_type="audio/wav", filename="audiobook.wav")
+
+
+# SPA fallback: serve the React frontend for any non-API, non-static routes
+@app.get("/{catch_all:path}")
+async def spa_fallback(catch_all: str):
+    """Fallback for SPA client-side routing - serve index.html for unmatched routes"""
+    # Don't intercept API, static, ws, or logo routes
+    if catch_all.startswith(('api/', 'ws/', 'static/', 'logo/', 'assets/')):
+        return HTMLResponse("Not Found", status_code=404)
+    spa_index = frontend_dist / 'index.html'
+    if spa_index.exists():
+        return FileResponse(spa_index)
+    return HTMLResponse("Not Found", status_code=404)
 
 
 if __name__ == "__main__":
