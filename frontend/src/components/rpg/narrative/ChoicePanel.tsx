@@ -1,6 +1,5 @@
 import { useRpgStore } from '@/stores/rpg-store'
-import { rpgSessionApi } from '@/api/endpoints/rpg-session'
-import { useRpgPlayerStore } from '@/stores/rpg-player-store'
+import { useRpgTurn } from '@/hooks/use-rpg-turn'
 import { choiceTypeColors } from '../theme/rpg-theme'
 import { Swords, MessageCircle, Compass, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -13,34 +12,21 @@ const typeIcons: Record<string, React.ComponentType<{ className?: string; style?
   special: Sparkles,
 }
 
-export function ChoicePanel() {
-  const { choices, sessionId, isLoading, setLoading, addNarration, setChoices, setNpcs, addDiceRoll, setTurn, currentTurn } = useRpgStore()
-  const rpgPlayerStore = useRpgPlayerStore()
+interface ChoicePanelProps {
+  choices: RpgChoice[]
+  sessionId: string | null
+}
+
+export function ChoicePanel({ choices, sessionId }: ChoicePanelProps) {
+  const { isTurnLoading } = useRpgStore()
+  const { executeTurn, isPending } = useRpgTurn(sessionId)
+  const isLoading = isTurnLoading || isPending
 
   if (choices.length === 0) return null
 
-  const handleChoice = async (choice: RpgChoice) => {
+  const handleChoice = (choice: RpgChoice) => {
     if (!sessionId || isLoading || choice.disabled) return
-
-    setLoading(true)
-    addNarration({ type: 'player', content: choice.text, turn: currentTurn })
-
-    try {
-      const result = await rpgSessionApi.turn(sessionId, choice.text)
-
-      if (result.narration) {
-        addNarration({ type: 'narration', content: result.narration, turn: currentTurn + 1 })
-      }
-      if (result.choices) setChoices(result.choices)
-      if (result.npcs) setNpcs(result.npcs)
-      if (result.rolls) result.rolls.forEach((r) => addDiceRoll(r))
-      if (result.player) rpgPlayerStore.setPlayer(result.player)
-      setTurn(currentTurn + 1)
-    } catch (err) {
-      addNarration({ type: 'system', content: `Error: ${(err as Error).message}`, turn: currentTurn })
-    } finally {
-      setLoading(false)
-    }
+    executeTurn(choice.text)
   }
 
   return (

@@ -1,6 +1,6 @@
+import { useNavigate } from 'react-router-dom'
 import { useAppStore } from '@/stores/app-store'
 import { useSessions, useDeleteSession } from '@/hooks/use-sessions'
-import { useChatStore } from '@/stores/chat-store'
 import {
   Dialog,
   DialogContent,
@@ -14,16 +14,15 @@ import { formatDate, truncate } from '@/lib/utils'
 import { Trash2 } from 'lucide-react'
 
 export function HistoryDialog() {
+  const navigate = useNavigate()
   const { activeModal, closeModal } = useAppStore()
   const { data: sessions } = useSessions()
   const deleteSession = useDeleteSession()
-  const { setActiveSession, setMessages } = useChatStore()
 
   const isOpen = activeModal === 'history'
 
   const handleSelect = (id: string) => {
-    setActiveSession(id)
-    setMessages([])
+    navigate(`/chat/${id}`)
     closeModal()
   }
 

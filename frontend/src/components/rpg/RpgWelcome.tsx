@@ -1,39 +1,28 @@
+import { useNavigate } from 'react-router-dom'
 import { useRpgStore } from '@/stores/rpg-store'
-import { rpgAdventureApi } from '@/api/endpoints/rpg-adventure'
+import { useStartAdventure } from '@/hooks/use-rpg-session'
 import { useRpgPlayerStore } from '@/stores/rpg-player-store'
 import { Button } from '@/components/ui/button'
 import { Swords, Scroll, Sparkles } from 'lucide-react'
 
 export function RpgWelcome() {
+  const navigate = useNavigate()
   const rpgStore = useRpgStore()
   const rpgPlayerStore = useRpgPlayerStore()
+  const startAdventure = useStartAdventure()
 
   const handleQuickStart = async () => {
-    rpgStore.setLoading(true)
-    try {
-      const result = await rpgAdventureApi.start()
-      const data = result as Record<string, unknown>
-      if (data.session_id) {
-        rpgStore.setSessionId(data.session_id as string)
-        if (data.narration) {
-          rpgStore.addNarration({
-            type: 'narration',
-            content: data.narration as string,
-            turn: 0,
-          })
+    startAdventure.mutate(undefined, {
+      onSuccess: (result) => {
+        const data = result as Record<string, unknown>
+        if (data.session_id) {
+          if (data.player) {
+            rpgPlayerStore.setPlayer(data.player as unknown as typeof rpgPlayerStore.player)
+          }
+          navigate(`/rpg/${data.session_id}`)
         }
-        if (data.choices) {
-          rpgStore.setChoices(data.choices as typeof rpgStore.choices)
-        }
-        if (data.player) {
-          rpgPlayerStore.setPlayer(data.player as unknown as typeof rpgPlayerStore.player)
-        }
-      }
-    } catch (err) {
-      console.error('Failed to start adventure:', err)
-    } finally {
-      rpgStore.setLoading(false)
-    }
+      },
+    })
   }
 
   const handleAdventureBuilder = () => {

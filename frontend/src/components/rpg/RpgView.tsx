@@ -1,4 +1,6 @@
+import { useParams } from 'react-router-dom'
 import { useRpgStore } from '@/stores/rpg-store'
+import { useRpgSession } from '@/hooks/use-rpg-session'
 import { NarrativeFeed } from './narrative/NarrativeFeed'
 import { ChoicePanel } from './narrative/ChoicePanel'
 import { NpcPanel } from './world/NpcPanel'
@@ -15,14 +17,27 @@ import { AdventureBuilder } from './builder/AdventureBuilder'
 import './theme/rpg-animations.css'
 
 export function RpgView() {
+  const { sessionId } = useParams<{ sessionId?: string }>()
   const {
-    sessionId,
     pendingRolls,
     inspectorOpen,
     characterSheetOpen,
     adventureBuilderOpen,
     dialogueActive,
   } = useRpgStore()
+
+  // Fetch session data from server (TanStack Query owns this)
+  const { data: sessionData } = useRpgSession(sessionId || null)
+
+  // Derive display data from server state
+  const session = sessionData as Record<string, unknown> | undefined
+  const choices = (session?.choices || []) as import('@/types/rpg').RpgChoice[]
+  const npcs = (session?.npcs || []) as import('@/types/rpg').RpgNpc[]
+  const world = session?.world as import('@/types/rpg').RpgWorld | undefined
+  const narration = (session?.narration || []) as import('@/types/rpg').RpgNarration[]
+  const memory = (session?.memory || []) as import('@/types/rpg').MemoryEntry[]
+  const worldEvents = (session?.world_events || []) as import('@/types/rpg').WorldEvent[]
+  const currentTurn = (session?.turn_count || 0) as number
 
   if (!sessionId) {
     return <RpgWelcome />
@@ -34,13 +49,13 @@ export function RpgView() {
 
   return (
     <div className="rpg-theme relative flex h-full flex-col overflow-hidden" style={{ background: 'var(--rpg-bg-deep)' }}>
-      <RpgToolbar />
+      <RpgToolbar world={world || null} currentTurn={currentTurn} />
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left Column - World Info */}
         <div className="flex w-64 flex-col gap-2 overflow-y-auto p-3 border-r" style={{ borderColor: 'var(--rpg-border)' }}>
-          <Minimap />
-          <NpcPanel />
+          <Minimap world={world} />
+          <NpcPanel npcs={npcs} sessionId={sessionId} />
         </div>
 
         {/* Center Column - Narrative */}
@@ -49,8 +64,8 @@ export function RpgView() {
             <DialogueView />
           ) : (
             <>
-              <NarrativeFeed />
-              <ChoicePanel />
+              <NarrativeFeed narration={narration} />
+              <ChoicePanel choices={choices} sessionId={sessionId} />
             </>
           )}
         </div>
@@ -58,7 +73,7 @@ export function RpgView() {
         {/* Right Column - Character */}
         <div className="flex w-72 flex-col gap-2 overflow-y-auto p-3 border-l" style={{ borderColor: 'var(--rpg-border)' }}>
           <CharacterSidebar />
-          <MemoryPanel />
+          <MemoryPanel memory={memory} worldEvents={worldEvents} />
         </div>
       </div>
 

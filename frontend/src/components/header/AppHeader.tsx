@@ -1,3 +1,4 @@
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAppStore } from '@/stores/app-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import { useChatStore } from '@/stores/chat-store'
@@ -13,36 +14,53 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { formatTokenCount } from '@/lib/utils'
-import { Moon, Sun, Swords, MessageSquare, Square } from 'lucide-react'
+import { Moon, Sun, Swords, MessageSquare, Mic, Square } from 'lucide-react'
 
 export function AppHeader() {
-  const { theme, toggleTheme, mode, setMode, openModal } = useAppStore()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const { theme, toggleTheme, openModal } = useAppStore()
   const { settings, setModel } = useSettingsStore()
   const { isStreaming, inputTokens, outputTokens } = useChatStore()
   const { data: health } = useHealth()
   const { data: models } = useModels()
+
+  const currentMode = location.pathname.startsWith('/rpg')
+    ? 'rpg'
+    : location.pathname.startsWith('/voice')
+      ? 'voice'
+      : 'chat'
 
   return (
     <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
       {/* Mode toggle */}
       <div className="flex items-center rounded-lg bg-muted p-0.5">
         <Button
-          variant={mode === 'chat' ? 'secondary' : 'ghost'}
+          variant={currentMode === 'chat' ? 'secondary' : 'ghost'}
           size="sm"
           className="h-7 gap-1.5 text-xs"
-          onClick={() => setMode('chat')}
+          onClick={() => navigate('/chat')}
         >
           <MessageSquare className="h-3.5 w-3.5" />
           Chat
         </Button>
         <Button
-          variant={mode === 'rpg' ? 'secondary' : 'ghost'}
+          variant={currentMode === 'rpg' ? 'secondary' : 'ghost'}
           size="sm"
           className="h-7 gap-1.5 text-xs"
-          onClick={() => setMode('rpg')}
+          onClick={() => navigate('/rpg')}
         >
           <Swords className="h-3.5 w-3.5" />
           RPG
+        </Button>
+        <Button
+          variant={currentMode === 'voice' ? 'secondary' : 'ghost'}
+          size="sm"
+          className="h-7 gap-1.5 text-xs"
+          onClick={() => navigate('/voice')}
+        >
+          <Mic className="h-3.5 w-3.5" />
+          Voice
         </Button>
       </div>
 

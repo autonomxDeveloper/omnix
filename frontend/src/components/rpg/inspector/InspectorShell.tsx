@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useParams } from 'react-router-dom'
 import { useRpgStore } from '@/stores/rpg-store'
 import { rpgInspectorApi } from '@/api/endpoints/rpg-presentation'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -7,7 +8,8 @@ import { Button } from '@/components/ui/button'
 import { X, RefreshCw } from 'lucide-react'
 
 export function InspectorShell() {
-  const { setInspectorOpen, sessionId } = useRpgStore()
+  const { sessionId } = useParams<{ sessionId?: string }>()
+  const { setInspectorOpen } = useRpgStore()
   const [timelineData, setTimelineData] = useState<unknown>(null)
   const [npcData, setNpcData] = useState<unknown>(null)
   const [loading, setLoading] = useState(false)

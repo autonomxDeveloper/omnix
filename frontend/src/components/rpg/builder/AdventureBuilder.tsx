@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useRpgStore } from '@/stores/rpg-store'
 import { useRpgPlayerStore } from '@/stores/rpg-player-store'
-import { rpgAdventureApi } from '@/api/endpoints/rpg-adventure'
+import { useStartAdventure } from '@/hooks/use-rpg-session'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -19,10 +20,11 @@ const STEPS = [
 ]
 
 export function AdventureBuilder() {
+  const navigate = useNavigate()
   const rpgStore = useRpgStore()
   const rpgPlayerStore = useRpgPlayerStore()
+  const startAdventure = useStartAdventure()
   const [step, setStep] = useState(0)
-  const [loading, setLoading] = useState(false)
   const [form, setForm] = useState({
     theme: 'dark_fantasy',
     tone: 'epic',
@@ -40,26 +42,16 @@ export function AdventureBuilder() {
   }
 
   const handleLaunch = async () => {
-    setLoading(true)
-    try {
-      const result = await rpgAdventureApi.start({
-        setup: form,
-      }) as Record<string, unknown>
-
-      if (result.session_id) {
-        rpgStore.setSessionId(result.session_id as string)
-        rpgStore.setAdventureBuilderOpen(false)
-        if (result.narration) {
-          rpgStore.addNarration({ type: 'narration', content: result.narration as string, turn: 0 })
+    startAdventure.mutate({ setup: form }, {
+      onSuccess: (result) => {
+        const data = result as Record<string, unknown>
+        if (data.session_id) {
+          rpgStore.setAdventureBuilderOpen(false)
+          if (data.player) rpgPlayerStore.setPlayer(data.player as unknown as typeof rpgPlayerStore.player)
+          navigate(`/rpg/${data.session_id}`)
         }
-        if (result.choices) rpgStore.setChoices(result.choices as typeof rpgStore.choices)
-        if (result.player) rpgPlayerStore.setPlayer(result.player as unknown as typeof rpgPlayerStore.player)
-      }
-    } catch (err) {
-      console.error('Failed to launch adventure:', err)
-    } finally {
-      setLoading(false)
-    }
+      },
+    })
   }
 
   return (
@@ -144,14 +136,14 @@ export function AdventureBuilder() {
               <Button
                 className="w-full gap-2"
                 onClick={handleLaunch}
-                disabled={loading}
+                disabled={startAdventure.isPending}
                 style={{
                   background: 'linear-gradient(135deg, var(--rpg-gold-dim), var(--rpg-gold))',
                   color: 'var(--rpg-bg-deep)',
                   fontFamily: "'Cinzel', serif",
                 }}
               >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                {startAdventure.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
                 Launch Adventure
               </Button>
             </div>

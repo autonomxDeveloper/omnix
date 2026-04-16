@@ -1,44 +1,43 @@
 import { create } from 'zustand'
-import type { ChatMessage, ChatSession } from '@/types/chat'
 
+/**
+ * Chat store: owns ONLY ephemeral streaming/interaction state.
+ * Server-fetched data (sessions, messages) lives in TanStack Query.
+ * This store tracks the active streaming state and token counters.
+ */
 interface ChatState {
-  sessions: ChatSession[]
-  activeSessionId: string | null
-  messages: ChatMessage[]
   isStreaming: boolean
   streamingContent: string
+  /** Optimistic messages added during streaming before query refetch */
+  pendingUserMessage: string | null
   inputTokens: number
   outputTokens: number
 
   // actions
-  setSessions: (sessions: ChatSession[]) => void
-  setActiveSession: (id: string | null) => void
-  setMessages: (messages: ChatMessage[]) => void
-  addMessage: (message: ChatMessage) => void
   setStreaming: (streaming: boolean) => void
   appendStreamContent: (chunk: string) => void
   clearStreamContent: () => void
+  setPendingUserMessage: (message: string | null) => void
   setTokenCounts: (input: number, output: number) => void
-  clearChat: () => void
+  reset: () => void
 }
 
 export const useChatStore = create<ChatState>((set) => ({
-  sessions: [],
-  activeSessionId: null,
-  messages: [],
   isStreaming: false,
   streamingContent: '',
+  pendingUserMessage: null,
   inputTokens: 0,
   outputTokens: 0,
 
-  setSessions: (sessions) => set({ sessions }),
-  setActiveSession: (id) => set({ activeSessionId: id }),
-  setMessages: (messages) => set({ messages }),
-  addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
   setStreaming: (streaming) => set({ isStreaming: streaming }),
   appendStreamContent: (chunk) =>
     set((s) => ({ streamingContent: s.streamingContent + chunk })),
   clearStreamContent: () => set({ streamingContent: '' }),
+  setPendingUserMessage: (message) => set({ pendingUserMessage: message }),
   setTokenCounts: (input, output) => set({ inputTokens: input, outputTokens: output }),
-  clearChat: () => set({ messages: [], streamingContent: '', activeSessionId: null }),
+  reset: () => set({
+    isStreaming: false,
+    streamingContent: '',
+    pendingUserMessage: null,
+  }),
 }))

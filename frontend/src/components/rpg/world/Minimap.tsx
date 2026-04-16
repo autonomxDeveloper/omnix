@@ -1,8 +1,11 @@
 import { useRef, useEffect } from 'react'
-import { useRpgStore } from '@/stores/rpg-store'
+import type { RpgWorld, RpgRegion, RpgFaction } from '@/types/rpg'
 
-export function Minimap() {
-  const { world } = useRpgStore()
+interface MinimapProps {
+  world?: RpgWorld | null
+}
+
+export function Minimap({ world }: MinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -45,7 +48,7 @@ export function Minimap() {
 
     // Regions
     if (world.regions) {
-      world.regions.forEach((region) => {
+      world.regions.forEach((region: RpgRegion) => {
         if (!region.discovered) return
 
         const rx = ((region.x + 50) / 100) * w
@@ -70,7 +73,7 @@ export function Minimap() {
 
     // Faction territories
     if (world.factions) {
-      world.factions.forEach((faction) => {
+      world.factions.forEach((faction: RpgFaction) => {
         // Simple territory indicator
         ctx.fillStyle = faction.color + '20'
       })

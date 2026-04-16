@@ -1,9 +1,13 @@
-import { useRpgStore } from '@/stores/rpg-store'
 import { NpcCard } from './NpcCard'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import type { RpgNpc } from '@/types/rpg'
 
-export function NpcPanel() {
-  const { npcs } = useRpgStore()
+interface NpcPanelProps {
+  npcs: RpgNpc[]
+  sessionId: string
+}
+
+export function NpcPanel({ npcs }: NpcPanelProps) {
 
   if (npcs.length === 0) return null
 

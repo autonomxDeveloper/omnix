@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type AppMode = 'chat' | 'rpg'
 export type ActiveModal =
   | null
   | 'settings'
@@ -17,14 +16,12 @@ export type ActiveModal =
 interface AppState {
   theme: 'dark' | 'light'
   sidebarOpen: boolean
-  mode: AppMode
   activeModal: ActiveModal
   // actions
   setTheme: (theme: 'dark' | 'light') => void
   toggleTheme: () => void
   setSidebarOpen: (open: boolean) => void
   toggleSidebar: () => void
-  setMode: (mode: AppMode) => void
   openModal: (modal: ActiveModal) => void
   closeModal: () => void
 }
@@ -34,7 +31,6 @@ export const useAppStore = create<AppState>()(
     (set) => ({
       theme: 'dark',
       sidebarOpen: false,
-      mode: 'chat',
       activeModal: null,
 
       setTheme: (theme) => {
@@ -49,7 +45,6 @@ export const useAppStore = create<AppState>()(
         }),
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-      setMode: (mode) => set({ mode }),
       openModal: (modal) => set({ activeModal: modal }),
       closeModal: () => set({ activeModal: null }),
     }),

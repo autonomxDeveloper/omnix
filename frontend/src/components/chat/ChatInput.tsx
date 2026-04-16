@@ -1,95 +1,26 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef } from 'react'
 import { useChatStore } from '@/stores/chat-store'
-import { useSettingsStore } from '@/stores/settings-store'
-import { chatApi } from '@/api/endpoints/chat'
+import { useChatStream } from '@/hooks/use-chat-stream'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Send, Paperclip } from 'lucide-react'
 
-export function ChatInput() {
+interface ChatInputProps {
+  sessionId: string | null
+}
+
+export function ChatInput({ sessionId }: ChatInputProps) {
   const [input, setInput] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const abortRef = useRef<AbortController | null>(null)
-  const { activeSessionId, isStreaming, addMessage, setStreaming, appendStreamContent, clearStreamContent, setTokenCounts } = useChatStore()
-  const { settings } = useSettingsStore()
+  const { isStreaming } = useChatStore()
+  const { send } = useChatStream(sessionId)
 
-  const handleSend = useCallback(async () => {
+  const handleSend = () => {
     const text = input.trim()
     if (!text || isStreaming) return
-
     setInput('')
-    addMessage({ role: 'user', content: text })
-    setStreaming(true)
-    clearStreamContent()
-
-    const abort = new AbortController()
-    abortRef.current = abort
-
-    try {
-      const stream = await chatApi.streamChat(
-        {
-          message: text,
-          session_id: activeSessionId || undefined,
-          system_prompt: settings.system_prompt,
-          model: settings.model,
-          temperature: settings.temperature,
-          max_tokens: settings.max_tokens,
-        },
-        abort.signal,
-      )
-
-      if (!stream) return
-
-      const reader = stream.getReader()
-      const decoder = new TextDecoder()
-      let fullResponse = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        const chunk = decoder.decode(value, { stream: true })
-        // Parse SSE data lines
-        const lines = chunk.split('\n')
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6)
-            if (data === '[DONE]') continue
-            try {
-              const parsed = JSON.parse(data)
-              if (parsed.content) {
-                fullResponse += parsed.content
-                appendStreamContent(parsed.content)
-              }
-              if (parsed.usage) {
-                setTokenCounts(parsed.usage.prompt_tokens, parsed.usage.completion_tokens)
-              }
-            } catch {
-              // Plain text chunk
-              fullResponse += data
-              appendStreamContent(data)
-            }
-          }
-        }
-      }
-
-      // Add final assistant message
-      if (fullResponse) {
-        addMessage({ role: 'assistant', content: fullResponse })
-      }
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        addMessage({
-          role: 'assistant',
-          content: `Error: ${(err as Error).message}`,
-        })
-      }
-    } finally {
-      setStreaming(false)
-      clearStreamContent()
-      abortRef.current = null
-    }
-  }, [input, isStreaming, activeSessionId, settings, addMessage, setStreaming, appendStreamContent, clearStreamContent, setTokenCounts])
+    send(text)
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {

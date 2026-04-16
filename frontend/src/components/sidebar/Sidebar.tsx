@@ -1,6 +1,6 @@
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAppStore } from '@/stores/app-store'
 import { useSessions, useCreateSession, useDeleteSession } from '@/hooks/use-sessions'
-import { useChatStore } from '@/stores/chat-store'
 import { useRpgStore } from '@/stores/rpg-store'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -19,29 +19,41 @@ import {
   Podcast,
   Pen,
   Swords,
+  Mic,
   PanelLeftClose,
   PanelLeft,
 } from 'lucide-react'
 
 export function Sidebar() {
-  const { sidebarOpen, toggleSidebar, openModal, mode, setMode } = useAppStore()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const { sidebarOpen, toggleSidebar, openModal } = useAppStore()
   const { data: sessions } = useSessions()
   const createSession = useCreateSession()
   const deleteSession = useDeleteSession()
-  const { setActiveSession, setMessages, activeSessionId } = useChatStore()
   const rpgStore = useRpgStore()
+
+  const currentMode = location.pathname.startsWith('/rpg')
+    ? 'rpg'
+    : location.pathname.startsWith('/voice')
+      ? 'voice'
+      : 'chat'
+
+  // Extract active chat session ID from URL
+  const activeSessionId = location.pathname.startsWith('/chat/')
+    ? location.pathname.split('/chat/')[1]
+    : null
 
   const handleNewChat = () => {
     createSession.mutate(undefined, {
       onSuccess: (session) => {
-        setActiveSession(session.id)
-        setMessages([])
+        navigate(`/chat/${session.id}`)
       },
     })
   }
 
   const handleSelectSession = (id: string) => {
-    setActiveSession(id)
+    navigate(`/chat/${id}`)
   }
 
   const toolItems = [
@@ -84,10 +96,23 @@ export function Sidebar() {
           icon={Swords}
           label="RPG Mode"
           collapsed={!sidebarOpen}
-          active={mode === 'rpg'}
+          active={currentMode === 'rpg'}
           onClick={() => {
-            setMode(mode === 'rpg' ? 'chat' : 'rpg')
-            if (mode !== 'rpg') rpgStore.setAdventureBuilderOpen(false)
+            if (currentMode === 'rpg') {
+              navigate('/chat')
+            } else {
+              rpgStore.setAdventureBuilderOpen(false)
+              navigate('/rpg')
+            }
+          }}
+        />
+        <SidebarButton
+          icon={Mic}
+          label="Voice Mode"
+          collapsed={!sidebarOpen}
+          active={currentMode === 'voice'}
+          onClick={() => {
+            navigate(currentMode === 'voice' ? '/chat' : '/voice')
           }}
         />
       </div>

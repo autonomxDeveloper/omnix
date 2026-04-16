@@ -1,10 +1,13 @@
 import { useState } from 'react'
+import { useParams } from 'react-router-dom'
 import { useRpgStore } from '@/stores/rpg-store'
+import { useRpgSession } from '@/hooks/use-rpg-session'
 import { rpgDialogueApi } from '@/api/endpoints/rpg-dialogue'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { X, Send } from 'lucide-react'
+import type { RpgNpc } from '@/types/rpg'
 
 interface DialogueMessage {
   speaker: string
@@ -13,12 +16,16 @@ interface DialogueMessage {
 }
 
 export function DialogueView() {
-  const { sessionId, dialogueNpcId, setDialogue, npcs } = useRpgStore()
+  const { sessionId } = useParams<{ sessionId?: string }>()
+  const { dialogueNpcId, setDialogue } = useRpgStore()
+  const { data: sessionData } = useRpgSession(sessionId || null)
   const [messages, setMessages] = useState<DialogueMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const npc = npcs.find((n) => n.id === dialogueNpcId)
+  const session = sessionData as Record<string, unknown> | undefined
+  const npcs = (session?.npcs || []) as RpgNpc[]
+  const npc = npcs.find((n: RpgNpc) => n.id === dialogueNpcId)
 
   const handleSend = async () => {
     if (!input.trim() || !sessionId || loading) return

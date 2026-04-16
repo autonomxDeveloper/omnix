@@ -2,9 +2,14 @@ import { useRef, useEffect } from 'react'
 import { useRpgStore } from '@/stores/rpg-store'
 import { NarrativeEntry } from './NarrativeEntry'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import type { RpgNarration } from '@/types/rpg'
 
-export function NarrativeFeed() {
-  const { narration, streamingNarration } = useRpgStore()
+interface NarrativeFeedProps {
+  narration?: RpgNarration[]
+}
+
+export function NarrativeFeed({ narration = [] }: NarrativeFeedProps) {
+  const { streamingNarration } = useRpgStore()
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -14,7 +19,7 @@ export function NarrativeFeed() {
   return (
     <ScrollArea className="flex-1">
       <div className="rpg-parchment min-h-full p-6 space-y-4">
-        {narration.map((entry, i) => (
+        {narration.map((entry: RpgNarration, i: number) => (
           <NarrativeEntry key={i} entry={entry} index={i} />
         ))}
 

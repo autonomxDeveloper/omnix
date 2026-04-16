@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react'
+import { useParams } from 'react-router-dom'
 import { useChatStore } from '@/stores/chat-store'
 import { useSession } from '@/hooks/use-sessions'
 import { MessageList } from './MessageList'
@@ -6,26 +7,27 @@ import { ChatInput } from './ChatInput'
 import { WelcomeScreen } from './WelcomeScreen'
 
 export function ChatView() {
-  const { activeSessionId, messages, isStreaming, streamingContent } = useChatStore()
-  const { data: session } = useSession(activeSessionId)
+  const { sessionId } = useParams<{ sessionId?: string }>()
+  const { isStreaming, streamingContent, pendingUserMessage } = useChatStore()
+  const { data: session } = useSession(sessionId || null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // Load session messages when active session changes
-  const setMessages = useChatStore((s) => s.setMessages)
-  useEffect(() => {
-    if (session?.messages) {
-      setMessages(session.messages)
-    }
-  }, [session, setMessages])
+  // Messages come from TanStack Query (server-state owner), not Zustand
+  const serverMessages = session?.messages || []
 
-  // Auto-scroll on new messages
+  // Derive the displayed messages: server messages + any optimistic pending user message
+  const displayMessages = pendingUserMessage
+    ? [...serverMessages, { role: 'user' as const, content: pendingUserMessage }]
+    : serverMessages
+
+  const hasMessages = displayMessages.length > 0 || isStreaming
+
+  // Auto-scroll on new messages or streaming content
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, streamingContent])
-
-  const hasMessages = messages.length > 0 || isStreaming
+  }, [displayMessages, streamingContent])
 
   return (
     <div className="flex h-full flex-col">
@@ -33,7 +35,7 @@ export function ChatView() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {hasMessages ? (
           <MessageList
-            messages={messages}
+            messages={displayMessages}
             isStreaming={isStreaming}
             streamingContent={streamingContent}
           />
@@ -43,7 +45,7 @@ export function ChatView() {
       </div>
 
       {/* Input area */}
-      <ChatInput />
+      <ChatInput sessionId={sessionId || null} />
     </div>
   )
 }

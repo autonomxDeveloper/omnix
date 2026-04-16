@@ -3,9 +3,15 @@ import { useRpgPlayerStore } from '@/stores/rpg-player-store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Eye, Settings, Volume2, User, Map } from 'lucide-react'
+import type { RpgWorld } from '@/types/rpg'
 
-export function RpgToolbar() {
-  const { inspectorOpen, setInspectorOpen, setCharacterSheetOpen, currentTurn, world } = useRpgStore()
+interface RpgToolbarProps {
+  world: RpgWorld | null
+  currentTurn: number
+}
+
+export function RpgToolbar({ world, currentTurn }: RpgToolbarProps) {
+  const { inspectorOpen, setInspectorOpen, setCharacterSheetOpen } = useRpgStore()
   const { player } = useRpgPlayerStore()
 
   return (

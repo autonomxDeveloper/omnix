@@ -1,8 +1,12 @@
-import { useRpgStore } from '@/stores/rpg-store'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import type { MemoryEntry, WorldEvent } from '@/types/rpg'
 
-export function MemoryPanel() {
-  const { memory, worldEvents } = useRpgStore()
+interface MemoryPanelProps {
+  memory?: MemoryEntry[]
+  worldEvents?: WorldEvent[]
+}
+
+export function MemoryPanel({ memory = [], worldEvents = [] }: MemoryPanelProps) {
 
   return (
     <div className="rpg-glass rounded-lg overflow-hidden">
@@ -26,7 +30,7 @@ export function MemoryPanel() {
                 📝 Memories
               </p>
               <div className="space-y-1">
-                {memory.slice(-8).reverse().map((m, i) => (
+                {memory.slice(-8).reverse().map((m: MemoryEntry, i: number) => (
                   <p key={i} className="text-[11px] leading-snug" style={{ color: 'var(--rpg-text-dim)' }}>
                     {m.text}
                   </p>
@@ -42,7 +46,7 @@ export function MemoryPanel() {
                 🌍 World Events
               </p>
               <div className="space-y-1">
-                {worldEvents.slice(-8).reverse().map((e, i) => (
+                {worldEvents.slice(-8).reverse().map((e: WorldEvent, i: number) => (
                   <p key={i} className="text-[11px] leading-snug" style={{ color: 'var(--rpg-text-dim)' }}>
                     {e.text}
                   </p>
