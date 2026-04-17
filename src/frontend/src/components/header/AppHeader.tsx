@@ -1,4 +1,4 @@
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useEffect } from 'react'
 import { useAppStore } from '@/stores/app-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import { useChatStore } from '@/stores/chat-store'
@@ -20,7 +20,7 @@ export function AppHeader() {
   const location = useLocation()
   const navigate = useNavigate()
   const { theme, toggleTheme, openModal } = useAppStore()
-  const { settings, setModel } = useSettingsStore()
+  const { settings, setModel, _hasHydrated } = useSettingsStore()
   const { isStreaming, inputTokens, outputTokens } = useChatStore()
   const { data: health } = useHealth()
   const { data: models } = useModels()
@@ -30,6 +30,15 @@ export function AppHeader() {
     : location.pathname.startsWith('/voice')
       ? 'voice'
       : 'chat'
+
+  // Prevent flickering while localStorage loads
+  useEffect(() => {
+    // Force re-render after zustand persist hydration
+  }, [settings.model])
+
+  if (!_hasHydrated) {
+    return null
+  }
 
   return (
     <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
@@ -81,7 +90,7 @@ export function AppHeader() {
       </div>
 
       {/* Model selector */}
-      <Select value={settings.model || ''} onValueChange={setModel}>
+      <Select value={settings.model || ''} onValueChange={setModel} disabled={!settings.model}>
         <SelectTrigger className="h-8 w-48 text-xs">
           <SelectValue placeholder="Select model" />
         </SelectTrigger>

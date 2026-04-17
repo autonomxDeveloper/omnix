@@ -5,6 +5,7 @@ import path from 'path'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  root: 'src/frontend',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -28,7 +29,8 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist',
+    outDir: '../../dist/frontend',
+    emptyOutDir: true,
     sourcemap: false,
   },
 })

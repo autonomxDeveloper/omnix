@@ -89,5 +89,5 @@ tts/*.wav
 src/data/rpg_sessions/*.json
 
 # Frontend
-src/frontend/node_modules/
-src/frontend/dist/
+node_modules/
+dist/

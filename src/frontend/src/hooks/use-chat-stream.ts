@@ -15,7 +15,10 @@ import type { StreamChunk } from '@/types/chat'
  *   - Zustand (chat-store): isStreaming, streamingContent, pendingUserMessage, tokens
  *   - This hook: AbortController, SSE line parser, chunk accumulation
  */
-export function useChatStream(sessionId: string | null) {
+export function useChatStream(
+  sessionId: string | null,
+  onSessionCreated?: (sessionId: string) => void,
+) {
   const queryClient = useQueryClient()
   const abortRef = useRef<AbortController | null>(null)
   const { settings } = useSettingsStore()
@@ -115,24 +118,24 @@ export function useChatStream(sessionId: string | null) {
            if (sessions) console.log('📌 Latest session:', sessions[0])
            
            // AFTER sessions list is refreshed, find the new session id
-           if (sessions && sessions.length > 0 && !sessionId) {
-             // This was a new chat - navigate to the latest session
-             const latestSession = sessions[0]
-             window.history.replaceState({}, '', `/chat/${latestSession.id}`)
-             console.log(`✅ Navigated to new session: ${latestSession.id}`)
-             
-             // Manually add the new messages directly to cache to avoid refetch delay
-             queryClient.setQueryData(['session', latestSession.id], {
-               id: latestSession.id,
-               title: latestSession.title,
-               messages: [
-                 { role: 'user', content: text },
-                 { role: 'assistant', content: ai_message }
-               ]
-             })
-             
-             console.log('✅ Updated session cache directly')
-           }
+            if (sessions && sessions.length > 0 && !sessionId) {
+              // This was a new chat - use the already created session
+              const latestSession = sessions[0]
+              
+              // Manually add the new messages directly to cache to avoid refetch delay
+              queryClient.setQueryData(['session', latestSession.id], {
+                id: latestSession.id,
+                title: latestSession.title,
+                messages: [
+                  { role: 'user', content: text },
+                  { role: 'assistant', content: ai_message }
+                ]
+              })
+              
+              onSessionCreated?.(latestSession.id)
+              console.log(`✅ Navigated to new session: ${latestSession.id}`)
+              console.log('✅ Updated session cache directly')
+            }
           
           // Refetch session if we had an existing id
           if (sessionId) {
@@ -157,6 +160,7 @@ export function useChatStream(sessionId: string | null) {
       clearStreamContent,
       setPendingUserMessage,
       setTokenCounts,
+      onSessionCreated,
     ],
   )
 

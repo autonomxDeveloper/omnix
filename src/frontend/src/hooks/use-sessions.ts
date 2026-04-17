@@ -14,6 +14,7 @@ export function useSession(id: string | null) {
     queryKey: ['session', id],
     queryFn: () => chatApi.getSession(id!),
     enabled: !!id,
+    staleTime: 30000,
   })
 }
 
@@ -25,6 +26,7 @@ export function useCreateSession() {
       queryClient.setQueryData<ChatSession[]>(['sessions'], (old) => {
         return old ? [session, ...old] : [session]
       })
+      queryClient.setQueryData(['session', session.id], session)
     },
   })
 }

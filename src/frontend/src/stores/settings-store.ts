@@ -25,10 +25,11 @@ const defaultSettings: Settings = {
   auto_speak: false,
 }
 
-export const useSettingsStore = create<SettingsState>()(
+export const useSettingsStore = create<SettingsState & { _hasHydrated: boolean }>()(
   persist(
     (set) => ({
       settings: defaultSettings,
+      _hasHydrated: false,
       setSettings: (partial) =>
         set((s) => ({ settings: { ...s.settings, ...partial } })),
       setProvider: (provider) =>
@@ -47,6 +48,11 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: 'omnix-settings',
       partialize: (state) => ({ settings: state.settings }),
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          state._hasHydrated = true
+        }
+      },
       storage: {
         getItem: (name) => {
           const str = localStorage.getItem(name)

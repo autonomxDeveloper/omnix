@@ -1,5 +1,16 @@
-import { useRef, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useRef, useEffect, useState } from 'react'
+
+// DEBUG: hard force session creation
+if (window.location.pathname === '/chat' && !window.location.search.includes('skip')) {
+  fetch('/api/sessions', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.session_id) {
+        window.location.replace(`/chat/${data.session_id}`)
+      }
+    })
+}
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useChatStore } from '@/stores/chat-store'
 import { useSession, useCreateSession } from '@/hooks/use-sessions'
 import { MessageList } from './MessageList'
@@ -9,10 +20,31 @@ import { WelcomeScreen } from './WelcomeScreen'
 export function ChatView() {
   const { sessionId } = useParams<{ sessionId?: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const { isStreaming, streamingContent, pendingUserMessage } = useChatStore()
   const { data: session, refetch } = useSession(sessionId || null)
   const createSession = useCreateSession()
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Create empty session when landing on /chat without id
+  useEffect(() => {
+    console.log('🔍 ChatView useEffect:', sessionId, createSession.isPending, createSession.isError, createSession.error)
+    if (!sessionId && !createSession.isPending) {
+      console.log('👉 Calling createSession.mutate()')
+      createSession.mutate(undefined, {
+        onSuccess: (session) => {
+          console.log('✅ createSession success:', session)
+          if (session && session.id) {
+            console.log('🧭 Navigating to:', `/chat/${session.id}`)
+            navigate(`/chat/${session.id}`)
+          }
+        },
+        onError: (err) => {
+          console.error('❌ createSession error:', err)
+        }
+      })
+    }
+  }, [sessionId, createSession, navigate])
 
   // Refetch session data when sessionId changes
   useEffect(() => {

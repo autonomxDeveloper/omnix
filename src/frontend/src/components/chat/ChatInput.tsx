@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useChatStore } from '@/stores/chat-store'
 import { useChatStream } from '@/hooks/use-chat-stream'
 import { Button } from '@/components/ui/button'
@@ -12,8 +13,12 @@ interface ChatInputProps {
 export function ChatInput({ sessionId }: ChatInputProps) {
   const [input, setInput] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const navigate = useNavigate()
   const { isStreaming } = useChatStore()
-  const { send } = useChatStream(sessionId)
+  const { send } = useChatStream(
+    sessionId,
+    (newSessionId) => navigate(`/chat/${newSessionId}`, { replace: true }),
+  )
 
   const handleSend = () => {
     const text = input.trim()
