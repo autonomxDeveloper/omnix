@@ -2,7 +2,7 @@
 Tests for SPA serving logic in app.py.
 
 These tests verify that the FastAPI SPA serving routes behave correctly:
-1. Root serves built SPA when frontend/dist/index.html exists
+1. Root serves built SPA when src/frontend/dist/index.html exists
 2. Root falls back to legacy HTML when dist is absent
 3. /assets/... serves Vite-built assets with path traversal protection
 4. Catch-all SPA fallback does NOT intercept /api, /ws, /static, /assets, /logo namespaces
@@ -29,7 +29,7 @@ def _create_app(base_dir: Path, templates_dir: Path) -> FastAPI:
     app = FastAPI()
 
     index_file = templates_dir / "index.html"
-    frontend_dist = base_dir / "frontend" / "dist"
+    frontend_dist = base_dir / "src" / "frontend" / "dist"
     static_dir = base_dir / "src" / "static"
 
     _index_html_cache = [None]  # mutable container for closure
@@ -107,7 +107,7 @@ def tmp_project():
     with tempfile.TemporaryDirectory() as tmpdir:
         base = Path(tmpdir)
         # Create directory structure
-        (base / "frontend" / "dist" / "assets").mkdir(parents=True)
+        (base / "src" / "frontend" / "dist" / "assets").mkdir(parents=True)
         (base / "src" / "static").mkdir(parents=True)
         (base / "src" / "templates").mkdir(parents=True)
         yield base
@@ -128,8 +128,8 @@ def legacy_index_content():
 
 @pytest.mark.asyncio
 async def test_root_serves_spa_when_dist_exists(tmp_project, spa_index_content):
-    """Root (/) should serve frontend/dist/index.html when it exists."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    """Root (/) should serve src/frontend/dist/index.html when it exists."""
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)
@@ -144,7 +144,7 @@ async def test_root_falls_back_to_legacy_when_dist_absent(tmp_project, legacy_in
     """Root (/) should fall back to templates/index.html when dist is absent."""
     templates_dir = tmp_project / "src" / "templates"
     (templates_dir / "index.html").write_text(legacy_index_content)
-    # Don't create frontend/dist/index.html
+    # Don't create src/frontend/dist/index.html
 
     app = _create_app(tmp_project, templates_dir)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -171,8 +171,8 @@ async def test_root_returns_fallback_message_when_nothing_exists(tmp_project):
 
 @pytest.mark.asyncio
 async def test_assets_serves_vite_output(tmp_project):
-    """GET /assets/main.js should serve the file from frontend/dist/assets/."""
-    asset_path = tmp_project / "frontend" / "dist" / "assets" / "main.js"
+    """GET /assets/main.js should serve the file from src/frontend/dist/assets/."""
+    asset_path = tmp_project / "src" / "frontend" / "dist" / "assets" / "main.js"
     asset_path.write_text("console.log('hello');")
     templates_dir = tmp_project / "src" / "templates"
 
@@ -216,7 +216,7 @@ async def test_assets_returns_404_for_missing_file(tmp_project):
 @pytest.mark.asyncio
 async def test_catchall_does_not_intercept_api(tmp_project, spa_index_content):
     """/api/health should be handled by its own route, not by SPA fallback."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)
@@ -229,7 +229,7 @@ async def test_catchall_does_not_intercept_api(tmp_project, spa_index_content):
 @pytest.mark.asyncio
 async def test_catchall_does_not_intercept_static(tmp_project, spa_index_content):
     """/static/style.css should serve from static dir, not SPA fallback."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     static_file = tmp_project / "src" / "static" / "style.css"
     static_file.write_text("body { color: red; }")
     templates_dir = tmp_project / "src" / "templates"
@@ -244,7 +244,7 @@ async def test_catchall_does_not_intercept_static(tmp_project, spa_index_content
 @pytest.mark.asyncio
 async def test_catchall_does_not_intercept_ws(tmp_project, spa_index_content):
     """/ws/conversation should be handled by its own route, not SPA fallback."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)
@@ -257,7 +257,7 @@ async def test_catchall_does_not_intercept_ws(tmp_project, spa_index_content):
 @pytest.mark.asyncio
 async def test_catchall_does_not_intercept_logo(tmp_project, spa_index_content):
     """/logo/icon.png should be handled by logo route, not SPA fallback."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)
@@ -269,7 +269,7 @@ async def test_catchall_does_not_intercept_logo(tmp_project, spa_index_content):
 @pytest.mark.asyncio
 async def test_catchall_does_not_intercept_assets_prefix(tmp_project, spa_index_content):
     """Catch-all should not intercept /assets/ prefix paths."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)
@@ -286,7 +286,7 @@ async def test_catchall_does_not_intercept_assets_prefix(tmp_project, spa_index_
 @pytest.mark.asyncio
 async def test_catchall_serves_spa_for_chat_route(tmp_project, spa_index_content):
     """/chat should return the SPA index.html for client-side routing."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)
@@ -299,7 +299,7 @@ async def test_catchall_serves_spa_for_chat_route(tmp_project, spa_index_content
 @pytest.mark.asyncio
 async def test_catchall_serves_spa_for_rpg_route(tmp_project, spa_index_content):
     """/rpg should return the SPA index.html."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)
@@ -312,7 +312,7 @@ async def test_catchall_serves_spa_for_rpg_route(tmp_project, spa_index_content)
 @pytest.mark.asyncio
 async def test_catchall_serves_spa_for_nested_route(tmp_project, spa_index_content):
     """/chat/some-session-id should return the SPA index.html."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)
@@ -325,7 +325,7 @@ async def test_catchall_serves_spa_for_nested_route(tmp_project, spa_index_conte
 @pytest.mark.asyncio
 async def test_catchall_serves_spa_for_voice_route(tmp_project, spa_index_content):
     """/voice should return the SPA index.html."""
-    (tmp_project / "frontend" / "dist" / "index.html").write_text(spa_index_content)
+    (tmp_project / "src" / "frontend" / "dist" / "index.html").write_text(spa_index_content)
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)
@@ -337,7 +337,7 @@ async def test_catchall_serves_spa_for_voice_route(tmp_project, spa_index_conten
 
 @pytest.mark.asyncio
 async def test_catchall_returns_404_when_no_spa_built(tmp_project):
-    """/chat should return 404 when frontend/dist doesn't exist."""
+    """/chat should return 404 when src/frontend/dist doesn't exist."""
     templates_dir = tmp_project / "src" / "templates"
 
     app = _create_app(tmp_project, templates_dir)

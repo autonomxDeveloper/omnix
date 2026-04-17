@@ -422,7 +422,7 @@ BASE_DIR = Path(__file__).parent
 static_dir = BASE_DIR / 'src' / 'static'
 templates_dir = BASE_DIR / 'src' / 'templates'
 index_file = templates_dir / 'index.html'
-frontend_dist = BASE_DIR / 'frontend' / 'dist'
+frontend_dist = BASE_DIR / 'src' / 'frontend' / 'dist'
 
 # Cache for processed index.html
 _index_html_cache = None
@@ -2676,7 +2676,20 @@ async def chat_stream(request: Request):
     
     data = await request.json()
     user_message = data.get('message', '')
-    session_id = data.get('session_id', 'default')
+    session_id = data.get('session_id')
+    
+    # Create new session if no session_id provided
+    if not session_id or session_id not in shared.sessions_data:
+        import uuid
+        session_id = str(uuid.uuid4())
+        from datetime import datetime
+        shared.sessions_data[session_id] = {
+            'id': session_id,
+            'title': user_message[:50] + '...' if len(user_message) > 50 else user_message,
+            'messages': [],
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat()
+        }
     model = data.get('model')
     system_prompt = data.get('system_prompt', '')
     speaker = data.get('speaker', 'default')
@@ -2731,19 +2744,26 @@ async def chat_stream(request: Request):
                     if response_chunk.thinking or response_chunk.reasoning:
                         thinking += response_chunk.thinking or response_chunk.reasoning
                 
-                if session_id in shared.sessions_data:
-                    # Save user message
-                    shared.sessions_data[session_id]['messages'].append({
-                        "role": "user",
-                        "content": user_message
-                    })
-                    # Save assistant message
-                    shared.sessions_data[session_id]['messages'].append({
-                        "role": "assistant",
-                        "content": ai_message,
-                        "thinking": thinking
-                    })
-                    shared.save_sessions(shared.sessions_data)
+                # Always save messages - session was already created above
+                # Save user message
+                shared.sessions_data[session_id]['messages'].append({
+                    "role": "user",
+                    "content": user_message
+                })
+                # Save assistant message
+                shared.sessions_data[session_id]['messages'].append({
+                    "role": "assistant",
+                    "content": ai_message,
+                    "thinking": thinking
+                })
+                # Update title
+                if len(shared.sessions_data[session_id]['messages']) == 2:
+                    shared.sessions_data[session_id]['title'] = user_message[:50] + '...' if len(user_message) > 50 else user_message
+                # Add updated timestamp using datetime isoformat for backwards compatibility
+                from datetime import datetime
+                shared.sessions_data[session_id]['updated_at'] = datetime.now().isoformat()
+                # Save to disk
+                shared.save_sessions(shared.sessions_data)
                 
                 yield f"data: {json.dumps({'type': 'done', 'thinking': thinking, 'session_id': session_id})}\n\n"
                 
