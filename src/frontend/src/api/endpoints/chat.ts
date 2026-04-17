@@ -24,7 +24,7 @@ export const chatApi = {
 
   async createSession(): Promise<ChatSession> {
     const res = await api.post<SessionResponse>('/api/sessions')
-    return res.session
+    return res.session || res
   },
 
   async updateSession(id: string, data: Partial<ChatSession>): Promise<ChatSession> {

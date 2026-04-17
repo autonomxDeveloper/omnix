@@ -12,6 +12,7 @@ import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Slider } from '@/components/ui/slider'
+import { Switch } from '@/components/ui/switch'
 import {
   Select,
   SelectContent,
@@ -20,6 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
+import { useVoiceClones } from '@/hooks/use-tts'
 
 const OPENROUTER_MODELS = [
   { value: 'openrouter/anthropic/claude-3.7-sonnet', label: 'Claude 3.7 Sonnet' },
@@ -51,7 +53,8 @@ const PROVIDERS: { value: Provider; label: string }[] = [
 
 export function SettingsDialog() {
   const { activeModal, closeModal } = useAppStore()
-  const { settings, setSettings, setProvider, setSystemPrompt } = useSettingsStore()
+  const { settings, setSettings, setProvider, setSystemPrompt, setSelectedVoice, setAutoSpeak, setTtsEnabled } = useSettingsStore()
+  const { data: voiceClones } = useVoiceClones()
 
   const isOpen = activeModal === 'settings'
 
@@ -119,6 +122,48 @@ export function SettingsDialog() {
                 emptyMessage="No models found. Type to enter custom model."
                 allowCustomValue={true}
               />
+            </div>
+            
+            {/* Voice / TTS Settings */}
+            <div className="space-y-4 pt-4 border-t">
+              <div className="flex items-center justify-between">
+                <Label>TTS Enabled</Label>
+                <Switch 
+                  checked={settings.tts_enabled} 
+                  onCheckedChange={setTtsEnabled}
+                />
+              </div>
+              
+              <div className="flex items-center justify-between">
+                <Label>Auto-speak responses</Label>
+                <Switch 
+                  checked={settings.auto_speak} 
+                  onCheckedChange={setAutoSpeak}
+                  disabled={!settings.tts_enabled}
+                />
+              </div>
+              
+              {settings.tts_enabled && (
+                <div>
+                  <Label>Voice</Label>
+                  <Select 
+                    value={settings.selected_voice} 
+                    onValueChange={setSelectedVoice}
+                  >
+                    <SelectTrigger className="mt-1">
+                      <SelectValue placeholder="Select voice..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">Default</SelectItem>
+                      {(voiceClones || []).map((voice: any) => (
+                        <SelectItem key={voice.id} value={voice.id}>
+                          {voice.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
           </TabsContent>
 

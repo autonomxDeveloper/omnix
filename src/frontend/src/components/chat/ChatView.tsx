@@ -9,8 +9,15 @@ import { WelcomeScreen } from './WelcomeScreen'
 export function ChatView() {
   const { sessionId } = useParams<{ sessionId?: string }>()
   const { isStreaming, streamingContent, pendingUserMessage } = useChatStore()
-  const { data: session } = useSession(sessionId || null)
+  const { data: session, refetch } = useSession(sessionId || null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Refetch session data when sessionId changes
+  useEffect(() => {
+    if (sessionId) {
+      refetch()
+    }
+  }, [sessionId, refetch])
 
   // Messages come from TanStack Query (server-state owner), not Zustand
   const serverMessages = session?.messages || []

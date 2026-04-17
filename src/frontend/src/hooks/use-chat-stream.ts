@@ -30,9 +30,6 @@ export function useChatStream(sessionId: string | null) {
   const send = useCallback(
     async (text: string) => {
       if (!text.trim() || abortRef.current) return
-
-      // Prevent duplicate requests
-      if (abortRef.current) return
       
       // Optimistic: show user message in UI immediately
       setPendingUserMessage(text)
@@ -62,6 +59,7 @@ export function useChatStream(sessionId: string | null) {
         const reader = stream.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
+        let ai_message = ''
 
         while (true) {
           const { done, value } = await reader.read()
@@ -80,6 +78,7 @@ export function useChatStream(sessionId: string | null) {
               const parsed: StreamChunk = JSON.parse(data)
               if (parsed.content) {
                 appendStreamContent(parsed.content)
+                ai_message += parsed.content
               }
               if (parsed.usage) {
                 setTokenCounts(
@@ -90,6 +89,7 @@ export function useChatStream(sessionId: string | null) {
             } catch {
               // Plain text chunk fallback
               appendStreamContent(data)
+              ai_message += data
             }
           }
         }
@@ -121,9 +121,17 @@ export function useChatStream(sessionId: string | null) {
             window.history.replaceState({}, '', `/chat/${latestSession.id}`)
             console.log(`✅ Navigated to new session: ${latestSession.id}`)
             
-            // Refetch this specific session now that we have its id
-            await queryClient.refetchQueries({ queryKey: ['session', latestSession.id], exact: true })
-            console.log('✅ New session data refreshed')
+            // Manually add the new messages directly to cache to avoid refetch delay
+            queryClient.setQueryData(['session', latestSession.id], {
+              id: latestSession.id,
+              title: latestSession.title,
+              messages: [
+                { role: 'user', content: text },
+                { role: 'assistant', content: ai_message }
+              ]
+            })
+            
+            console.log('✅ Updated session cache directly')
           }
           
           // Refetch session if we had an existing id

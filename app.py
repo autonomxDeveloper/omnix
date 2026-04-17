@@ -1004,25 +1004,56 @@ async def get_tts_speakers():
     """Get available TTS speakers/voices"""
     tts = shared.get_tts_provider()
     if not tts:
-        return JSONResponse({"success": False, "error": "No TTS provider available"}, status_code=500)
+        return {"success": True, "speakers": []}
+    
+    if hasattr(tts, 'get_speakers'):
+        speakers = tts.get_speakers()
+    elif hasattr(tts, 'get_voices'):
+        speakers = tts.get_voices()
+    else:
+        speakers = [
+            {"id": "default", "name": "Default"}
+        ]
+    
+    return {
+        "success": True,
+        "speakers": speakers,
+    }
+
+
+@app.post("/api/tts/speak")
+async def tts_speak(request: Request):
+    """Speak text with selected voice"""
+    data = await request.json()
+    text = data.get('text', '')
+    speaker = data.get('speaker', 'default')
+    
+    tts = shared.get_tts_provider()
+    if not tts:
+        return JSONResponse({"success": False, "error": "TTS not available"}, status_code=500)
     
     try:
-        if hasattr(tts, 'get_speakers'):
-            speakers = tts.get_speakers()
-        elif hasattr(tts, 'get_voices'):
-            speakers = tts.get_voices()
-        else:
-            speakers = [
-                {"id": "Maya", "name": "Maya"},
-                {"id": "en", "name": "English (Default)"},
-                {"id": "default", "name": "Default"}
-            ]
+        # Get voice clone id if exists
+        clean_speaker = speaker.replace(" (Custom)", "").strip()
+        voice_clone_id = shared.custom_voices.get(clean_speaker, {}).get("voice_clone_id")
+        final_speaker = voice_clone_id if voice_clone_id else clean_speaker
         
-        return {
-            "success": True,
-            "speakers": speakers,
-            "provider": tts.provider_name
-        }
+        if hasattr(tts, 'generate_tts'):
+            result = tts.generate_tts(text=text, speaker=final_speaker, language="en")
+        else:
+            result = tts.generate_audio(text=text, speaker=final_speaker, language="en")
+        
+        if result and result.get('success'):
+            return {
+                "success": True,
+                "audio": result.get('audio', ''),
+                "sample_rate": result.get('sample_rate', 24000)
+            }
+        
+        return JSONResponse({"success": False, "error": "TTS generation failed"}, status_code=500)
+        
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 

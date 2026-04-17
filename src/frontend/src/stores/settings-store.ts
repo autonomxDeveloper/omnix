@@ -8,6 +8,9 @@ interface SettingsState {
   setProvider: (provider: Provider) => void
   setModel: (model: string) => void
   setSystemPrompt: (prompt: string) => void
+  setSelectedVoice: (voice: string) => void
+  setAutoSpeak: (enabled: boolean) => void
+  setTtsEnabled: (enabled: boolean) => void
 }
 
 const defaultSettings: Settings = {
@@ -18,6 +21,8 @@ const defaultSettings: Settings = {
   system_prompt: 'You are a helpful conversational AI assistant.',
   tts_enabled: false,
   stt_enabled: false,
+  selected_voice: 'default',
+  auto_speak: false,
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -32,10 +37,29 @@ export const useSettingsStore = create<SettingsState>()(
         set((s) => ({ settings: { ...s.settings, model } })),
       setSystemPrompt: (system_prompt) =>
         set((s) => ({ settings: { ...s.settings, system_prompt } })),
+      setSelectedVoice: (selected_voice) =>
+        set((s) => ({ settings: { ...s.settings, selected_voice } })),
+      setAutoSpeak: (auto_speak) =>
+        set((s) => ({ settings: { ...s.settings, auto_speak } })),
+      setTtsEnabled: (tts_enabled) =>
+        set((s) => ({ settings: { ...s.settings, tts_enabled } })),
     }),
     {
       name: 'omnix-settings',
       partialize: (state) => ({ settings: state.settings }),
+      storage: {
+        getItem: (name) => {
+          const str = localStorage.getItem(name)
+          if (!str) return null
+          return JSON.parse(str)
+        },
+        setItem: (name, value) => {
+          localStorage.setItem(name, JSON.stringify(value))
+        },
+        removeItem: (name) => {
+          localStorage.removeItem(name)
+        },
+      },
     },
   ),
 )

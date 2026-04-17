@@ -21,10 +21,11 @@ export function useCreateSession() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: chatApi.createSession,
-    onSuccess: (session) => {
-      queryClient.setQueryData<ChatSession[]>(['sessions'], (old) =>
-        old ? [session, ...old] : [session],
-      )
+    onSuccess: (data) => {
+      queryClient.setQueryData<ChatSession[]>(['sessions'], (old) => {
+        const session = data.session || data
+        return old ? [session, ...old] : [session]
+      })
     },
   })
 }

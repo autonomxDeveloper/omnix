@@ -86,6 +86,12 @@ export function AppHeader() {
           <SelectValue placeholder="Select model" />
         </SelectTrigger>
         <SelectContent>
+          {/* Always show saved model first even if not in backend list */}
+          {settings.model && !models?.find((m: any) => m.id === settings.model) && (
+            <SelectItem key={settings.model} value={settings.model} className="text-xs">
+              {settings.model}
+            </SelectItem>
+          )}
           {(models || []).map((m) => (
             <SelectItem key={m.id} value={m.id} className="text-xs">
               {m.name || m.id}
