@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useRpgStore } from '@/stores/rpg-store'
 import { useRpgSession } from '@/hooks/use-rpg-session'
+import { useRpgTurn } from '@/hooks/use-rpg-turn'
 import { NarrativeFeed } from './narrative/NarrativeFeed'
 import { ChoicePanel } from './narrative/ChoicePanel'
 import { NpcPanel } from './world/NpcPanel'
@@ -14,7 +16,9 @@ import { InspectorShell } from './inspector/InspectorShell'
 import { DialogueView } from './dialogue/DialogueView'
 import { CharacterSheet } from './character/CharacterSheet'
 import { AdventureBuilder } from './builder/AdventureBuilder'
-import { ChatInput } from '@/components/chat/ChatInput'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
+import { Send } from 'lucide-react'
 import './theme/rpg-animations.css'
 
 export function RpgView() {
@@ -26,8 +30,6 @@ export function RpgView() {
     adventureBuilderOpen,
     dialogueActive,
   } = useRpgStore()
-  
-  console.log('[RPG] RpgView rendered: sessionId =', sessionId, 'adventureBuilderOpen =', adventureBuilderOpen);
 
   // Fetch session data from server (TanStack Query owns this)
   const { data: sessionData } = useRpgSession(sessionId || null)
@@ -86,7 +88,65 @@ export function RpgView() {
       {characterSheetOpen && <CharacterSheet />}
       
       {/* Chat Input Bar */}
-      <ChatInputBar />
+      <RpgChatInputBar sessionId={sessionId} />
+    </div>
+  )
+}
+
+/** Free-form text input for RPG turns, wired to useRpgTurn */
+function RpgChatInputBar({ sessionId }: { sessionId: string }) {
+  const [input, setInput] = useState('')
+  const { isTurnLoading } = useRpgStore()
+  const { executeTurn, isPending } = useRpgTurn(sessionId)
+  const isLoading = isTurnLoading || isPending
+
+  const handleSend = () => {
+    const text = input.trim()
+    if (!text || isLoading) return
+    setInput('')
+    executeTurn(text)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  return (
+    <div
+      className="border-t p-3"
+      style={{ borderColor: 'var(--rpg-border)', background: 'rgba(10, 10, 26, 0.95)' }}
+    >
+      <div className="mx-auto max-w-2xl flex items-end gap-2">
+        <Textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Describe your action..."
+          className="min-h-[40px] max-h-[100px] flex-1 resize-none border-0 text-sm"
+          style={{
+            background: 'rgba(37, 37, 80, 0.4)',
+            color: 'var(--rpg-text)',
+            fontFamily: "'Cormorant Garamond', serif",
+          }}
+          rows={1}
+          disabled={isLoading}
+        />
+        <Button
+          size="icon"
+          className="h-10 w-10 shrink-0"
+          disabled={!input.trim() || isLoading}
+          onClick={handleSend}
+          style={{
+            background: isLoading ? undefined : 'linear-gradient(135deg, var(--rpg-gold-dim), var(--rpg-gold))',
+            color: 'var(--rpg-bg-deep)',
+          }}
+        >
+          <Send className="h-4 w-4" />
+        </Button>
+      </div>
     </div>
   )
 }
