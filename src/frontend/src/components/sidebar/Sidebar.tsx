@@ -46,9 +46,13 @@ export function Sidebar() {
 
   const handleNewChat = () => {
     createSession.mutate(undefined, {
-      onSuccess: (data) => {
-        const session = data.session || data
-        navigate(`/chat/${session.id}`)
+      onSuccess: (session) => {
+        if (session && session.id) {
+          navigate(`/chat/${session.id}`)
+        } else {
+          // Fallback if no session returned - go to root chat page
+          navigate('/chat')
+        }
       },
     })
   }

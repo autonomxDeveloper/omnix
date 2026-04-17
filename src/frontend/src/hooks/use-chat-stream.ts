@@ -37,6 +37,7 @@ export function useChatStream(sessionId: string | null) {
 
       const abort = new AbortController()
       abortRef.current = abort
+      let ai_message = ''
 
       try {
         const stream = await chatApi.streamChat(
@@ -59,7 +60,6 @@ export function useChatStream(sessionId: string | null) {
         const reader = stream.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
-        let ai_message = ''
 
         while (true) {
           const { done, value } = await reader.read()
@@ -104,35 +104,35 @@ export function useChatStream(sessionId: string | null) {
         clearStreamContent()
         abortRef.current = null
         
-        // Wait for backend to persist session before invalidating
-        setTimeout(async () => {
-          console.log('🔄 Refreshing session data...')
-          
-          // Always refetch sessions list first
-          await queryClient.refetchQueries({ queryKey: ['sessions'], exact: true })
-          const sessions = queryClient.getQueryData(['sessions']) as any[]
-          console.log('📌 Got sessions list:', sessions?.length || 0, 'sessions')
-          if (sessions) console.log('📌 Latest session:', sessions[0])
-          
-          // AFTER sessions list is refreshed, find the new session id
-          if (sessions && sessions.length > 0 && !sessionId) {
-            // This was a new chat - navigate to the latest session
-            const latestSession = sessions[0]
-            window.history.replaceState({}, '', `/chat/${latestSession.id}`)
-            console.log(`✅ Navigated to new session: ${latestSession.id}`)
-            
-            // Manually add the new messages directly to cache to avoid refetch delay
-            queryClient.setQueryData(['session', latestSession.id], {
-              id: latestSession.id,
-              title: latestSession.title,
-              messages: [
-                { role: 'user', content: text },
-                { role: 'assistant', content: ai_message }
-              ]
-            })
-            
-            console.log('✅ Updated session cache directly')
-          }
+         // Wait for backend to persist session before invalidating
+         setTimeout(async () => {
+           console.log('🔄 Refreshing session data...')
+           
+           // Always refetch sessions list first
+           await queryClient.refetchQueries({ queryKey: ['sessions'], exact: true })
+           const sessions = queryClient.getQueryData(['sessions']) as any[]
+           console.log('📌 Got sessions list:', sessions?.length || 0, 'sessions')
+           if (sessions) console.log('📌 Latest session:', sessions[0])
+           
+           // AFTER sessions list is refreshed, find the new session id
+           if (sessions && sessions.length > 0 && !sessionId) {
+             // This was a new chat - navigate to the latest session
+             const latestSession = sessions[0]
+             window.history.replaceState({}, '', `/chat/${latestSession.id}`)
+             console.log(`✅ Navigated to new session: ${latestSession.id}`)
+             
+             // Manually add the new messages directly to cache to avoid refetch delay
+             queryClient.setQueryData(['session', latestSession.id], {
+               id: latestSession.id,
+               title: latestSession.title,
+               messages: [
+                 { role: 'user', content: text },
+                 { role: 'assistant', content: ai_message }
+               ]
+             })
+             
+             console.log('✅ Updated session cache directly')
+           }
           
           // Refetch session if we had an existing id
           if (sessionId) {

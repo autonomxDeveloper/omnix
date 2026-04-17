@@ -14,6 +14,7 @@ import { InspectorShell } from './inspector/InspectorShell'
 import { DialogueView } from './dialogue/DialogueView'
 import { CharacterSheet } from './character/CharacterSheet'
 import { AdventureBuilder } from './builder/AdventureBuilder'
+import { ChatInput } from '@/components/chat/ChatInput'
 import './theme/rpg-animations.css'
 
 export function RpgView() {
@@ -25,6 +26,8 @@ export function RpgView() {
     adventureBuilderOpen,
     dialogueActive,
   } = useRpgStore()
+  
+  console.log('[RPG] RpgView rendered: sessionId =', sessionId, 'adventureBuilderOpen =', adventureBuilderOpen);
 
   // Fetch session data from server (TanStack Query owns this)
   const { data: sessionData } = useRpgSession(sessionId || null)
@@ -39,12 +42,12 @@ export function RpgView() {
   const worldEvents = (session?.world_events || []) as import('@/types/rpg').WorldEvent[]
   const currentTurn = (session?.turn_count || 0) as number
 
-  if (!sessionId) {
-    return <RpgWelcome />
-  }
-
   if (adventureBuilderOpen) {
     return <AdventureBuilder />
+  }
+
+  if (!sessionId) {
+    return <RpgWelcome />
   }
 
   return (
@@ -81,6 +84,9 @@ export function RpgView() {
       {pendingRolls.length > 0 && <DiceOverlay />}
       {inspectorOpen && <InspectorShell />}
       {characterSheetOpen && <CharacterSheet />}
+      
+      {/* Chat Input Bar */}
+      <ChatInputBar />
     </div>
   )
 }

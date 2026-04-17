@@ -1880,6 +1880,11 @@
             AdventureBuilder.open();
         }
     }
+    
+    // Called when server returns "needs_setup" response
+    function openAdventureBuilder() {
+        showAdventureSetup();
+    }
 
     // ─── API ───────────────────────────────────────────────────────────────────
 
@@ -3691,6 +3696,10 @@
             if (sendBtn && messageInput) {
                 sendBtn.disabled = !messageInput.value.trim() || rpgState.isLoading;
             }
+            
+            // Ensure footer/input bar is visible in RPG mode
+            var footer = document.querySelector('footer');
+            if (footer) footer.style.display = '';
 
             // Load game state if session exists
             if (rpgState.sessionId) {
@@ -3712,6 +3721,17 @@
 
             var settingsBtn = el('rpgSettingsBtn');
             if (settingsBtn) settingsBtn.addEventListener('click', showSettingsPanel);
+            
+            // Force footer visibility with higher priority - React keeps hiding it
+            setTimeout(function() {
+                var footer = document.querySelector('footer');
+                if (footer) {
+                    footer.style.display = 'flex !important';
+                    footer.style.visibility = 'visible';
+                    footer.style.opacity = '1';
+                    footer.style.pointerEvents = 'auto';
+                }
+            }, 0);
         } else {
             if (chatContainer) chatContainer.style.display = '';
             if (rpgView)       rpgView.style.display = 'none';
@@ -3951,11 +3971,19 @@
 
         closePlayerPanel();
 
-        // Open the Adventure Builder after reset so the user gets the
-        // structured wizard instead of falling through to a raw text input.
-        if (typeof AdventureBuilder !== 'undefined') {
-            AdventureBuilder.open();
+        // Re-enable input for Quick Adventure mode
+        var messageInput = el('messageInput');
+        var sendBtn = el('sendBtn');
+        if (messageInput) {
+            messageInput.disabled = false;
+            messageInput.placeholder = "Type anything to begin your adventure...";
         }
+        if (sendBtn) {
+            sendBtn.disabled = false;
+        }
+
+        // Quick Adventure does NOT open Adventure Builder - it resets to welcome screen
+        // Adventure Builder is only opened explicitly when user clicks "Adventure Setup"
     }
 
     // ─── Living World: Ambient Feed + Subscription (Phases 8-10) ────────────────
@@ -4797,6 +4825,23 @@
         console.log('[RPG] Initializing RPG mode\u2026');
 
         window._currentMode = 'chat';
+        
+        // Fight React - permanently keep footer visible in RPG mode
+        const footerObserver = new MutationObserver(function(mutations) {
+            if (window._currentMode !== 'rpg') return;
+            const footer = document.querySelector('footer');
+            if (footer && (footer.style.display === 'none' || footer.style.visibility === 'hidden')) {
+                footer.style.display = 'flex';
+                footer.style.visibility = 'visible';
+                footer.style.opacity = '1';
+                footer.style.pointerEvents = 'auto';
+            }
+        });
+        
+        const footer = document.querySelector('footer');
+        if (footer) {
+            footerObserver.observe(footer, { attributes: true, attributeFilter: ['style', 'class'] });
+        }
 
         // ── Adventure Builder launch callback ──────────────────────────────
         // When the builder successfully launches an adventure, pipe the
@@ -4865,19 +4910,53 @@
         // the feed so the listener survives the innerHTML replacement in resetSession().
         var feed = el('rpgNarrativeFeed');
 
-        // Adventure Setup button
-        var rpgSetupBtn = el('rpgSetupBtn');
-        if (rpgSetupBtn) rpgSetupBtn.addEventListener('click', showAdventureSetup);
+        // Adventure Setup button - ONLY use event delegation, direct listener breaks after reset
         if (feed) {
             feed.addEventListener('click', function (e) {
                 if (e.target && e.target.id === 'rpgNewSessionBtn') resetSession();
-                if (e.target && e.target.id === 'rpgSetupBtn') showSetupModal();
+                if (e.target && e.target.id === 'rpgSetupBtn') showAdventureSetup();
+                
+                // Transaction menu button handler - fixes inert shop buttons
+                if (e.target && e.target.classList.contains('rpg-transaction-btn')) {
+                    const sessionId = e.target.dataset.sessionId;
+                    const action = JSON.parse(decodeURIComponent(e.target.dataset.action));
+                    submitTransactionMenuAction(sessionId, action);
+                }
             });
         }
 
         // Stats / inventory panel button
         var statsBtn = el('rpgStatsBtn');
         if (statsBtn) statsBtn.addEventListener('click', openPlayerPanel);
+        
+        // Rebind header buttons that React keeps recreating
+        function rebindRPGHeaderButtons() {
+            var voiceBtn = el('rpgVoiceBtn');
+            var worldEventsBtn = el('rpgWorldEventsBtn');
+            var settingsBtn = el('rpgSettingsBtn');
+            if (voiceBtn) {
+                voiceBtn.removeEventListener('click', showVoicePanel);
+                voiceBtn.addEventListener('click', showVoicePanel);
+            }
+            if (worldEventsBtn) {
+                worldEventsBtn.removeEventListener('click', showWorldEventsPanel);
+                worldEventsBtn.addEventListener('click', showWorldEventsPanel);
+            }
+            if (settingsBtn) {
+                settingsBtn.removeEventListener('click', showSettingsPanel);
+                settingsBtn.addEventListener('click', showSettingsPanel);
+            }
+        }
+        
+        // Watch header bar for React changes
+        const headerObserver = new MutationObserver(rebindRPGHeaderButtons);
+        const rpgHeader = el('rpgHeader') || document.querySelector('.rpg-header');
+        if (rpgHeader) {
+            headerObserver.observe(rpgHeader, { childList: true, subtree: true });
+        }
+        
+        // Initial bind
+        rebindRPGHeaderButtons();
 
         // Close player panel overlay on backdrop click or close button
         var playerOverlay = el('rpgPlayerPanelOverlay');
@@ -4998,7 +5077,16 @@
     }
 
     // Defer until after all other scripts have initialised
-    document.addEventListener('DOMContentLoaded', function () { setTimeout(init, INIT_DELAY_MS); });
+    document.addEventListener('DOMContentLoaded', function () { 
+        setTimeout(function() {
+            init();
+            
+            // Auto-switch to RPG mode if loading /rpg path directly
+            if (window.location.pathname === '/rpg' || window.location.pathname.startsWith('/rpg/')) {
+                switchMode('rpg');
+            }
+        }, INIT_DELAY_MS); 
+    });
 
     // Public API (handy for debugging from the console)
     window.RPGMode = {
@@ -5029,7 +5117,9 @@
         }
     };
 
+    // Expose this immediately so onclick works on first render
+    window.setWorldEventsTab = setWorldEventsTab;
+    
     if (typeof window !== 'undefined') {
-        window.setWorldEventsTab = setWorldEventsTab;
     }
 }());

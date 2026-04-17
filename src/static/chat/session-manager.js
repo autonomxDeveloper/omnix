@@ -60,12 +60,27 @@ async function loadSessions() {
                 window.sessionId = window.sessions[0].id;
                 await loadSession(window.sessionId);
             } else {
-                await createNewSession();
+                // Create first session directly without recursion
+                const createResponse = await fetch('/api/sessions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const createData = await createResponse.json();
+                
+                if (createData.success) {
+                    window.sessionId = createData.session_id;
+                    const newSession = {
+                        id: createData.session_id,
+                        title: 'New Chat',
+                        updated_at: new Date().toISOString()
+                    };
+                    window.sessions = [newSession];
+                    renderSessionList();
+                }
             }
         }
     } catch (error) {
         console.error('Error loading sessions:', error);
-        await createNewSession();
     }
 }
 
@@ -242,7 +257,15 @@ async function createNewSession() {
             window.sessionId = data.session_id;
             messagesContainer.innerHTML = '';
             welcomeMessage.classList.remove('hidden');
-            await loadSessions();
+            
+            // Directly add new session instead of reloading everything to avoid infinite loop
+            const newSession = {
+                id: data.session_id,
+                title: 'New Chat',
+                updated_at: new Date().toISOString()
+            };
+            window.sessions = [newSession, ...(window.sessions || [])];
+            renderSessionList();
         }
     } catch (error) {
         console.error('Error creating session:', error);
@@ -304,7 +327,21 @@ async function loadSession(id) {
 async function deleteSession(id) {
     try {
         await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
-        await loadSessions();
+        
+        // Remove session locally instead of reloading to avoid infinite loop
+        window.sessions = (window.sessions || []).filter(s => s.id !== id);
+        
+        // If we deleted the active session, switch to first available or create new
+        if (window.sessionId === id) {
+            if (window.sessions.length > 0) {
+                window.sessionId = window.sessions[0].id;
+                await loadSession(window.sessionId);
+            } else {
+                await createNewSession();
+            }
+        }
+        
+        renderSessionList();
         renderHistory();
     } catch (error) {
         console.error('Error deleting session:', error);
