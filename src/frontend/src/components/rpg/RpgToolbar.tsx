@@ -1,5 +1,6 @@
 import { useRpgStore } from '@/stores/rpg-store'
 import { useRpgPlayerStore } from '@/stores/rpg-player-store'
+import { useAppStore } from '@/stores/app-store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Eye, Settings, Volume2, User, Map } from 'lucide-react'
@@ -13,6 +14,7 @@ interface RpgToolbarProps {
 export function RpgToolbar({ world, currentTurn }: RpgToolbarProps) {
   const { inspectorOpen, setInspectorOpen, setCharacterSheetOpen } = useRpgStore()
   const { player } = useRpgPlayerStore()
+  const { openModal } = useAppStore()
 
   return (
     <div
@@ -84,6 +86,7 @@ export function RpgToolbar({ world, currentTurn }: RpgToolbarProps) {
         size="sm"
         className="h-7 gap-1.5 text-xs"
         style={{ color: 'var(--rpg-text-dim)' }}
+        onClick={() => openModal('voice-clone')}
       >
         <Volume2 className="h-3.5 w-3.5" />
         Voices
@@ -103,6 +106,7 @@ export function RpgToolbar({ world, currentTurn }: RpgToolbarProps) {
         size="sm"
         className="h-7 gap-1.5 text-xs"
         style={{ color: 'var(--rpg-text-dim)' }}
+        onClick={() => openModal('settings')}
       >
         <Settings className="h-3.5 w-3.5" />
       </Button>
