@@ -78,8 +78,8 @@ function setupChatControls() {
             // Reset state
             welcomeSpeakerBtn.classList.remove('success', 'error', 'unavailable');
 
-            const ttsStatusText = document.getElementById('xttsStatusText')?.textContent || '';
-            const isTtsAvailable = /Running|Ready/i.test(ttsStatusText);
+            const isTtsAvailable =
+                document.getElementById('xttsStatusDot')?.classList.contains('connected') === true;
             const speakFn =
                 window.ChatAPI?.speakText ||
                 window.speakText ||
@@ -89,7 +89,7 @@ function setupChatControls() {
             if (!isTtsAvailable || typeof speakFn !== 'function') {
                 welcomeSpeakerBtn.classList.add('unavailable');
                 setTimeout(() => {
-                    welcomeSpeakerBtn.classList.remove('success', 'error', 'unavailable');
+                    welcomeSpeakerBtn.classList.remove('unavailable');
                 }, 3000);
                 return;
             }
