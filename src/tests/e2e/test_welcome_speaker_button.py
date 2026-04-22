@@ -118,7 +118,7 @@ def test_welcome_speaker_button_e2e(page):
     
     print("\nTest completed successfully:")
     print(f"  - TTS status: {tts_status}")
-    print(f"  - Button clicked successfully")
+    print("  - Button clicked successfully")
     print(f"  - No critical client errors found ({len(console_errors)} total errors)")
     if button_has_success:
         button_status = 'SUCCESS (green)'
