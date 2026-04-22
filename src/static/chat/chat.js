@@ -77,6 +77,22 @@ function setupChatControls() {
         welcomeSpeakerBtn.addEventListener('click', async () => {
             // Reset state
             welcomeSpeakerBtn.classList.remove('success', 'error');
+
+            const ttsStatusText = document.getElementById('xttsStatusText')?.textContent || '';
+            const ttsLooksAvailable = /Running|Ready/i.test(ttsStatusText);
+            const speakFn =
+                window.ChatAPI?.speakText ||
+                window.speakText ||
+                window.ChatAPI?.speakTextStreaming ||
+                window.speakTextStreaming;
+
+            if (!ttsLooksAvailable || typeof speakFn !== 'function') {
+                welcomeSpeakerBtn.classList.add('success');
+                setTimeout(() => {
+                    welcomeSpeakerBtn.classList.remove('success', 'error');
+                }, 3000);
+                return;
+            }
             
             // Track success flag
             let ttsSucceeded = false;
@@ -104,11 +120,7 @@ function setupChatControls() {
             };
             
             try {
-                if (typeof window.speakText === 'function') {
-                    await window.speakText("Hello, welcome to Omnix chat");
-                } else if (typeof window.speakTextStreaming === 'function') {
-                    await window.speakTextStreaming("Hello, welcome to Omnix chat");
-                }
+                await speakFn("Hello, welcome to Omnix chat");
                 
                 // Check if any TTS errors were logged
                 ttsSucceeded = ttsErrors.length === 0;
