@@ -76,20 +76,20 @@ function setupChatControls() {
     if (welcomeSpeakerBtn) {
         welcomeSpeakerBtn.addEventListener('click', async () => {
             // Reset state
-            welcomeSpeakerBtn.classList.remove('success', 'error');
+            welcomeSpeakerBtn.classList.remove('success', 'error', 'unavailable');
 
             const ttsStatusText = document.getElementById('xttsStatusText')?.textContent || '';
-            const ttsLooksAvailable = /Running|Ready/i.test(ttsStatusText);
+            const isTtsAvailable = /Running|Ready/i.test(ttsStatusText);
             const speakFn =
                 window.ChatAPI?.speakText ||
                 window.speakText ||
                 window.ChatAPI?.speakTextStreaming ||
                 window.speakTextStreaming;
 
-            if (!ttsLooksAvailable || typeof speakFn !== 'function') {
-                welcomeSpeakerBtn.classList.add('success');
+            if (!isTtsAvailable || typeof speakFn !== 'function') {
+                welcomeSpeakerBtn.classList.add('unavailable');
                 setTimeout(() => {
-                    welcomeSpeakerBtn.classList.remove('success', 'error');
+                    welcomeSpeakerBtn.classList.remove('success', 'error', 'unavailable');
                 }, 3000);
                 return;
             }
@@ -140,7 +140,7 @@ function setupChatControls() {
                 
                 // Clear state after 3 seconds
                 setTimeout(() => {
-                    welcomeSpeakerBtn.classList.remove('success', 'error');
+                    welcomeSpeakerBtn.classList.remove('success', 'error', 'unavailable');
                 }, 3000);
             }
         });
