@@ -293,6 +293,26 @@ describe('ChatbotWorkspace', () => {
     expect(document.querySelector('.assistant-chat-layout')).not.toHaveClass('assistant-chat-layout-side-minimized');
   });
 
+  it('keeps the side panel focused on Live Voice without a duplicate Tools tab', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = requestPath(input);
+
+      if (path === '/api/providers') return Response.json(providerPayload());
+      if (path === '/api/assets') return Response.json(assetPayload());
+      if (path === '/api/chat/sessions') return Response.json({ sessions: [] });
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderChatbot();
+
+    await screen.findByText('No chat messages yet.');
+    const sidePanel = screen.getByRole('complementary', { name: 'Live voice and workspace activity' });
+    expect(within(sidePanel).getByRole('button', { name: 'Live Voice' })).toBeInTheDocument();
+    expect(within(sidePanel).queryByRole('button', { name: /^Tools$/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Tools view' })).toBeInTheDocument();
+  });
+
   it('restores the minimized side panel state from local storage', async () => {
     window.localStorage.setItem('omnix.chatbot.sidePanelMinimized', 'true');
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {

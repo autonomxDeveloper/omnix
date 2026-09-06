@@ -2166,10 +2166,9 @@ export function ChatbotWorkspace({ module }: { module: OmnixModuleDefinition }) 
           </div>
         </section>
 
-        <aside className={`assistant-chat-side${isSidePanelMinimized ? ' assistant-chat-side-minimized' : ''}`} aria-label="Live voice, tools, and workspace activity">
+        <aside className={`assistant-chat-side${isSidePanelMinimized ? ' assistant-chat-side-minimized' : ''}`} aria-label="Live voice and workspace activity">
           <div className="assistant-side-panel-toggle" aria-label="Assistant utility panel">
             <button type="button" className={activeUtilityPanel === 'voice' ? 'assistant-side-panel-option active' : 'assistant-side-panel-option'} onClick={() => setActiveUtilityPanel('voice')}>Live Voice</button>
-            <button type="button" className={activeUtilityPanel === 'tools' ? 'assistant-side-panel-option active' : 'assistant-side-panel-option'} onClick={() => setActiveUtilityPanel('tools')}>Tools</button>
             <button
               type="button"
               className="assistant-side-panel-minimize"

@@ -48,7 +48,8 @@ _WEB = re.compile(
     re.I,
 )
 _BROWSER_VALIDATION = re.compile(
-    r"\b(?:agent[- ]browser|browser\s+(?:test|testing|validation|verify|verification)|"
+    r"\b(?:agent[- ]browser|browser\.(?:assert_[a-z_]+|(?:open|snapshot|screenshot|get_text|get_attribute))|"
+    r"browser\s+(?:test|testing|validation|verify|verification)|"
     r"e2e|end[- ]to[- ]end|playwright|visual\s+(?:test|testing|validation|regression)|"
     r"click\s+through|interact\s+with\s+(?:the\s+)?(?:page|ui|app))\b",
     re.I,

@@ -13,7 +13,8 @@ from .capabilities import browser_capability_ids
 from .mcp_policy import infer_mcp_capabilities_for_task
 
 _BROWSER_EXPLICIT = re.compile(
-    r"\b(?:agent[- ]browser|browser\s+(?:test|testing|automation|validation|verify|verification)|"
+    r"\b(?:agent[- ]browser|browser\.(?:assert_[a-z_]+|(?:open|snapshot|screenshot|get_text|get_attribute))|"
+    r"browser\s+(?:test|testing|automation|validation|verify|verification)|"
     r"e2e|end[- ]to[- ]end|playwright|visual\s+(?:test|testing|validation|regression)|"
     r"click\s+(?:through|the)|interact\s+with\s+(?:the\s+)?(?:page|ui|app))\b",
     re.I,

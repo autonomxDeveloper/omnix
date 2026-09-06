@@ -92,6 +92,19 @@ def test_browser_authority_is_coding_only_and_task_scoped() -> None:
     )
 
 
+def test_explicit_browser_assertion_request_issues_browser_authority() -> None:
+    task = (
+        "Remove the Tools option from the Live Voice sidebar. Use the governed browser "
+        "to verify the final rendered UI, and use browser.assert_text_not_contains to "
+        "confirm that Tools is absent."
+    )
+
+    capabilities = coding_external_capabilities_for_task(task)
+
+    assert task_requires_browser_authority(task)
+    assert "browser.assert_text_not_contains" in capabilities
+
+
 def test_browser_open_is_origin_scoped_and_uses_agent_browser_safeguards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

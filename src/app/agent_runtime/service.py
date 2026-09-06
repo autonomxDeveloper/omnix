@@ -54,6 +54,7 @@ from .contracts import (
     TaskRevision,
     WorkspaceSpec,
 )
+from .debug_logging import log_agent_activity
 from .evidence import evaluate_evidence_set
 from .model_fidelity import resolve_run_model_fidelity
 from .repository import PostgresAgentRunRepository
@@ -761,6 +762,18 @@ class AgentRunService(_CoreAgentRunService):
         workspace_state_id: str | None = None,
         reason: str | None = None,
     ) -> None:
+        log_agent_activity(
+            "quality.stage.transition_requested",
+            category="quality",
+            run_id=run_id,
+            fields={
+                "stage": stage,
+                "attempt": attempt,
+                "task_revision_id": task_revision_id,
+                "workspace_state_id": workspace_state_id,
+                "reason": reason,
+            },
+        )
         quality = PostgresCodingQualityRepository(repository.connection, self.context)
         quality.set_stage(
             run_id,
@@ -782,15 +795,55 @@ class AgentRunService(_CoreAgentRunService):
                 },
             )
         )
+        log_agent_activity(
+            "quality.stage.transition_recorded",
+            category="quality",
+            run_id=run_id,
+            fields={
+                "stage": stage,
+                "attempt": attempt,
+                "task_revision_id": task_revision_id,
+                "workspace_state_id": workspace_state_id,
+            },
+        )
 
     def _record_workspace_tool_result(self, event: AgentEvent) -> None:
+        log_agent_activity(
+            "quality.tool_result.received",
+            category="quality",
+            run_id=event.run_id,
+            fields={
+                "tool_call_id": event.payload.get("tool_call_id"),
+                "tool": event.payload.get("tool"),
+                "is_error": event.payload.get("is_error"),
+                "task_revision_id": event.payload.get("task_revision_id"),
+            },
+        )
         call_id = str(event.payload.get("tool_call_id") or "")
         if not call_id:
+            log_agent_activity(
+                "quality.tool_result.unbound",
+                category="quality",
+                level="warning",
+                run_id=event.run_id,
+                fields={"reason": "missing_tool_call_id"},
+            )
             return
         with unit_of_work(self.database) as work:
             repository = PostgresAgentRunRepository(work.connection, self.context)
             current = repository.get_run(event.run_id)
             if current is None or current.status in _TERMINAL or not self._quality_enabled(current.spec):
+                log_agent_activity(
+                    "quality.tool_result.ignored",
+                    category="quality",
+                    level="debug",
+                    run_id=event.run_id,
+                    fields={
+                        "found": current is not None,
+                        "status": current.status if current is not None else None,
+                        "quality_enabled": self._quality_enabled(current.spec) if current is not None else None,
+                    },
+                )
                 work.rollback()
                 return
             events = repository.list_events(event.run_id, after_sequence=0, limit=5000)
@@ -833,6 +886,13 @@ class AgentRunService(_CoreAgentRunService):
             bound_revision_id = str(event_revision_id) if event_revision_id else active_revision_id
             state = capture_workspace_state(current.spec, task_revision_id=bound_revision_id)
             if state is None:
+                log_agent_activity(
+                    "quality.workspace_state.unavailable",
+                    category="quality",
+                    level="warning",
+                    run_id=event.run_id,
+                    fields={"task_revision_id": bound_revision_id, "tool_call_id": call_id},
+                )
                 work.rollback()
                 return
             quality = PostgresCodingQualityRepository(work.connection, self.context)
@@ -855,6 +915,20 @@ class AgentRunService(_CoreAgentRunService):
             )
             if validation is not None:
                 quality.add_validation_result(validation)
+                log_agent_activity(
+                    "quality.validation.recorded",
+                    category="quality",
+                    run_id=event.run_id,
+                    fields={
+                        "result_id": validation.result_id,
+                        "validation_id": validation.validation_id,
+                        "kind": validation.kind,
+                        "success": validation.success,
+                        "command": validation.command,
+                        "task_revision_id": validation.task_revision_id,
+                        "workspace_state_id": validation.workspace_state_id,
+                    },
+                )
                 repository.append_event(
                     AgentEvent(
                         run_id=event.run_id,
@@ -870,9 +944,33 @@ class AgentRunService(_CoreAgentRunService):
                         },
                     )
                 )
+            else:
+                log_agent_activity(
+                    "quality.validation.not_recognized",
+                    category="quality",
+                    level="debug",
+                    run_id=event.run_id,
+                    fields={
+                        "tool": tool,
+                        "command": command,
+                        "capability_id": capability_id,
+                        "task_revision_id": bound_revision_id,
+                    },
+                )
             work.commit()
 
     def _persist_runtime_event(self, event: AgentEvent) -> None:
+        log_agent_activity(
+            "service.runtime_event.received",
+            category="service",
+            run_id=event.run_id,
+            fields={
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                "sequence": event.sequence,
+                "payload": event.payload,
+            },
+        )
         quality_message_settle = False
         if _is_terminal_self_review_message(event):
             with unit_of_work(self.database) as probe:
@@ -907,6 +1005,12 @@ class AgentRunService(_CoreAgentRunService):
                     work.rollback()
                     return
                 repository.append_event(event)
+                log_agent_activity(
+                    "service.quality_event.persisted",
+                    category="quality",
+                    run_id=event.run_id,
+                    fields={"event_type": event.event_type, "status": current.status},
+                )
                 if current.status in _TERMINAL or current.status in _BLOCKED_SETTLE:
                     work.commit()
                     return
@@ -1818,6 +1922,13 @@ class AgentRunService(_CoreAgentRunService):
         current: AgentRunSnapshot,
         reason: str,
     ) -> None:
+        log_agent_activity(
+            "quality.failed",
+            category="quality",
+            level="error",
+            run_id=current.run_id,
+            fields={"reason": reason, "status_before": current.status, "revision": current.revision},
+        )
         latest = repository.get_run(current.run_id) or current
         repository.update_state(
             current.run_id,
