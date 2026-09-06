@@ -589,3 +589,82 @@ def test_pi_steer_carries_image_payload_and_revision() -> None:
         "message": "Use this updated screenshot",
         "images": images,
     }]
+
+
+def test_pi_rpc_keeps_broker_tool_active_with_mixed_authority(tmp_path: Path) -> None:
+    """Regression for runs that have both workspace and governed browser tools.
+
+    Pi's --tools flag allowlists extension tools too. Omitting
+    ``omnix_capability`` makes issued browser/research authority visible in the
+    prompt but impossible for the model to invoke.
+    """
+    spec = AgentRunSpec(
+        run_id="run-mixed-tools",
+        task="Update the visible sidebar and verify it in the browser",
+        profile="coding",
+        model=ModelRef(provider_id="test", model_id="model"),
+        workspace=WorkspaceSpec(root=str(tmp_path)),
+        capabilities=["workspace.read", "workspace.edit", "workspace.test"],
+        external_capabilities=["browser.open", "browser.assert_text_contains"],
+    )
+
+    argv = pi_rpc_argv(spec, pi_path="pi")
+
+    assert "--tools" in argv
+    active = set(argv[argv.index("--tools") + 1].split(","))
+    assert "read" in active
+    assert "edit" in active
+    assert "omnix_capability" in active
+
+
+def test_pi_rpc_external_only_explicitly_allowlists_broker_tool(tmp_path: Path) -> None:
+    spec = AgentRunSpec(
+        run_id="run-external-only",
+        task="Research through the governed broker",
+        profile="research",
+        model=ModelRef(provider_id="test", model_id="model"),
+        workspace=WorkspaceSpec(root=str(tmp_path)),
+        capabilities=[],
+        external_capabilities=["research.web_search"],
+    )
+
+    argv = pi_rpc_argv(spec, pi_path="pi")
+
+    assert "--tools" in argv
+    assert argv[argv.index("--tools") + 1].split(",") == ["omnix_capability"]
+    assert "--no-builtin-tools" not in argv
+
+
+def test_pi_rpc_does_not_expose_broker_tool_without_external_authority(tmp_path: Path) -> None:
+    spec = AgentRunSpec(
+        run_id="run-local-only",
+        task="Read a file",
+        profile="coding",
+        model=ModelRef(provider_id="test", model_id="model"),
+        workspace=WorkspaceSpec(root=str(tmp_path)),
+        capabilities=["workspace.read"],
+        external_capabilities=[],
+    )
+
+    argv = pi_rpc_argv(spec, pi_path="pi")
+
+    active = set(argv[argv.index("--tools") + 1].split(","))
+    assert active == {"read"}
+    assert "omnix_capability" not in active
+
+
+def test_coding_prompt_treats_listed_governed_capabilities_as_already_issued() -> None:
+    spec = AgentRunSpec(
+        run_id="run-governed-prompt",
+        task="Verify the UI",
+        profile="coding",
+        model=ModelRef(provider_id="test", model_id="model"),
+        capabilities=["workspace.read"],
+        external_capabilities=["browser.assert_text_contains"],
+    )
+
+    prompt = PiAgentRuntime._initial_prompt(spec)
+
+    assert "capabilities listed under `Issued governed external capabilities` are already issued" in prompt
+    assert "invoke it through `omnix_capability`" in prompt
+

@@ -157,9 +157,17 @@ def pi_rpc_argv(spec: AgentRunSpec, *, pi_path: str = "pi") -> list[str]:
         "workspace.git_status": "powershell" if os.name == "nt" else "bash",
         "workspace.git_diff": "powershell" if os.name == "nt" else "bash",
     }
-    tools = sorted({tool for capability, tool in mapping.items() if capability in spec.capabilities})
+    tools = {tool for capability, tool in mapping.items() if capability in spec.capabilities}
+    # Pi's --tools option is a global active-tool allowlist: it filters extension
+    # tools as well as built-ins. Whenever Omnix issues governed external
+    # capabilities, keep the broker extension's canonical tool active or the
+    # model can see the authority in its prompt but has no callable path to use
+    # it. This is intentionally independent of the specific external capability
+    # IDs; pi_broker_extension.ts still enforces the RunSpec allowlist itself.
+    if spec.external_capabilities:
+        tools.add("omnix_capability")
     if tools:
-        argv.extend(["--tools", ",".join(tools)])
+        argv.extend(["--tools", ",".join(sorted(tools))])
     else:
         argv.append("--no-builtin-tools")
     if spec.model.reasoning_effort:
