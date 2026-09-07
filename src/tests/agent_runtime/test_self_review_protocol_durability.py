@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from app.agent_runtime import service as service_module
 from app.agent_runtime.contracts import (
     AgentEvent,
     AgentRunSnapshot,
@@ -210,6 +211,59 @@ def test_quality_dispatch_uses_normal_durable_command_path() -> None:
     service.runtime.command.assert_not_called()
 
 
+def test_quality_repair_is_queued_before_dispatch(monkeypatch) -> None:
+    snapshot = _snapshot()
+    revision = _revision()
+    events = []
+    commands = []
+
+    class Repository:
+        connection = object()
+
+        def get_run(self, _run_id):
+            return snapshot
+
+        def append_event(self, event):
+            events.append(event)
+
+        def enqueue_command_with_status(self, command):
+            commands.append(command)
+            return command, "pending"
+
+    quality = SimpleNamespace(
+        get_stage=lambda _run_id: {
+            "attempt": 1,
+            "workspace_state_id": "state-1",
+        },
+        list_validation_results=lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        service_module,
+        "PostgresCodingQualityRepository",
+        lambda _connection, _context: quality,
+    )
+
+    service = object.__new__(AgentRunService)
+    service.context = SimpleNamespace()
+    service.runtime = SimpleNamespace(command=MagicMock())
+    service._set_quality_stage = MagicMock()
+
+    action = service._request_quality_repair(
+        Repository(),
+        snapshot,
+        revision,
+        None,
+        failures=["quality_self_review_not_approved"],
+    )
+
+    assert action is not None and action[0] == "dispatch_command"
+    assert len(commands) == 1
+    assert commands[0].payload["quality_stage"] == "repairing"
+    assert commands[0].payload["quality_attempt"] == 2
+    assert any(event.event_type == "quality.repair_requested" for event in events)
+    service.runtime.command.assert_not_called()
+
+
 def test_missing_self_review_retries_protocol_without_consuming_quality_attempt(monkeypatch) -> None:
     monkeypatch.setenv("OMNIX_AGENT_SELF_REVIEW_PROTOCOL_RETRIES", "2")
     snapshot = _snapshot()
@@ -353,7 +407,7 @@ def test_pre_review_gate_validates_before_self_review_even_with_nonempty_diff() 
     assert [item.id for item in details] == ["final-state-tests"]
 
 
-def test_empty_candidate_cannot_enter_self_review_without_behavioral_proof() -> None:
+def test_empty_candidate_browser_proof_requires_explicit_noop_authority() -> None:
     empty_diff = SimpleNamespace(
         metadata={
             "byte_size": 0,
@@ -361,11 +415,77 @@ def test_empty_candidate_cannot_enter_self_review_without_behavioral_proof() -> 
             "baseline_conflicts": [],
         }
     )
-    assert _implementation_candidate_failures(empty_diff, []) == [
+    browser_proof = SimpleNamespace(
+        validation_id="browser-validation",
+        success=True,
+        workspace_state_id="state-1",
+    )
+    assert _implementation_candidate_failures(empty_diff, [browser_proof]) == [
         "empty_run_owned_diff_without_already_satisfied_proof"
     ]
-    browser_proof = SimpleNamespace(validation_id="browser-validation", success=True)
-    assert _implementation_candidate_failures(empty_diff, [browser_proof]) == []
+    assert _implementation_candidate_failures(
+        empty_diff,
+        [browser_proof],
+        allow_browser_noop=True,
+    ) == []
+
+
+def test_pre_review_gate_rejects_stale_or_extraneous_browser_noop_proof() -> None:
+    empty_diff = SimpleNamespace(
+        metadata={
+            "byte_size": 0,
+            "modified_paths": [],
+            "baseline_conflicts": [],
+        }
+    )
+    stale = SimpleNamespace(
+        validation_id="browser-validation",
+        success=True,
+        workspace_state_id="state-old",
+    )
+    current = SimpleNamespace(
+        validation_id="browser-validation",
+        success=True,
+        workspace_state_id="state-1",
+    )
+    browser_revision = _revision().model_copy(
+        update={
+            "validation_plan": [
+                {
+                    "id": "browser-validation",
+                    "kind": "browser",
+                    "description": "prove the requested visible state",
+                    "covers": ["requirement-1"],
+                    "required": True,
+                }
+            ]
+        }
+    )
+
+    gate, _ = _pre_review_gate(
+        browser_revision,
+        [stale],
+        workspace_state_id="state-1",
+        diff_artifact=empty_diff,
+    )
+    assert gate == "validating"
+
+    gate, _ = _pre_review_gate(
+        _revision(),
+        [current],
+        workspace_state_id="state-1",
+        diff_artifact=empty_diff,
+    )
+    assert gate == "implementing"
+
+    gate, details = _pre_review_gate(
+        browser_revision,
+        [current],
+        workspace_state_id="state-1",
+        diff_artifact=empty_diff,
+    )
+    assert gate == "self_review"
+    assert details == []
 
 
 def test_implementation_candidate_retry_count_is_attempt_and_revision_bound() -> None:
