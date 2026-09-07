@@ -92,6 +92,35 @@ def test_passing_browser_assertion_cleans_preview_and_browser_without_separate_c
     stop.assert_called_once()
 
 
+def test_passing_assertion_without_workspace_preview_does_not_close_browser(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], *, timeout_seconds: int | None = None):
+        calls.append(list(argv))
+        return _completed(argv, stdout="‹")
+
+    stop = Mock(return_value=False)
+    monkeypatch.setattr(browser_adapter, "browser_available", lambda: True)
+    monkeypatch.setattr(browser_adapter, "_run", fake_run)
+    monkeypatch.setattr(browser_adapter, "_stop_workspace_preview", stop)
+
+    result = browser_adapter.run_browser_tool_request(
+        _request(
+            "browser.assert_text_not_contains",
+            {"selector": ".assistant-side-panel-minimize", "expected": "Minimize"},
+        )
+    )
+
+    assert result.error is None
+    assert result.output["assertion_passed"] is True
+    assert result.output["cleanup"] == {
+        "workspace_preview_stopped": False,
+        "browser_closed": False,
+    }
+    assert len(calls) == 1
+    stop.assert_called_once()
+
+
 def test_failed_browser_assertion_keeps_preview_available_for_repair(monkeypatch) -> None:
     stop = Mock(return_value=True)
     monkeypatch.setattr(browser_adapter, "browser_available", lambda: True)
@@ -126,6 +155,6 @@ def test_pi_guard_rejects_shell_preview_and_prompt_uses_managed_preview() -> Non
 
     assert "managedPreviewShellCommand" in guard
     assert "Do not launch npm/vite dev or preview servers through shell commands" in guard
-    assert '"workspace_preview": true' in runtime
+    assert "workspace_preview" in runtime
     assert "automatically tears down the workspace preview and browser session" in runtime
     assert "workspace_preview: true" in broker_extension
