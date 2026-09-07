@@ -12,7 +12,9 @@ from app.agent_runtime.profiles import get_agent_profile
 
 
 # Representative coverage for every UI/web vocabulary family that the coding
-# quality compiler can turn into mandatory governed-browser validation.
+# quality compiler can turn into mandatory governed-browser validation. Include
+# declarative requirements because SemanticTask can classify them as mutations
+# even when the raw user wording contains no imperative action verb.
 _UI_MUTATION_TASKS = (
     "remove the text from chat header",
     "update the footer text",
@@ -30,6 +32,11 @@ _UI_MUTATION_TASKS = (
     "change the theme menu",
     "fix light mode tabs",
     "fix dark mode layout",
+    "the chat header should show only one character name",
+    (
+        "characters in character drop down in header should not be showing 2 of the same name "
+        "separated by -; it should show only one name"
+    ),
 )
 
 
@@ -70,6 +77,29 @@ def test_header_removal_is_issued_browser_authority_through_task_compiler() -> N
     assert "browser.open" in issued
     assert "browser.assert_text_not_contains" in issued
     assert "browser.snapshot" in issued
+
+
+def test_declarative_dropdown_requirement_is_issued_browser_authority_through_task_compiler() -> None:
+    task = (
+        "characters in character drop down in header should not be showing 2 of the same name "
+        "separated by -; it should show only one name"
+    )
+    profile = get_agent_profile("coding")
+    decision = classify_evidence(task, profile_id="coding")
+
+    compiled = compile_task_authority(profile, task, decision)
+    issued = set(compiled.required_external)
+
+    assert "browser.open" in issued
+    assert "browser.snapshot" in issued
+    assert "browser.assert_text_not_contains" in issued
+
+
+def test_declarative_ui_requirement_does_not_need_an_imperative_action_verb() -> None:
+    task = "the character dropdown should show only one display name"
+
+    assert task_requires_browser_authority(task)
+    assert "browser.open" in set(coding_external_capabilities_for_task(task))
 
 
 def test_explicit_browser_prohibition_still_fails_closed() -> None:
