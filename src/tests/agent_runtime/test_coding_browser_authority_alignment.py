@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import pytest
+
+from app.agent_runtime.coding_external_authority import (
+    coding_external_capabilities_for_task,
+    task_requires_browser_authority,
+)
+from app.agent_runtime.coding_quality import compile_task_engineering_contract
+from app.agent_runtime.evidence import classify_evidence, compile_task_authority
+from app.agent_runtime.profiles import get_agent_profile
+
+
+_UI_MUTATION_TASKS = (
+    "remove the text from chat header",
+    "remove the tools option from the sidebar",
+    "change the toolbar minimize button to an arrow",
+    "update the footer text",
+    "fix the React modal button",
+    "change the CSS for the web page",
+    "update the UI component layout",
+)
+
+
+@pytest.mark.parametrize("task", _UI_MUTATION_TASKS)
+def test_required_ui_browser_validation_always_has_matching_authority(task: str) -> None:
+    _requirements, _constraints, validation_plan = compile_task_engineering_contract(
+        task,
+        [],
+        profile="coding",
+        mutating=True,
+    )
+
+    required_browser = [
+        item
+        for item in validation_plan
+        if item.kind == "browser" and item.required
+    ]
+
+    assert required_browser, f"quality contract did not require browser validation for {task!r}"
+    assert task_requires_browser_authority(task), (
+        "quality requires governed browser proof but the authority compiler would "
+        f"launch Pi without browser authority for {task!r}"
+    )
+
+    issued = set(coding_external_capabilities_for_task(task))
+    assert "browser.open" in issued
+    assert "browser.assert_text_not_contains" in issued
+
+
+def test_header_removal_is_issued_browser_authority_through_task_compiler() -> None:
+    task = "remove the text from chat header"
+    profile = get_agent_profile("coding")
+    decision = classify_evidence(task, profile_id="coding")
+
+    compiled = compile_task_authority(profile, task, decision)
+    issued = set(compiled.required_external)
+
+    assert "browser.open" in issued
+    assert "browser.assert_text_not_contains" in issued
+    assert "browser.snapshot" in issued
+
+
+def test_explicit_browser_prohibition_still_fails_closed() -> None:
+    task = "update the chat header without using the browser"
+
+    assert not task_requires_browser_authority(task)
+    assert not {
+        capability
+        for capability in coding_external_capabilities_for_task(task)
+        if capability.startswith("browser.")
+    }
