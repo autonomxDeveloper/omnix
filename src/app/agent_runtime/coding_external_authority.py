@@ -19,9 +19,17 @@ _BROWSER_EXPLICIT = re.compile(
     r"click\s+(?:through|the)|interact\s+with\s+(?:the\s+)?(?:page|ui|app))\b",
     re.I,
 )
+# Keep this predicate at least as broad as the UI/web surface detector used by
+# coding-quality validation. The authority compiler runs before the durable
+# quality contract is persisted; if quality can later require governed browser
+# proof for a surface that is absent here, Pi is launched without
+# omnix_capability and the run can only ask the user to expose a capability that
+# Omnix itself required. Representative parity is regression-tested in
+# test_coding_browser_authority_alignment.py.
 _UI_SURFACE = re.compile(
-    r"\b(?:frontend|front[- ]end|ui|ux|web\s+(?:app|page|screen)|html|css|react|vue|"
-    r"button|form|modal|dialog|dropdown|menu|tab|side\s*bar|sidebar|tool\s*bar|toolbar|theme|light\s+mode|dark\s+mode)\b",
+    r"\b(?:frontend|front[- ]end|ui|ux|web(?:\s+(?:app|page|screen))?|html|css|react|vue|tsx?|jsx?|"
+    r"button|icon|element|component|layout|form|modal|dialog|dropdown|menu|tab|side\s*bar|sidebar|"
+    r"tool\s*bar|toolbar|header|footer|input|textarea|tooltip|badge|chip|theme|light\s+mode|dark\s+mode)\b",
     re.I,
 )
 _UI_ACTION = re.compile(
