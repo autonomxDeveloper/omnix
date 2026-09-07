@@ -62,7 +62,7 @@ def test_header_removal_is_issued_browser_authority_through_task_compiler() -> N
 
 
 def test_explicit_browser_prohibition_still_fails_closed() -> None:
-    task = "update the chat header without using the browser"
+    task = "update the chat header; do not use the browser"
 
     assert not task_requires_browser_authority(task)
     assert not {
