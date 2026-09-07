@@ -64,6 +64,24 @@ def test_duplicate_turn_end_and_settle_after_provider_failure_are_suppressed() -
     assert settle is None
 
 
+def test_intentional_request_abort_is_not_reclassified_as_provider_failure() -> None:
+    event = normalize_pi_event(
+        "run-intentional-abort",
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "aborted",
+                "errorMessage": "Request aborted",
+                "content": [],
+            },
+        },
+    )
+
+    assert event is not None
+    assert event.event_type == "model.message"
+
+
 def test_normal_terminal_assistant_message_is_still_model_message() -> None:
     event = normalize_pi_event(
         "run-normal-message",
