@@ -10,6 +10,7 @@ import json
 
 from .coding_skills import compile_coding_skills
 from .contracts import AgentEvent, AgentRunCommand, AgentRunSnapshot, AgentRunSpec
+from .debug_logging import log_agent_activity
 from . import pi_runtime_core as _pi_runtime_core
 from .pi_runtime_core import (
     PiAgentRuntime as _CorePiAgentRuntime,
@@ -110,6 +111,12 @@ def normalize_pi_event(
     )
     if provider_failure is not None:
         return provider_failure
+    # Once a provider terminal failure has been emitted, Pi may still publish
+    # the mechanical agent_settled event for that failed turn. Suppress it so a
+    # failed provider request cannot re-enter the quality state machine as an
+    # apparent successful settle.
+    if str(payload.get("type") or "") == "agent_settled" and run_id in _LAST_PROVIDER_FAILURE:
+        return None
     return _CORE_NORMALIZE_PI_EVENT(
         run_id,
         payload,
@@ -177,17 +184,26 @@ class PiAgentRuntime(_CorePiAgentRuntime):
         reference_context: str = "",
         reference_images: list[dict[str, str]] | None = None,
     ) -> AgentRunSnapshot:
-        """Dispatch recovery without aborting a freshly restarted Pi turn.
+        """Dispatch restarted recovery without aborting a fresh Pi turn.
 
-        Stalled-run recovery may recreate the Pi session and immediately issue
-        a durable ``resume`` command. The recreated session has already started
+        Most stalled-run stages recreate the Pi session and immediately issue a
+        durable ``resume`` command. The recreated session has already started
         its initial prompt, so the generic interrupted-turn path would abort
         that fresh request and then race a second prompt, which Pi rejects as
         "Agent is already processing". Recovery is authoritative steering of
-        the already-active turn; genuine approval/tool resumes retain the core
-        abort-then-prompt behavior.
+        that fresh active turn. Self-review recovery intentionally reuses an
+        existing interrupted session and therefore keeps the core abort/prompt
+        semantics needed to clear that genuinely stale turn.
         """
         if command.command_type != "resume" or command.payload.get("recovery_attempt") is None:
+            return super().command_with_context(
+                command,
+                reference_context=reference_context,
+                reference_images=reference_images,
+            )
+
+        raw_message = str(command.payload.get("message") or "")
+        if "This is an internal quality/self-review turn that did not finish its protocol." in raw_message:
             return super().command_with_context(
                 command,
                 reference_context=reference_context,
@@ -207,20 +223,31 @@ class PiAgentRuntime(_CorePiAgentRuntime):
                     "revision": snapshot.revision + 1,
                 }
             )
-            message = str(
-                command.payload.get("message")
-                or "Resume the task from the current state and re-check your work."
-            )
+            message = raw_message or "Resume the task from the current state and re-check your work."
             message = self._authoritative_follow_up_prompt(snapshot.spec, message)
 
             if bool(getattr(session, "_turn_active", False)):
                 # Pi explicitly supports steering while a turn is processing.
                 # Do not abort the freshly restarted initial turn.
                 session.steer(message)
+                dispatch = "steer"
             else:
                 session.prompt(message)
+                dispatch = "prompt"
 
             self._snapshots[command.run_id] = snapshot
+            log_agent_activity(
+                "runtime.recovery.dispatched",
+                category="runtime",
+                run_id=command.run_id,
+                fields={
+                    "command_id": command.command_id,
+                    "recovery_attempt": command.payload.get("recovery_attempt"),
+                    "dispatch": dispatch,
+                    "status": snapshot.status,
+                    "revision": snapshot.revision,
+                },
+            )
             return snapshot
 
 
