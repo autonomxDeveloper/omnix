@@ -1,19 +1,31 @@
 """Governed browser adapter backed by Vercel Labs agent-browser.
 
-Pi never receives the raw ``agent-browser`` executable.  Browser operations are
+Pi never receives the raw ``agent-browser`` executable. Browser operations are
 canonical Omnix capabilities dispatched here after RunSpec, approval and budget
-checks.  The adapter adds agent-browser's own domain/network containment as a
+checks. The adapter adds agent-browser's own domain/network containment as a
 second boundary and disables page-provided WebMCP tools.
+
+For coding UI validation, ``browser.open`` also supports an Omnix-owned
+``workspace_preview`` mode. The backend resolves the exact run worktree, starts
+the repository web app on an allocated loopback port without shell composition,
+and tears the preview/browser session down automatically after a passing
+deterministic assertion. The model never owns the preview process lifecycle.
 """
 from __future__ import annotations
 
+import atexit
+from dataclasses import dataclass
 import hashlib
 import json
 import os
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -64,12 +76,28 @@ _SAFE_ENV_KEYS = (
     "TMPDIR",
     "HOME",
     "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
     "LANG",
     "LC_ALL",
 )
 _SELECTOR = re.compile(r"^.{1,1024}$", re.S)
 _MAX_VALUE_CHARS = 16_000
 _MAX_OUTPUT_CHARS = 50_000
+_PREVIEW_PACKAGE_PATH = "src/apps/web"
+_PREVIEW_ROUTE = re.compile(r"^/[^\r\n\x00]{0,2047}$", re.S)
+
+
+@dataclass
+class _WorkspacePreview:
+    process: subprocess.Popen[str]
+    url: str
+    port: int
+    timer: threading.Timer | None = None
+
+
+_PREVIEW_LOCK = threading.RLock()
+_PREVIEWS: dict[str, _WorkspacePreview] = {}
 
 
 def _flag(name: str, default: bool = False) -> bool:
@@ -177,12 +205,37 @@ def _timeout_seconds() -> int:
         return 45
 
 
+def _preview_start_timeout_seconds() -> int:
+    try:
+        return max(3, min(int(os.environ.get("OMNIX_AGENT_PREVIEW_START_TIMEOUT_SECONDS", "20")), 60))
+    except ValueError:
+        return 20
+
+
+def _preview_ttl_seconds() -> int:
+    try:
+        return max(30, min(int(os.environ.get("OMNIX_AGENT_PREVIEW_TTL_SECONDS", "300")), 1800))
+    except ValueError:
+        return 300
+
+
 def _minimal_environment() -> dict[str, str]:
     source = os.environ
     env = {key: source[key] for key in _SAFE_ENV_KEYS if source.get(key)}
     executable = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
     if executable:
         env["AGENT_BROWSER_EXECUTABLE_PATH"] = executable
+    return env
+
+
+def _preview_environment() -> dict[str, str]:
+    env = _minimal_environment()
+    for key, value in os.environ.items():
+        # VITE_* values are deliberately browser-public configuration. Do not
+        # leak arbitrary Omnix/backend environment variables into repository
+        # code executed by the preview process.
+        if key.startswith("VITE_"):
+            env[key] = value
     return env
 
 
@@ -200,7 +253,11 @@ def _base_argv(request: AssistantToolRequest) -> list[str]:
     ]
 
 
-def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+def _run(
+    argv: list[str],
+    *,
+    timeout_seconds: int | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
         shell=False,
@@ -209,9 +266,252 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=_timeout_seconds(),
+        timeout=timeout_seconds if timeout_seconds is not None else _timeout_seconds(),
         env=_minimal_environment(),
     )
+
+
+def _run_id_from_request(request: AssistantToolRequest) -> str | None:
+    proposal = str(request.proposal_id or "").strip()
+    if not proposal.startswith("agent:"):
+        return None
+    parts = proposal.split(":", 2)
+    if len(parts) != 3 or not parts[1].strip():
+        return None
+    return parts[1].strip()
+
+
+def _workspace_for_preview(request: AssistantToolRequest) -> tuple[str, Path]:
+    run_id = _run_id_from_request(request)
+    if not run_id:
+        raise ValueError("workspace preview requires a run-scoped broker proposal")
+
+    # Lazy import avoids coupling the assistant-tool module graph to the Agent
+    # service at import time while still resolving the authoritative RunSpec.
+    from app.agent_runtime.service import default_agent_run_service
+
+    snapshot = default_agent_run_service().get(run_id)
+    if snapshot is None or snapshot.spec.workspace is None:
+        raise ValueError("workspace preview requires an issued Agent workspace")
+    workspace = snapshot.spec.workspace
+    root = Path(workspace.worktree or workspace.root).resolve()
+    package_json = root / _PREVIEW_PACKAGE_PATH / "package.json"
+    if not package_json.is_file():
+        raise ValueError(f"workspace preview package is missing: {_PREVIEW_PACKAGE_PATH}")
+    return run_id, root
+
+
+def _preview_npm_command() -> str:
+    configured = os.environ.get("OMNIX_AGENT_PREVIEW_NPM_COMMAND", "").strip()
+    if configured:
+        candidate = Path(configured)
+        if candidate.is_file():
+            return str(candidate)
+        raise ValueError("OMNIX_AGENT_PREVIEW_NPM_COMMAND does not point to a file")
+
+    repo_root = Path(__file__).resolve().parents[3]
+    patterns = (
+        "node-v*-win-x64/npm.cmd",
+        "node-v*-linux-x64/bin/npm",
+        "node-v*-darwin-*/bin/npm",
+    )
+    candidates: list[Path] = []
+    for pattern in patterns:
+        candidates.extend((repo_root / ".tools").glob(pattern))
+    for candidate in sorted(candidates, key=lambda path: str(path), reverse=True):
+        if candidate.is_file():
+            return str(candidate)
+
+    resolved = shutil.which("npm.cmd") or shutil.which("npm")
+    if not resolved:
+        raise ValueError("npm is unavailable for the Omnix workspace preview")
+    return resolved
+
+
+def _allocate_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def _wait_for_preview(process: subprocess.Popen[str], port: int) -> bool:
+    deadline = time.monotonic() + _preview_start_timeout_seconds()
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                return True
+        except OSError:
+            time.sleep(0.1)
+    return False
+
+
+def _terminate_preview_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            taskkill = shutil.which("taskkill")
+            if taskkill:
+                subprocess.run(
+                    [taskkill, "/PID", str(process.pid), "/T", "/F"],
+                    shell=False,
+                    check=False,
+                    capture_output=True,
+                    timeout=5,
+                    env=_minimal_environment(),
+                )
+            else:
+                process.terminate()
+        else:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            if os.name != "nt":
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    process.kill()
+            else:
+                process.kill()
+            process.wait(timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def _expire_workspace_preview(run_id: str, pid: int) -> None:
+    with _PREVIEW_LOCK:
+        preview = _PREVIEWS.get(run_id)
+        if preview is None or preview.process.pid != pid:
+            return
+        _PREVIEWS.pop(run_id, None)
+    _terminate_preview_process(preview.process)
+
+
+def _stop_workspace_preview(request: AssistantToolRequest) -> bool:
+    run_id = _run_id_from_request(request)
+    if not run_id:
+        return False
+    with _PREVIEW_LOCK:
+        preview = _PREVIEWS.pop(run_id, None)
+    if preview is None:
+        return False
+    if preview.timer is not None:
+        preview.timer.cancel()
+    _terminate_preview_process(preview.process)
+    return True
+
+
+def _stop_all_workspace_previews() -> None:
+    with _PREVIEW_LOCK:
+        previews = list(_PREVIEWS.values())
+        _PREVIEWS.clear()
+    for preview in previews:
+        if preview.timer is not None:
+            preview.timer.cancel()
+        _terminate_preview_process(preview.process)
+
+
+def _start_workspace_preview(
+    request: AssistantToolRequest,
+    payload: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    run_id, root = _workspace_for_preview(request)
+    route = str(payload.get("path") or "/").strip()
+    if not _PREVIEW_ROUTE.fullmatch(route) or "\\" in route:
+        raise ValueError("workspace preview path must be a bounded absolute browser route")
+
+    _stop_workspace_preview(request)
+    npm = _preview_npm_command()
+    last_error = "workspace preview failed to become ready"
+    for _attempt in range(3):
+        port = _allocate_loopback_port()
+        argv = [
+            npm,
+            "--prefix",
+            _PREVIEW_PACKAGE_PATH,
+            "run",
+            "dev",
+            "--",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--strictPort",
+        ]
+        popen_kwargs: dict[str, Any] = {
+            "cwd": str(root),
+            "env": _preview_environment(),
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "shell": False,
+            "text": True,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+        try:
+            process = subprocess.Popen(argv, **popen_kwargs)
+        except OSError as exc:
+            raise ValueError(f"workspace preview could not start npm: {type(exc).__name__}") from exc
+
+        if not _wait_for_preview(process, port):
+            code = process.poll()
+            _terminate_preview_process(process)
+            last_error = (
+                f"workspace preview process exited with code {code}"
+                if code is not None
+                else "workspace preview did not listen before the startup timeout"
+            )
+            continue
+
+        base_url = f"http://127.0.0.1:{port}"
+        url = f"{base_url}{route}"
+        preview = _WorkspacePreview(process=process, url=base_url, port=port)
+        timer = threading.Timer(
+            _preview_ttl_seconds(),
+            _expire_workspace_preview,
+            args=(run_id, process.pid),
+        )
+        timer.daemon = True
+        preview.timer = timer
+        with _PREVIEW_LOCK:
+            _PREVIEWS[run_id] = preview
+        timer.start()
+        return url, {
+            "workspace_preview": True,
+            "workspace_preview_url": base_url,
+            "workspace_preview_port": port,
+            "workspace_preview_path": route,
+            "workspace_preview_package": _PREVIEW_PACKAGE_PATH,
+        }
+
+    raise ValueError(last_error)
+
+
+def _best_effort_validation_cleanup(request: AssistantToolRequest) -> dict[str, bool]:
+    preview_stopped = _stop_workspace_preview(request)
+    browser_closed = False
+    try:
+        completed = _run(_base_argv(request) + ["close"], timeout_seconds=5)
+        browser_closed = completed.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        browser_closed = False
+    return {
+        "workspace_preview_stopped": preview_stopped,
+        "browser_closed": browser_closed,
+    }
 
 
 def _command_for(request: AssistantToolRequest) -> tuple[list[str], dict[str, Any]]:
@@ -221,7 +521,11 @@ def _command_for(request: AssistantToolRequest) -> tuple[list[str], dict[str, An
     metadata: dict[str, Any] = {}
 
     if action == "browser.open":
-        url = _validate_open_url(payload.get("url"))
+        if payload.get("workspace_preview") is True:
+            url, preview_metadata = _start_workspace_preview(request, payload)
+            metadata.update(preview_metadata)
+        else:
+            url = _validate_open_url(payload.get("url"))
         argv.extend(["open", url])
         metadata["url"] = url
     elif action == "browser.snapshot":
@@ -352,6 +656,8 @@ def run_browser_tool_request(request: AssistantToolRequest) -> AssistantToolResu
         argv, metadata = _command_for(request)
         completed = _run(argv)
     except (ValueError, TypeError) as exc:
+        if request.action_id == "browser.open" and request.input.get("workspace_preview") is True:
+            _stop_workspace_preview(request)
         return AssistantToolResult(
             tool_id="browser",
             action_id=request.action_id,
@@ -360,6 +666,8 @@ def run_browser_tool_request(request: AssistantToolRequest) -> AssistantToolResu
             error=f"browser_policy_rejected:{exc}",
         )
     except (OSError, subprocess.SubprocessError) as exc:
+        if request.action_id == "browser.open" and request.input.get("workspace_preview") is True:
+            _stop_workspace_preview(request)
         return AssistantToolResult(
             tool_id="browser",
             action_id=request.action_id,
@@ -371,6 +679,8 @@ def run_browser_tool_request(request: AssistantToolRequest) -> AssistantToolResu
     stdout = (completed.stdout or "")[:_MAX_OUTPUT_CHARS]
     stderr = (completed.stderr or "")[:8_000]
     if completed.returncode != 0:
+        if metadata.get("workspace_preview") is True:
+            _stop_workspace_preview(request)
         return AssistantToolResult(
             tool_id="browser",
             action_id=request.action_id,
@@ -400,6 +710,10 @@ def run_browser_tool_request(request: AssistantToolRequest) -> AssistantToolResu
                 error="browser_assertion_failed",
             )
         output["assertion_passed"] = True
+        # A passing deterministic assertion is the terminal proof required by
+        # coding validation. Cleanup is internal and best effort so browser.close
+        # can never create a user approval dependency merely to release resources.
+        output["cleanup"] = _best_effort_validation_cleanup(request)
     if request.action_id == "browser.snapshot" and stdout.strip():
         try:
             output["snapshot"] = json.loads(stdout)
@@ -414,6 +728,8 @@ def run_browser_tool_request(request: AssistantToolRequest) -> AssistantToolResu
                 "size_bytes": len(data),
                 "sha256": hashlib.sha256(data).hexdigest(),
             })
+    if request.action_id == "browser.close":
+        output["workspace_preview_stopped"] = _stop_workspace_preview(request)
 
     return AssistantToolResult(
         tool_id="browser",
@@ -423,3 +739,6 @@ def run_browser_tool_request(request: AssistantToolRequest) -> AssistantToolResu
         result_summary=f"Completed governed browser action {request.action_id}.",
         output=output,
     )
+
+
+atexit.register(_stop_all_workspace_previews)
