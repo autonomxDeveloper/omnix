@@ -278,7 +278,12 @@ def _implementation_candidate_retry_count(
     return count
 
 
-def _implementation_candidate_failures(diff_artifact, validations=()) -> list[str]:
+def _implementation_candidate_failures(
+    diff_artifact,
+    validations=(),
+    *,
+    allow_browser_noop: bool = False,
+) -> list[str]:
     """Return deterministic reasons why the current state is not ready for review."""
     if diff_artifact is None:
         return ["missing_run_owned_diff"]
@@ -294,7 +299,7 @@ def _implementation_candidate_failures(diff_artifact, validations=()) -> list[st
     except (TypeError, ValueError):
         byte_size = 0
     if not (paths and byte_size > 0):
-        browser_proof = any(
+        browser_proof = allow_browser_noop and any(
             getattr(item, "validation_id", None) == "browser-validation"
             and bool(getattr(item, "success", False))
             for item in validations
@@ -315,7 +320,20 @@ def _pre_review_gate(
     missing = missing_final_validations(revision, validations, workspace_state_id=workspace_state_id)
     if missing:
         return "validating", list(missing)
-    candidate_failures = _implementation_candidate_failures(diff_artifact, validations)
+    current_validations = [
+        item
+        for item in validations
+        if getattr(item, "workspace_state_id", None) == workspace_state_id
+    ]
+    allow_browser_noop = any(
+        item.id == "browser-validation" and item.required
+        for item in revision.validation_plan
+    )
+    candidate_failures = _implementation_candidate_failures(
+        diff_artifact,
+        current_validations,
+        allow_browser_noop=allow_browser_noop,
+    )
     if candidate_failures:
         return "implementing", candidate_failures
     return "self_review", []
@@ -362,13 +380,13 @@ def _self_review_response_from_repository(
     workspace_state_id: str,
     page_size: int = 5000,
 ) -> str:
-    """Read only the response emitted after the exact self-review stage marker.
+    """Read only the response emitted inside the exact self-review stage window.
 
-    The explicit ``quality.stage=self_review`` event is the causal boundary for
-    mandatory self-review. Implementation/validation prose or review-shaped JSON
-    emitted before that marker must never be reused as self-review evidence.
-    Binding the marker to task revision, attempt, and workspace state also keeps
-    a refreshed self-review from consuming a verdict for an older final state.
+    Every quality-stage marker closes the previous window. Only the most recent
+    marker that exactly matches revision, attempt, and workspace state can make
+    subsequent terminal assistant text eligible as self-review evidence. This
+    prevents a later retry/state/phase from being attributed to stale review
+    identity.
     """
 
     after_sequence = 0
@@ -383,14 +401,13 @@ def _self_review_response_from_repository(
         if not batch:
             break
         for item in batch:
-            if (
-                item.event_type == "quality.stage"
-                and str(item.payload.get("stage") or "") == "self_review"
-                and int(item.payload.get("attempt") or 0) == attempt
-                and str(item.payload.get("task_revision_id") or "") == task_revision_id
-                and str(item.payload.get("workspace_state_id") or "") == workspace_state_id
-            ):
-                marker_seen = True
+            if item.event_type == "quality.stage":
+                marker_seen = (
+                    str(item.payload.get("stage") or "") == "self_review"
+                    and int(item.payload.get("attempt") or 0) == attempt
+                    and str(item.payload.get("task_revision_id") or "") == task_revision_id
+                    and str(item.payload.get("workspace_state_id") or "") == workspace_state_id
+                )
                 response = ""
                 continue
             if (
@@ -644,6 +661,7 @@ class AgentRunService(_CoreAgentRunService):
             turn_plan=turn_plan,
         )
         if command.command_type != "steer" or result.run_id != command.run_id:
+            self._dispatch_pending_quality_commands(command.run_id, include_parent=True)
             return result
 
         stale_reviewers: list[str] = []
@@ -707,7 +725,9 @@ class AgentRunService(_CoreAgentRunService):
                 # Stale review evidence is revision-bound and cannot pass even
                 # if best-effort cancellation loses a race with completion.
                 pass
-        return self.get(result.run_id) or result
+        current_result = self.get(result.run_id) or result
+        self._dispatch_pending_quality_commands(command.run_id, include_parent=True)
+        return current_result
 
     def _current_revision(
         self,
@@ -975,6 +995,7 @@ class AgentRunService(_CoreAgentRunService):
             super()._persist_runtime_event(event)
             if event.event_type == "tool.completed":
                 self._record_workspace_tool_result(event)
+            self._dispatch_pending_quality_commands(event.run_id, include_parent=True)
             return
 
         with unit_of_work(self.database) as probe:
@@ -982,6 +1003,7 @@ class AgentRunService(_CoreAgentRunService):
             probe.rollback()
         if current is None or not self._quality_enabled(current.spec):
             super()._persist_runtime_event(event)
+            self._dispatch_pending_quality_commands(event.run_id, include_parent=True)
             return
 
         post_action: tuple | None = None
@@ -1011,6 +1033,7 @@ class AgentRunService(_CoreAgentRunService):
                 if terminal_runtime:
                     self._close_terminal_runtime(event.run_id)
         self._execute_quality_action(post_action)
+        self._dispatch_pending_quality_commands(event.run_id, include_parent=True)
 
     def _queue_quality_resume(
         self,
@@ -1398,8 +1421,13 @@ class AgentRunService(_CoreAgentRunService):
                 "task_revision_id": revision.revision_id, "workspace_state_id": state.state_id,
             }))
             if not self_review_is_acceptable(self_review, revision):
-                self._request_quality_repair(repository, current, revision, self_review, failures=["quality_self_review_not_approved"])
-                return None
+                return self._request_quality_repair(
+                    repository,
+                    current,
+                    revision,
+                    self_review,
+                    failures=["quality_self_review_not_approved"],
+                )
             self._set_quality_stage(repository, run_id=current.run_id, stage="validating", attempt=attempt,
                 task_revision_id=revision.revision_id, workspace_state_id=state.state_id)
 
@@ -1569,6 +1597,45 @@ class AgentRunService(_CoreAgentRunService):
         if action[0] == "launch_reviews":
             _, parent_run_id, snapshot_id, count = action
             self._launch_reviewer_children(parent_run_id, snapshot_id, int(count))
+
+    def _dispatch_pending_quality_commands(self, run_id: str, *, include_parent: bool = False) -> None:
+        """Dispatch committed quality-outbox commands without bypassing durability.
+
+        Repair can be requested while finalizing a reviewer child or acceptance,
+        where the caller cannot return a post-commit action. Read the committed
+        outbox after those transactions and send only internal quality resumes
+        through the normal command path. Idempotent claiming prevents duplicate
+        dispatch if this overlaps with a direct post-action or recovery replay.
+        """
+
+        targets: list[str] = []
+        pending: list[AgentRunCommand] = []
+        try:
+            with unit_of_work(self.database) as work:
+                repository = PostgresAgentRunRepository(work.connection, self.context)
+                snapshot = repository.get_run(run_id)
+                if snapshot is not None:
+                    targets.append(snapshot.run_id)
+                    if include_parent and snapshot.spec.parent_run_id:
+                        targets.append(snapshot.spec.parent_run_id)
+                for target in dict.fromkeys(targets):
+                    for command in repository.list_pending_commands(target):
+                        if (
+                            command.command_type == "resume"
+                            and str(command.payload.get("quality_stage") or "")
+                            in {"implementing", "repairing", "validating", "self_review"}
+                        ):
+                            pending.append(command)
+                work.rollback()
+        except Exception:
+            return
+
+        seen: set[str] = set()
+        for command in pending:
+            if command.command_id in seen:
+                continue
+            seen.add(command.command_id)
+            self._execute_quality_action(("dispatch_command", command))
 
     def _launch_reviewer_children(self, parent_run_id: str, snapshot_id: str, count: int) -> None:
         for index in range(max(1, count)):
@@ -1825,7 +1892,7 @@ class AgentRunService(_CoreAgentRunService):
         review: ReviewResult | SelfReviewResult | None,
         *,
         failures: list[str],
-    ) -> None:
+    ) -> tuple | None:
         quality = PostgresCodingQualityRepository(repository.connection, self.context)
         stage = quality.get_stage(current.run_id) or {"attempt": 1, "workspace_state_id": None}
         attempt = max(1, int(stage.get("attempt") or 1))
@@ -1838,7 +1905,7 @@ class AgentRunService(_CoreAgentRunService):
                 desired_state="cancelled",
                 last_error=("quality_failed:" + ",".join(failures))[:2000],
             )
-            return
+            return None
         next_attempt = attempt + 1
         state_id = stage.get("workspace_state_id")
         validations = quality.list_validation_results(
@@ -1881,7 +1948,7 @@ class AgentRunService(_CoreAgentRunService):
         )
         latest = repository.get_run(current.run_id) or current
         if latest.status != "running":
-            latest = repository.update_state(
+            repository.update_state(
                 current.run_id,
                 expected_revision=latest.revision,
                 status="running",
@@ -1889,27 +1956,19 @@ class AgentRunService(_CoreAgentRunService):
                 worker_id=self.worker_id,
                 last_error=None,
             )
-        try:
-            self.runtime.command(
-                AgentRunCommand(
-                    run_id=current.run_id,
-                    command_type="resume",
-                    payload={"message": prompt},
-                    idempotency_key=(
-                        f"quality-repair:{current.run_id}:{revision.revision_id}:{next_attempt}:"
-                        f"{hashlib.sha256(prompt.encode('utf-8')).hexdigest()[:16]}"
-                    ),
-                )
-            )
-        except Exception as exc:
-            latest = repository.get_run(current.run_id) or latest
-            repository.update_state(
-                current.run_id,
-                expected_revision=latest.revision,
-                status="failed",
-                desired_state="cancelled",
-                last_error=f"quality_repair_resume_failed:{type(exc).__name__}:{exc}"[:2000],
-            )
+        return self._queue_quality_resume(
+            repository,
+            run_id=current.run_id,
+            prompt=prompt,
+            idempotency_key=(
+                f"quality-repair:{current.run_id}:{revision.revision_id}:{next_attempt}:"
+                f"{hashlib.sha256(prompt.encode('utf-8')).hexdigest()[:16]}"
+            ),
+            quality_stage="repairing",
+            quality_attempt=next_attempt,
+            task_revision_id=revision.revision_id,
+            workspace_state_id=str(state_id) if state_id else None,
+        )
 
     def _quality_fail(
         self,
