@@ -9,12 +9,12 @@ from __future__ import annotations
 import json
 
 from .coding_skills import compile_coding_skills
-from .contracts import AgentRunSpec
+from .contracts import AgentEvent, AgentRunCommand, AgentRunSnapshot, AgentRunSpec
+from . import pi_runtime_core as _pi_runtime_core
 from .pi_runtime_core import (
     PiAgentRuntime as _CorePiAgentRuntime,
     PiRpcSession,
     build_agent_environment,
-    normalize_pi_event,
     pi_broker_extension_path,
     pi_guard_extension_path,
     pi_model_provider_extension_path,
@@ -37,6 +37,91 @@ _ENGINEERING_WORKFLOW = """MANDATORY ENGINEERING WORKFLOW FOR MUTATING CODING TA
 GOVERNED CAPABILITIES — capabilities listed under `Issued governed external capabilities` are already issued by Omnix. When one is needed, invoke it through `omnix_capability`; do not ask the user to issue or enable an already-listed capability.
 WORKTREE UI PREVIEW — for governed browser validation of local web/UI changes, never launch `npm run dev`, Vite, `Start-Process`, or another long-lived preview server through shell commands. Invoke `browser.open` through `omnix_capability` with input `{\"workspace_preview\": true, \"path\": \"/<route>\"}`. Omnix resolves the exact run worktree, allocates the loopback port, and owns preview cleanup. Finish with the required deterministic `browser.assert_*` proof; a passing assertion automatically tears down the workspace preview and browser session, so do not call `browser.close` merely for cleanup.
 """
+
+
+# Pi can report provider failures inside message_end/turn_end rather than through
+# a top-level error event. The core normalizer historically treated those turns
+# as ordinary assistant messages, allowing a usage/quota failure to look like a
+# successful settle and later consume stalled-run recovery attempts. Keep the
+# core implementation stable, but install a narrow public-runtime normalization
+# hook that turns terminal provider failures into explicit run failures.
+_CORE_NORMALIZE_PI_EVENT = _pi_runtime_core.normalize_pi_event
+_LAST_PROVIDER_FAILURE: dict[str, str] = {}
+
+
+def _provider_failure_event(
+    run_id: str,
+    payload: dict[str, object],
+    *,
+    task_revision_id: str | None = None,
+) -> AgentEvent | None:
+    event_type = str(payload.get("type") or "")
+    if event_type not in {"message_end", "turn_end"}:
+        return None
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        return None
+    stop_reason = str(message.get("stopReason") or "").strip().casefold()
+    error_message = str(message.get("errorMessage") or "").strip()
+    if stop_reason not in {"error", "failed"} and not error_message:
+        return None
+    if not error_message:
+        error_message = f"Pi model turn ended with stopReason={stop_reason or 'error'}"
+
+    lowered = error_message.casefold()
+    provider_error_code = "model_provider_error"
+    if "usagelimitexceeded" in lowered or "usage limit" in lowered:
+        provider_error_code = "model_usage_limit_exceeded"
+    elif "rate limit" in lowered or "ratelimit" in lowered or "too many requests" in lowered:
+        provider_error_code = "model_rate_limit_exceeded"
+    elif "unauthorized" in lowered or "invalid_api_key" in lowered or "authentication" in lowered:
+        provider_error_code = "model_authentication_failed"
+
+    # Pi often repeats the same failed provider result in both message_end and
+    # turn_end. Emit one durable run failure per unique provider failure so the
+    # service does not process two terminal transitions for the same turn.
+    signature = f"{provider_error_code}:{error_message}"
+    if _LAST_PROVIDER_FAILURE.get(run_id) == signature:
+        return None
+    _LAST_PROVIDER_FAILURE[run_id] = signature
+    return AgentEvent(
+        run_id=run_id,
+        event_type="run.failed",
+        payload={
+            "source": "pi",
+            "error": f"{provider_error_code}: {error_message}"[:2000],
+            "provider_error_code": provider_error_code,
+            "provider_error_message": error_message[:2000],
+            "task_revision_id": task_revision_id,
+        },
+    )
+
+
+def normalize_pi_event(
+    run_id: str,
+    payload: dict[str, object],
+    *,
+    task_revision_id: str | None = None,
+) -> AgentEvent | None:
+    provider_failure = _provider_failure_event(
+        run_id,
+        payload,
+        task_revision_id=task_revision_id,
+    )
+    if provider_failure is not None:
+        return provider_failure
+    return _CORE_NORMALIZE_PI_EVENT(
+        run_id,
+        payload,
+        task_revision_id=task_revision_id,
+    )
+
+
+# PiRpcSession resolves normalize_pi_event from pi_runtime_core at execution
+# time, so bind the public hardened normalizer there as well. This preserves the
+# split core/wrapper architecture while making every Pi session observe the same
+# provider-failure semantics.
+_pi_runtime_core.normalize_pi_event = normalize_pi_event
 
 
 class PiAgentRuntime(_CorePiAgentRuntime):
@@ -84,6 +169,59 @@ class PiAgentRuntime(_CorePiAgentRuntime):
                 "requested by the review task. Reviewer process success is not approval."
             )
         return "\n\n".join(sections)
+
+    def command_with_context(
+        self,
+        command: AgentRunCommand,
+        *,
+        reference_context: str = "",
+        reference_images: list[dict[str, str]] | None = None,
+    ) -> AgentRunSnapshot:
+        """Dispatch recovery without aborting a freshly restarted Pi turn.
+
+        Stalled-run recovery may recreate the Pi session and immediately issue
+        a durable ``resume`` command. The recreated session has already started
+        its initial prompt, so the generic interrupted-turn path would abort
+        that fresh request and then race a second prompt, which Pi rejects as
+        "Agent is already processing". Recovery is authoritative steering of
+        the already-active turn; genuine approval/tool resumes retain the core
+        abort-then-prompt behavior.
+        """
+        if command.command_type != "resume" or command.payload.get("recovery_attempt") is None:
+            return super().command_with_context(
+                command,
+                reference_context=reference_context,
+                reference_images=reference_images,
+            )
+
+        with self._lock:
+            session = self._sessions.get(command.run_id)
+            snapshot = self._snapshots.get(command.run_id)
+            if session is None or snapshot is None:
+                raise KeyError(command.run_id)
+
+            snapshot = snapshot.model_copy(
+                update={
+                    "status": "running",
+                    "desired_state": "running",
+                    "revision": snapshot.revision + 1,
+                }
+            )
+            message = str(
+                command.payload.get("message")
+                or "Resume the task from the current state and re-check your work."
+            )
+            message = self._authoritative_follow_up_prompt(snapshot.spec, message)
+
+            if bool(getattr(session, "_turn_active", False)):
+                # Pi explicitly supports steering while a turn is processing.
+                # Do not abort the freshly restarted initial turn.
+                session.steer(message)
+            else:
+                session.prompt(message)
+
+            self._snapshots[command.run_id] = snapshot
+            return snapshot
 
 
 __all__ = [
