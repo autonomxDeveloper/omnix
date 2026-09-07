@@ -17,6 +17,48 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _retire_stale_quality_commands(
+    connection: Any,
+    context: TenantContext,
+    revision: TaskRevision,
+) -> None:
+    """Consume pending internal quality resumes from superseded task revisions.
+
+    A quality-stage transition and its resume prompt are committed together, so
+    a crash can legitimately leave the resume command pending. If the user then
+    steers the run to a new TaskRevision before that command is replayed, the old
+    prompt is no longer authoritative. Retire only Omnix-internal quality resumes
+    and only when ``revision`` is the current latest revision; user commands and
+    recovery commands without quality identity remain untouched.
+    """
+
+    row = connection.execute(
+        """
+        SELECT revision_id
+          FROM omnix_agent_task_revisions
+         WHERE workspace_id = %s AND run_id = %s
+         ORDER BY sequence DESC
+         LIMIT 1
+        """,
+        (context.workspace_id, revision.run_id),
+    ).fetchone()
+    if row is None or str(row[0]) != revision.revision_id:
+        return
+    connection.execute(
+        """
+        UPDATE omnix_agent_run_commands
+           SET status = 'consumed', consumed_at = CURRENT_TIMESTAMP
+         WHERE workspace_id = %s
+           AND run_id = %s
+           AND status = 'pending'
+           AND command_type = 'resume'
+           AND payload ? 'quality_stage'
+           AND (payload ->> 'task_revision_id') IS DISTINCT FROM %s
+        """,
+        (context.workspace_id, revision.run_id, revision.revision_id),
+    )
+
+
 def persist_task_revision_contract(connection: Any, context: TenantContext, revision: TaskRevision) -> None:
     connection.execute(
         """
@@ -35,6 +77,7 @@ def persist_task_revision_contract(connection: Any, context: TenantContext, revi
             revision.revision_id,
         ),
     )
+    _retire_stale_quality_commands(connection, context, revision)
 
 
 def hydrate_task_revision(connection: Any, context: TenantContext, revision: TaskRevision) -> TaskRevision:
