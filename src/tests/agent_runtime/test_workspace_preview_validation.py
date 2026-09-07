@@ -158,3 +158,5 @@ def test_pi_guard_rejects_shell_preview_and_prompt_uses_managed_preview() -> Non
     assert "workspace_preview" in runtime
     assert "automatically tears down the workspace preview and browser session" in runtime
     assert "workspace_preview: true" in broker_extension
+    assert "usedManagedWorkspacePreview" in broker_extension
+    assert "Managed workspace preview cleanup is Omnix-owned" in broker_extension
