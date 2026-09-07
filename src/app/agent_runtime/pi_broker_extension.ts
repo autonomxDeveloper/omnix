@@ -5,6 +5,7 @@ export default function (pi: ExtensionAPI) {
   const runId = process.env.OMNIX_AGENT_RUN_ID || "";
   const baseUrl = process.env.OMNIX_AGENT_BROKER_URL || "http://127.0.0.1:8000/api/agent-runs";
   const allowed = new Set<string>(JSON.parse(process.env.OMNIX_AGENT_EXTERNAL_CAPABILITIES || "[]"));
+  let usedManagedWorkspacePreview = false;
   if (!runId || allowed.size === 0) return;
 
   pi.registerTool({
@@ -16,6 +17,7 @@ export default function (pi: ExtensionAPI) {
       "Use omnix_capability only with capability IDs issued in the task authority.",
       "If omnix_capability reports approval is required, do not claim the action happened; wait for approval and retry with the approval_id.",
       "For local web/UI validation, call browser.open with input { workspace_preview: true, path: '/<route>' } instead of starting npm/vite through the shell. Omnix owns the exact-worktree preview lifecycle and automatically cleans it up after a passing deterministic browser assertion.",
+      "After a managed workspace preview has been used, do not request browser.close for cleanup; Omnix owns cleanup and suppresses redundant close calls so they cannot create approval waits.",
     ],
     parameters: Type.Object({
       capability_id: Type.String(),
@@ -26,6 +28,17 @@ export default function (pi: ExtensionAPI) {
       if (!allowed.has(params.capability_id)) {
         return { content: [{ type: "text", text: "Blocked: capability is outside the issued Omnix RunSpec." }], details: { blocked: true } };
       }
+      if (params.capability_id === "browser.close" && usedManagedWorkspacePreview) {
+        return {
+          content: [{ type: "text", text: "Managed workspace preview cleanup is Omnix-owned; no explicit browser.close call is required." }],
+          details: {
+            capability_id: "browser.close",
+            executed: true,
+            approval_required: false,
+            managed_cleanup: true,
+          },
+        };
+      }
       const response = await fetch(`${baseUrl}/${encodeURIComponent(runId)}/capabilities/${params.capability_id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -35,6 +48,13 @@ export default function (pi: ExtensionAPI) {
       const payload = await response.json();
       if (!response.ok) return { content: [{ type: "text", text: `Omnix broker error: ${JSON.stringify(payload)}` }], details: { error: true, payload } };
       if (payload.approval_required) return { content: [{ type: "text", text: `Approval required before ${params.capability_id}. approval_id=${payload.approval_id}` }], details: payload };
+      if (
+        params.capability_id === "browser.open"
+        && params.input?.workspace_preview === true
+        && payload.executed === true
+      ) {
+        usedManagedWorkspacePreview = true;
+      }
       return { content: [{ type: "text", text: JSON.stringify(payload.result) }], details: payload };
     },
   });
