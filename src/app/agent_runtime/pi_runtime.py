@@ -46,7 +46,12 @@ WORKTREE UI PREVIEW — for governed browser validation of local web/UI changes,
 # successful settle and later consume stalled-run recovery attempts. Keep the
 # core implementation stable, but install a narrow public-runtime normalization
 # hook that turns terminal provider failures into explicit run failures.
-_CORE_NORMALIZE_PI_EVENT = _pi_runtime_core.normalize_pi_event
+_CORE_NORMALIZE_PI_EVENT = getattr(
+    _pi_runtime_core,
+    "_omnix_base_normalize_pi_event",
+    _pi_runtime_core.normalize_pi_event,
+)
+_pi_runtime_core._omnix_base_normalize_pi_event = _CORE_NORMALIZE_PI_EVENT
 _LAST_PROVIDER_FAILURE: dict[str, str] = {}
 
 
@@ -64,7 +69,10 @@ def _provider_failure_event(
         return None
     stop_reason = str(message.get("stopReason") or "").strip().casefold()
     error_message = str(message.get("errorMessage") or "").strip()
-    if stop_reason not in {"error", "failed"} and not error_message:
+    # Intentional pause/cancel/recovery aborts also carry errorMessage="Request aborted".
+    # Only provider terminal stop reasons are failures here; abort remains a normal
+    # control-flow boundary handled by the existing resume machinery.
+    if stop_reason not in {"error", "failed"}:
         return None
     if not error_message:
         error_message = f"Pi model turn ended with stopReason={stop_reason or 'error'}"
