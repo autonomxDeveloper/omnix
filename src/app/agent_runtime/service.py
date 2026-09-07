@@ -128,19 +128,18 @@ def _is_terminal_self_review_message(event: AgentEvent) -> bool:
 
 
 def _terminal_message_settles_quality_stage(event: AgentEvent, stage: str) -> bool:
-    """Treat only a structured verdict as an early self-review boundary.
+    """Treat only a structured verdict in the explicit self-review stage as a boundary.
 
     Normal Pi sessions emit ``run.settled`` after terminal assistant text. If
-    malformed prose were allowed to settle the quality stage immediately, the
-    retry prompt could be sent before that trailing settle event and the same
-    turn could burn two protocol retries. Structured verdicts are safe to
-    advance immediately; malformed or empty turns are handled at ``run.settled``
-    or by durable stalled-run recovery.
+    malformed prose were allowed to settle the self-review stage immediately,
+    the retry prompt could be sent before that trailing settle event and the
+    same turn could burn two protocol retries. A structured verdict may advance
+    early only after Omnix has durably entered ``self_review``. Structured JSON
+    emitted by implementation or repair turns is never self-review evidence;
+    those stages advance only at the Pi settle boundary.
     """
 
-    if stage == "self_review":
-        return _is_structured_self_review_message(event)
-    return stage in {"implementing", "repairing"} and _is_structured_self_review_message(event)
+    return stage == "self_review" and _is_structured_self_review_message(event)
 
 
 def _self_review_payload_is_protocol_valid(text: str, revision: TaskRevision) -> bool:
@@ -363,19 +362,17 @@ def _self_review_response_from_repository(
     workspace_state_id: str,
     page_size: int = 5000,
 ) -> str:
-    """Read the current review response without a first-page event limit.
+    """Read only the response emitted after the exact self-review stage marker.
 
-    Pi can emit the structured verdict as the terminal implementation response
-    immediately before Omnix persists the self-review stage marker. Preserve
-    that response only when it follows validation bound to the exact final
-    workspace state. Any visible response after the marker remains
-    authoritative, including malformed output that must trigger a retry.
+    The explicit ``quality.stage=self_review`` event is the causal boundary for
+    mandatory self-review. Implementation/validation prose or review-shaped JSON
+    emitted before that marker must never be reused as self-review evidence.
+    Binding the marker to task revision, attempt, and workspace state also keeps
+    a refreshed self-review from consuming a verdict for an older final state.
     """
 
     after_sequence = 0
     response = ""
-    validated_fallback = ""
-    final_state_validated = False
     marker_seen = False
     while True:
         batch = repository.list_events(
@@ -387,37 +384,28 @@ def _self_review_response_from_repository(
             break
         for item in batch:
             if (
-                item.event_type == "quality.validation_recorded"
-                and str(item.payload.get("task_revision_id") or "") == task_revision_id
-                and str(item.payload.get("workspace_state_id") or "") == workspace_state_id
-                and bool(item.payload.get("success"))
-            ):
-                final_state_validated = True
-                validated_fallback = ""
-                continue
-            if (
                 item.event_type == "quality.stage"
                 and str(item.payload.get("stage") or "") == "self_review"
                 and int(item.payload.get("attempt") or 0) == attempt
                 and str(item.payload.get("task_revision_id") or "") == task_revision_id
+                and str(item.payload.get("workspace_state_id") or "") == workspace_state_id
             ):
                 marker_seen = True
                 response = ""
                 continue
             if (
-                item.event_type == "model.message"
+                marker_seen
+                and item.event_type == "model.message"
                 and item.payload.get("phase") in {"message_end", "turn_end"}
             ):
                 text = str(item.payload.get("text") or "").strip()
-                if marker_seen and text:
+                if text:
                     response = text
-                elif final_state_validated and text and review_payload_from_text(text):
-                    validated_fallback = text
         sequence = batch[-1].sequence
         if len(batch) < page_size or sequence is None or int(sequence) <= after_sequence:
             break
         after_sequence = int(sequence)
-    return (response or validated_fallback) if marker_seen else ""
+    return response if marker_seen else ""
 
 
 _READ_REVIEW_CAPABILITIES = [
