@@ -442,11 +442,15 @@ def test_pre_review_gate_rejects_stale_or_extraneous_browser_noop_proof() -> Non
         validation_id="browser-validation",
         success=True,
         workspace_state_id="state-old",
+        task_revision_id="revision-1",
+        covers_requirement_ids=["requirement-1"],
     )
     current = SimpleNamespace(
         validation_id="browser-validation",
         success=True,
         workspace_state_id="state-1",
+        task_revision_id="revision-1",
+        covers_requirement_ids=["requirement-1"],
     )
     browser_revision = _revision().model_copy(
         update={
