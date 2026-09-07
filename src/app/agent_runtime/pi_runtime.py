@@ -35,6 +35,7 @@ _ENGINEERING_WORKFLOW = """MANDATORY ENGINEERING WORKFLOW FOR MUTATING CODING TA
 9. SELF-REVIEW — critically review the change as if it were another engineer's patch. Repair incomplete requirements or regressions before settling.
 10. REQUEST COMPLETION — Pi settling is only a completion request. Omnix will independently validate/review the exact final state and is the only authority that can mark the run completed.
 GOVERNED CAPABILITIES — capabilities listed under `Issued governed external capabilities` are already issued by Omnix. When one is needed, invoke it through `omnix_capability`; do not ask the user to issue or enable an already-listed capability.
+WORKTREE UI PREVIEW — for governed browser validation of local web/UI changes, never launch `npm run dev`, Vite, `Start-Process`, or another long-lived preview server through shell commands. Invoke `browser.open` through `omnix_capability` with input `{\"workspace_preview\": true, \"path\": \"/<route>\"}`. Omnix resolves the exact run worktree, allocates the loopback port, and owns preview cleanup. Finish with the required deterministic `browser.assert_*` proof; a passing assertion automatically tears down the workspace preview and browser session, so do not call `browser.close` merely for cleanup.
 """
 
 
