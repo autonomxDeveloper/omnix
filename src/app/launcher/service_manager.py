@@ -385,7 +385,7 @@ def build_default_service_specs(root: Path | None = None) -> list[ServiceSpec]:
                 "HERMES_BASE_URL": hermes_base_url,
                 "OMNIX_TRADING_HERMES_RESEARCH_ENABLED": trading_hermes_enabled,
                 "OMNIX_AGENT_DEBUG_LOGS": os.environ.get(
-                    "OMNIX_AGENT_DEBUG_LOGS", "1"
+                    "OMNIX_AGENT_DEBUG_LOGS", "0"
                 ),
                 "OMNIX_AGENT_LOG_DIR": os.environ.get(
                     "OMNIX_AGENT_LOG_DIR",
