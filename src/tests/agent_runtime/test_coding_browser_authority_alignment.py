@@ -11,14 +11,25 @@ from app.agent_runtime.evidence import classify_evidence, compile_task_authority
 from app.agent_runtime.profiles import get_agent_profile
 
 
+# Representative coverage for every UI/web vocabulary family that the coding
+# quality compiler can turn into mandatory governed-browser validation.
 _UI_MUTATION_TASKS = (
     "remove the text from chat header",
+    "update the footer text",
     "remove the tools option from the sidebar",
     "change the toolbar minimize button to an arrow",
-    "update the footer text",
+    "update the frontend button",
+    "update the web page",
+    "change the CSS form",
+    "update the UI dialog",
+    "update the UX dropdown",
     "fix the React modal button",
-    "change the CSS for the web page",
-    "update the UI component layout",
+    "update the TypeScript component",
+    "update the TSX component",
+    "update the JSX component",
+    "change the theme menu",
+    "fix light mode tabs",
+    "fix dark mode layout",
 )
 
 
