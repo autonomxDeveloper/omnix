@@ -9,7 +9,9 @@ The agent runtime has two useful timelines:
 This module records both timelines as JSONL under ``resources/logs/agent``.
 Logging is deliberately observational: failures while writing diagnostics are
 swallowed so a full disk or unavailable log directory cannot change agent
-authority or lifecycle behavior.
+authority or lifecycle behavior. Because these traces can contain user prompts,
+repository content, and tool output, collection is opt-in rather than enabled by
+default and log files are created owner-readable/writable only.
 """
 from __future__ import annotations
 
@@ -65,7 +67,7 @@ _last_cleanup_date: str | None = None
 
 
 def agent_debug_logging_enabled() -> bool:
-    value = os.getenv(AGENT_DEBUG_ENABLED_ENV, "1").strip().lower()
+    value = os.getenv(AGENT_DEBUG_ENABLED_ENV, "0").strip().lower()
     return value not in {"0", "false", "no", "off", "disabled"}
 
 
@@ -224,7 +226,7 @@ def _write_event(payload: dict[str, Any]) -> None:
                 targets.append(directory / f"run-{_safe_filename(run_id)}.jsonl")
             encoded = line.encode("utf-8", errors="replace")
             for path in dict.fromkeys(str(item) for item in targets):
-                fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+                fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
                 try:
                     os.write(fd, encoded)
                 finally:
