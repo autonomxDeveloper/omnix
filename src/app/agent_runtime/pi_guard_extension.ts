@@ -122,6 +122,7 @@ function issuedCommandPrefixes(): string[] {
 
 const forbiddenShellSyntax = /[\r\n;&|><`]/;
 const environmentExpansion = /(?:\$\{|\$[A-Za-z_]|%[A-Za-z_][A-Za-z0-9_]*%|~[\\/])/;
+const managedPreviewShellCommand = /(?:\bnpm(?:\.cmd)?\b[\s\S]{0,320}\brun\b[\s\S]{0,120}\b(?:dev|preview)\b|\b(?:npx\s+)?vite(?:\.cmd)?\b)/i;
 
 function commandScopeAllowed(command: string): boolean {
   if (environmentExpansion.test(command)) return false;
@@ -152,6 +153,9 @@ function commandSafetyRejectionReason(command: unknown): string | null {
   const normalized = command.trim().toLowerCase();
   if (forbiddenShellSyntax.test(normalized) || normalized.includes("$(")) {
     return "Omnix command policy blocks shell chaining, pipes, redirection, command substitution, and multi-command syntax. Run each allowed command as a separate tool call.";
+  }
+  if (managedPreviewShellCommand.test(normalized)) {
+    return "Omnix owns the local web preview lifecycle. Do not launch npm/vite dev or preview servers through shell commands. For governed UI validation, call browser.open through omnix_capability with input { workspace_preview: true, path: \"/<route>\" }; Omnix will allocate a loopback port and clean it up automatically.";
   }
   if (!commandScopeAllowed(command)) {
     return "Omnix command policy blocked an out-of-scope path or unsafe environment/path expansion. Keep command paths inside the issued workspace.";
