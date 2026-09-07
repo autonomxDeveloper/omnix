@@ -502,6 +502,11 @@ def _start_workspace_preview(
 
 def _best_effort_validation_cleanup(request: AssistantToolRequest) -> dict[str, bool]:
     preview_stopped = _stop_workspace_preview(request)
+    if not preview_stopped:
+        return {
+            "workspace_preview_stopped": False,
+            "browser_closed": False,
+        }
     browser_closed = False
     try:
         completed = _run(_base_argv(request) + ["close"], timeout_seconds=5)
@@ -509,7 +514,7 @@ def _best_effort_validation_cleanup(request: AssistantToolRequest) -> dict[str, 
     except (OSError, subprocess.SubprocessError):
         browser_closed = False
     return {
-        "workspace_preview_stopped": preview_stopped,
+        "workspace_preview_stopped": True,
         "browser_closed": browser_closed,
     }
 
@@ -711,8 +716,8 @@ def run_browser_tool_request(request: AssistantToolRequest) -> AssistantToolResu
             )
         output["assertion_passed"] = True
         # A passing deterministic assertion is the terminal proof required by
-        # coding validation. Cleanup is internal and best effort so browser.close
-        # can never create a user approval dependency merely to release resources.
+        # coding validation. Cleanup applies only when this run owns a workspace
+        # preview; unrelated governed browser sessions retain their old behavior.
         output["cleanup"] = _best_effort_validation_cleanup(request)
     if request.action_id == "browser.snapshot" and stdout.strip():
         try:
