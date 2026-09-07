@@ -121,13 +121,21 @@ def test_self_review_response_requires_exact_workspace_state_marker() -> None:
         ),
     ]
 
+    repository = _Repository(events)
     assert _self_review_response_from_repository(
-        _Repository(events),
+        repository,
         run_id="run-1",
         attempt=1,
         task_revision_id="revision-1",
         workspace_state_id="state-current",
     ) == current_payload
+    assert _self_review_response_from_repository(
+        repository,
+        run_id="run-1",
+        attempt=1,
+        task_revision_id="revision-1",
+        workspace_state_id="state-old",
+    ) == ""
 
 
 def test_post_marker_structured_json_is_accepted_as_self_review_response() -> None:
