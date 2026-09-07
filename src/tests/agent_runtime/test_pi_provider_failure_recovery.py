@@ -1,0 +1,157 @@
+from __future__ import annotations
+
+import threading
+
+from app.agent_runtime.contracts import (
+    AgentRunCommand,
+    AgentRunSnapshot,
+    AgentRunSpec,
+    ModelRef,
+)
+from app.agent_runtime.pi_runtime import PiAgentRuntime, normalize_pi_event
+
+
+def _spec(run_id: str) -> AgentRunSpec:
+    return AgentRunSpec(
+        run_id=run_id,
+        task="Finish validating the current coding change",
+        objective="Finish validating the current coding change",
+        profile="coding",
+        model=ModelRef(provider_id="chatgpt_codex", model_id="gpt-5.6-luna"),
+    )
+
+
+def _usage_limit_payload(event_type: str) -> dict[str, object]:
+    return {
+        "type": event_type,
+        "message": {
+            "role": "assistant",
+            "model": "chatgpt_codex::gpt-5.6-luna",
+            "stopReason": "error",
+            "errorMessage": (
+                "ConnectionError: {'message': \"You've hit your usage limit. Try again later.\", "
+                "'codexErrorInfo': 'usageLimitExceeded'}"
+            ),
+            "content": [],
+        },
+    }
+
+
+def test_terminal_provider_usage_limit_becomes_explicit_run_failure() -> None:
+    event = normalize_pi_event(
+        "run-provider-limit-1",
+        _usage_limit_payload("message_end"),
+        task_revision_id="revision-1",
+    )
+
+    assert event is not None
+    assert event.event_type == "run.failed"
+    assert event.payload["provider_error_code"] == "model_usage_limit_exceeded"
+    assert event.payload["task_revision_id"] == "revision-1"
+    assert str(event.payload["error"]).startswith("model_usage_limit_exceeded:")
+
+
+def test_duplicate_turn_end_for_same_provider_failure_is_suppressed() -> None:
+    run_id = "run-provider-limit-duplicate"
+
+    first = normalize_pi_event(run_id, _usage_limit_payload("message_end"))
+    second = normalize_pi_event(run_id, _usage_limit_payload("turn_end"))
+
+    assert first is not None
+    assert first.event_type == "run.failed"
+    assert second is None
+
+
+def test_normal_terminal_assistant_message_is_still_model_message() -> None:
+    event = normalize_pi_event(
+        "run-normal-message",
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "Validation passed."}],
+            },
+        },
+    )
+
+    assert event is not None
+    assert event.event_type == "model.message"
+    assert event.payload["text"] == "Validation passed."
+
+
+def test_stalled_recovery_steers_fresh_active_turn_without_abort_or_second_prompt() -> None:
+    actions: list[tuple[str, str]] = []
+
+    class Session:
+        _turn_active = True
+
+        def steer(self, message: str, **_kwargs) -> None:
+            actions.append(("steer", message))
+
+        def abort(self) -> None:
+            actions.append(("abort", ""))
+
+        def prompt(self, message: str, **_kwargs) -> None:
+            actions.append(("prompt", message))
+
+    spec = _spec("run-stalled-recovery-active")
+    runtime = object.__new__(PiAgentRuntime)
+    runtime._lock = threading.RLock()
+    runtime._sessions = {spec.run_id: Session()}
+    runtime._snapshots = {
+        spec.run_id: AgentRunSnapshot(
+            run_id=spec.run_id,
+            spec=spec,
+            status="resume_requested",
+        )
+    }
+
+    result = runtime.command_with_context(
+        AgentRunCommand(
+            run_id=spec.run_id,
+            command_type="resume",
+            payload={
+                "message": "Recover the validating stage from durable state.",
+                "recovery_attempt": 1,
+            },
+        )
+    )
+
+    assert result.status == "running"
+    assert len(actions) == 1
+    assert actions[0][0] == "steer"
+    assert "Recover the validating stage from durable state." in actions[0][1]
+
+
+def test_stalled_recovery_prompts_normally_when_session_is_already_idle() -> None:
+    actions: list[tuple[str, str]] = []
+
+    class Session:
+        _turn_active = False
+
+        def steer(self, message: str, **_kwargs) -> None:
+            actions.append(("steer", message))
+
+        def prompt(self, message: str, **_kwargs) -> None:
+            actions.append(("prompt", message))
+
+    spec = _spec("run-stalled-recovery-idle")
+    runtime = object.__new__(PiAgentRuntime)
+    runtime._lock = threading.RLock()
+    runtime._sessions = {spec.run_id: Session()}
+    runtime._snapshots = {
+        spec.run_id: AgentRunSnapshot(run_id=spec.run_id, spec=spec, status="resume_requested")
+    }
+
+    runtime.command_with_context(
+        AgentRunCommand(
+            run_id=spec.run_id,
+            command_type="resume",
+            payload={"message": "Resume validation.", "recovery_attempt": 2},
+        )
+    )
+
+    assert len(actions) == 1
+    assert actions[0][0] == "prompt"
+    assert "Resume validation." in actions[0][1]
