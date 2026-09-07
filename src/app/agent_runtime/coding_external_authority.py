@@ -27,7 +27,7 @@ _BROWSER_EXPLICIT = re.compile(
 # Omnix itself required. Representative parity is regression-tested in
 # test_coding_browser_authority_alignment.py.
 _UI_SURFACE = re.compile(
-    r"\b(?:frontend|front[- ]end|ui|ux|web(?:\s+(?:app|page|screen))?|html|css|react|vue|tsx?|jsx?|"
+    r"\b(?:frontend|front[- ]end|ui|ux|web(?:\s+(?:app|page|screen))?|html|css|react|vue|typescript|tsx?|jsx?|"
     r"button|icon|element|component|layout|form|modal|dialog|dropdown|menu|tab|side\s*bar|sidebar|"
     r"tool\s*bar|toolbar|header|footer|input|textarea|tooltip|badge|chip|theme|light\s+mode|dark\s+mode)\b",
     re.I,
