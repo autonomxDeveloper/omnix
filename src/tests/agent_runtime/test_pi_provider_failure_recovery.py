@@ -51,15 +51,17 @@ def test_terminal_provider_usage_limit_becomes_explicit_run_failure() -> None:
     assert str(event.payload["error"]).startswith("model_usage_limit_exceeded:")
 
 
-def test_duplicate_turn_end_for_same_provider_failure_is_suppressed() -> None:
+def test_duplicate_turn_end_and_settle_after_provider_failure_are_suppressed() -> None:
     run_id = "run-provider-limit-duplicate"
 
     first = normalize_pi_event(run_id, _usage_limit_payload("message_end"))
-    second = normalize_pi_event(run_id, _usage_limit_payload("turn_end"))
+    duplicate = normalize_pi_event(run_id, _usage_limit_payload("turn_end"))
+    settle = normalize_pi_event(run_id, {"type": "agent_settled"})
 
     assert first is not None
     assert first.event_type == "run.failed"
-    assert second is None
+    assert duplicate is None
+    assert settle is None
 
 
 def test_normal_terminal_assistant_message_is_still_model_message() -> None:
@@ -155,3 +157,40 @@ def test_stalled_recovery_prompts_normally_when_session_is_already_idle() -> Non
     assert len(actions) == 1
     assert actions[0][0] == "prompt"
     assert "Resume validation." in actions[0][1]
+
+
+def test_self_review_recovery_keeps_interrupted_turn_abort_then_prompt_semantics() -> None:
+    actions: list[tuple[str, str]] = []
+
+    class Session:
+        _turn_active = True
+
+        def abort(self) -> None:
+            actions.append(("abort", ""))
+
+        def prompt(self, message: str, **_kwargs) -> None:
+            actions.append(("prompt", message))
+
+    spec = _spec("run-self-review-recovery")
+    runtime = object.__new__(PiAgentRuntime)
+    runtime._lock = threading.RLock()
+    runtime._sessions = {spec.run_id: Session()}
+    runtime._snapshots = {
+        spec.run_id: AgentRunSnapshot(run_id=spec.run_id, spec=spec, status="resume_requested")
+    }
+
+    runtime.command_with_context(
+        AgentRunCommand(
+            run_id=spec.run_id,
+            command_type="resume",
+            payload={
+                "message": (
+                    "This is an internal quality/self-review turn that did not finish its protocol. "
+                    "Return ONLY the required structured verdict JSON."
+                ),
+                "recovery_attempt": 1,
+            },
+        )
+    )
+
+    assert [action for action, _ in actions] == ["abort", "prompt"]
