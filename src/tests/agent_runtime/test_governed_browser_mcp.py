@@ -21,6 +21,11 @@ from app.assistant_tools.models import AssistantToolRequest
 from app.assistant_tools.validation import is_valid_action_id
 
 
+@pytest.fixture(autouse=True)
+def _use_agent_browser_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OMNIX_AGENT_BROWSER_BACKEND", "agent-browser")
+
+
 def _write_policy(path: Path) -> None:
     path.write_text(
         json.dumps(

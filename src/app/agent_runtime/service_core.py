@@ -235,6 +235,26 @@ class AgentRunService:
         self._supervisor_started = False
         self._supervisor_stop = threading.Event()
 
+    def _close_terminal_runtime(self, run_id: str) -> None:
+        """Stop a local runtime as soon as durable state becomes terminal."""
+
+        runtime = getattr(self, "runtime", None)
+        close_run = getattr(runtime, "close_run", None)
+        if not callable(close_run):
+            return
+        try:
+            close_run(run_id)
+        except Exception as exc:
+            log_agent_activity(
+                "service.runtime_terminal_cleanup_failed",
+                category="service",
+                level="error",
+                run_id=run_id,
+                fields={"worker_id": self.worker_id},
+                error=exc,
+                include_traceback=True,
+            )
+
     def start(self, spec: AgentRunSpec) -> AgentRunSnapshot:
         return self.start_with_context(spec)
 
@@ -446,6 +466,7 @@ class AgentRunService:
                         issued.run_id,
                         expected_revision=current.revision,
                         status="failed",
+                        desired_state="cancelled",
                         last_error=f"{type(exc).__name__}: {exc}"[:2000],
                     )
                 self._maybe_finalize_parent_in_repository(repository, issued.run_id)
@@ -1258,6 +1279,7 @@ class AgentRunService:
                 parent.run_id,
                 expected_revision=parent.revision,
                 status="failed",
+                desired_state="cancelled",
                 last_error="acceptance_failed:child_run_failed",
             )
         else:
@@ -1403,6 +1425,7 @@ class AgentRunService:
             current.run_id,
             expected_revision=latest.revision,
             status="completed" if passed else "failed",
+            desired_state=None if passed else "cancelled",
             worker_id=self.worker_id,
             last_error=None if passed else "acceptance_failed:" + ",".join(failures),
         )
@@ -1449,7 +1472,9 @@ class AgentRunService:
                         fields={"event_type": event.event_type, "status": current.status},
                     )
                     work.commit()
+                    self._close_terminal_runtime(event.run_id)
                     return
+                terminal_runtime = False
                 if _is_clarification_request(event):
                     repository.update_state(
                         event.run_id,
@@ -1490,11 +1515,21 @@ class AgentRunService:
                         event.run_id,
                         expected_revision=current.revision,
                         status="failed",
+                        desired_state="cancelled",
                         worker_id=self.worker_id,
                         last_error=str(event.payload.get("error") or "Pi runtime failed")[:2000],
                     )
                 self._maybe_finalize_parent_in_repository(repository, event.run_id)
+                latest = repository.get_run(event.run_id)
+                terminal_runtime = latest is not None and latest.status in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                }
                 work.commit()
+                if terminal_runtime:
+                    self._close_terminal_runtime(event.run_id)
+
     @staticmethod
     def _events_for_revision(
         events: list[AgentEvent],

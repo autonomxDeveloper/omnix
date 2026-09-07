@@ -1001,9 +1001,15 @@ class AgentRunService(_CoreAgentRunService):
                 )
                 if current.status in _TERMINAL or current.status in _BLOCKED_SETTLE:
                     work.commit()
+                    if current.status in _TERMINAL:
+                        self._close_terminal_runtime(event.run_id)
                     return
                 post_action = self._advance_quality_on_settle(repository, current)
+                latest = repository.get_run(event.run_id)
+                terminal_runtime = latest is not None and latest.status in _TERMINAL
                 work.commit()
+                if terminal_runtime:
+                    self._close_terminal_runtime(event.run_id)
         self._execute_quality_action(post_action)
 
     def _queue_quality_resume(
@@ -1244,6 +1250,7 @@ class AgentRunService(_CoreAgentRunService):
                 current.run_id,
                 expected_revision=current.revision,
                 status="failed",
+                desired_state="cancelled",
                 last_error="quality_task_revision_unavailable",
             )
             return None

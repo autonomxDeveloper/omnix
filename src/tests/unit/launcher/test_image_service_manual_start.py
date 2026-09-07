@@ -48,6 +48,51 @@ def test_gateway_defaults_agent_repository_to_launcher_checkout(monkeypatch) -> 
     assert gateway.env["OMNIX_AGENT_DEFAULT_REPOSITORY"] == str(root)
 
 
+def test_gateway_defaults_agent_debug_logging_to_resources_logs(monkeypatch) -> None:
+    root = Path("F:/LLM/omnix")
+    monkeypatch.delenv("OMNIX_AGENT_DEBUG_LOGS", raising=False)
+    monkeypatch.delenv("OMNIX_AGENT_LOG_DIR", raising=False)
+    monkeypatch.delenv("OMNIX_AGENT_LOG_RETENTION_DAYS", raising=False)
+    monkeypatch.delenv("OMNIX_AGENT_LOG_MAX_FIELD_CHARS", raising=False)
+
+    specs = build_default_service_specs(root)
+    gateway = {spec.service_id: spec for spec in specs}["gateway"]
+
+    assert gateway.env["OMNIX_AGENT_DEBUG_LOGS"] == "1"
+    assert gateway.env["OMNIX_AGENT_LOG_DIR"] == str(
+        root / "resources" / "logs" / "agent"
+    )
+    assert gateway.env["OMNIX_AGENT_LOG_RETENTION_DAYS"] == "30"
+    assert gateway.env["OMNIX_AGENT_LOG_MAX_FIELD_CHARS"] == "12000"
+    assert gateway.env["OMNIX_AGENT_BROWSER_BACKEND"] == "playwright"
+
+
+def test_gateway_preserves_agent_debug_logging_overrides(monkeypatch) -> None:
+    root = Path("F:/LLM/omnix")
+    monkeypatch.setenv("OMNIX_AGENT_DEBUG_LOGS", "1")
+    monkeypatch.setenv("OMNIX_AGENT_LOG_DIR", "D:/omnix-agent-logs")
+    monkeypatch.setenv("OMNIX_AGENT_LOG_RETENTION_DAYS", "7")
+    monkeypatch.setenv("OMNIX_AGENT_LOG_MAX_FIELD_CHARS", "2048")
+
+    specs = build_default_service_specs(root)
+    gateway = {spec.service_id: spec for spec in specs}["gateway"]
+
+    assert gateway.env["OMNIX_AGENT_DEBUG_LOGS"] == "1"
+    assert gateway.env["OMNIX_AGENT_LOG_DIR"] == "D:/omnix-agent-logs"
+    assert gateway.env["OMNIX_AGENT_LOG_RETENTION_DAYS"] == "7"
+    assert gateway.env["OMNIX_AGENT_LOG_MAX_FIELD_CHARS"] == "2048"
+
+
+def test_gateway_preserves_browser_backend_override(monkeypatch) -> None:
+    root = Path("F:/LLM/omnix")
+    monkeypatch.setenv("OMNIX_AGENT_BROWSER_BACKEND", "agent-browser")
+
+    specs = build_default_service_specs(root)
+    gateway = {spec.service_id: spec for spec in specs}["gateway"]
+
+    assert gateway.env["OMNIX_AGENT_BROWSER_BACKEND"] == "agent-browser"
+
+
 def test_gateway_preserves_explicit_agent_repository_override(monkeypatch) -> None:
     root = Path("F:/LLM/omnix")
     override = "D:/work/other-project"

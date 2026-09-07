@@ -579,11 +579,11 @@ def create_gateway_app(
 
     @gateway.get("/api/providers", response_model=ProviderFacadePayload, tags=["providers"])
     async def providers() -> ProviderFacadePayload:
-        return get_provider_facade().payload()
+        return await asyncio.to_thread(lambda: get_provider_facade().payload())
 
     @gateway.get("/api/models", response_model=ProviderFacadePayload, tags=["providers"])
     async def models() -> ProviderFacadePayload:
-        return get_provider_facade().payload()
+        return await asyncio.to_thread(lambda: get_provider_facade().payload())
 
     @gateway.get("/api/providers/chatgpt-codex/auth", response_model=CodexAuthStatus, tags=["providers"])
     async def chatgpt_codex_auth_status() -> CodexAuthStatus:

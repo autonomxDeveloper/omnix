@@ -21,6 +21,9 @@ class _FakeWork:
     def commit(self) -> None:
         pass
 
+    def rollback(self) -> None:
+        pass
+
 
 class _TrackingLock:
     def __init__(self) -> None:
@@ -136,6 +139,146 @@ def test_command_failure_terminalizes_cancel_request(monkeypatch) -> None:
     assert updates[0][1]["status"] == "cancelled"
     assert updates[0][1]["desired_state"] == "cancelled"
     assert "Pi exited" in updates[0][1]["last_error"]
+
+
+def test_runtime_failure_cancels_desired_state_and_closes_runtime(monkeypatch) -> None:
+    spec = AgentRunSpec(
+        run_id="run-runtime-failed",
+        task="research",
+        model=ModelRef(provider_id="test", model_id="model"),
+    )
+    state = {"snapshot": AgentRunSnapshot(run_id=spec.run_id, spec=spec, status="running")}
+    updates = []
+    closed = MagicMock()
+
+    class Repository:
+        def __init__(self, _connection, _context):
+            pass
+
+        def get_run(self, _run_id):
+            return state["snapshot"]
+
+        def append_event(self, _event):
+            pass
+
+        def update_state(self, _run_id, **kwargs):
+            updates.append(kwargs)
+            state["snapshot"] = state["snapshot"].model_copy(update=kwargs)
+            return state["snapshot"]
+
+        def list_children(self, _run_id):
+            return []
+
+    service = object.__new__(AgentRunService)
+    service.database = object()
+    service.context = object()
+    service.worker_id = "worker-1"
+    service.runtime = SimpleNamespace(close_run=closed)
+    service._lock = _TrackingLock()
+
+    monkeypatch.setattr(service_module, "unit_of_work", lambda _database: _FakeWork())
+    monkeypatch.setattr(service_module, "PostgresAgentRunRepository", Repository)
+
+    service._persist_runtime_event(
+        AgentEvent(
+            run_id=spec.run_id,
+            event_type="run.failed",
+            payload={"error": "browser validation failed"},
+        )
+    )
+
+    assert updates[-1]["status"] == "failed"
+    assert updates[-1]["desired_state"] == "cancelled"
+    closed.assert_called_once_with(spec.run_id)
+
+
+def test_late_event_closes_stale_terminal_runtime(monkeypatch) -> None:
+    spec = AgentRunSpec(
+        run_id="run-terminal-runtime",
+        task="research",
+        model=ModelRef(provider_id="test", model_id="model"),
+    )
+    snapshot = AgentRunSnapshot(
+        run_id=spec.run_id,
+        spec=spec,
+        status="failed",
+        desired_state="running",
+    )
+    closed = MagicMock()
+
+    class Repository:
+        def __init__(self, _connection, _context):
+            pass
+
+        def get_run(self, _run_id):
+            return snapshot
+
+        def append_event(self, _event):
+            pass
+
+    service = object.__new__(AgentRunService)
+    service.database = object()
+    service.context = object()
+    service.worker_id = "worker-1"
+    service.runtime = SimpleNamespace(close_run=closed)
+    service._lock = _TrackingLock()
+
+    monkeypatch.setattr(service_module, "unit_of_work", lambda _database: _FakeWork())
+    monkeypatch.setattr(service_module, "PostgresAgentRunRepository", Repository)
+
+    service._persist_runtime_event(
+        AgentEvent(run_id=spec.run_id, event_type="run.started")
+    )
+
+    closed.assert_called_once_with(spec.run_id)
+
+
+def test_terminal_acceptance_closes_runtime_after_settled_event(monkeypatch) -> None:
+    spec = AgentRunSpec(
+        run_id="run-settled-runtime",
+        task="research",
+        model=ModelRef(provider_id="test", model_id="model"),
+    )
+    state = {"snapshot": AgentRunSnapshot(run_id=spec.run_id, spec=spec, status="running")}
+    closed = MagicMock()
+
+    class Repository:
+        def __init__(self, _connection, _context):
+            pass
+
+        def get_run(self, _run_id):
+            return state["snapshot"]
+
+        def append_event(self, _event):
+            pass
+
+        def update_state(self, _run_id, **kwargs):
+            state["snapshot"] = state["snapshot"].model_copy(update=kwargs)
+            return state["snapshot"]
+
+        def list_children(self, _run_id):
+            return []
+
+    service = object.__new__(AgentRunService)
+    service.database = object()
+    service.context = object()
+    service.worker_id = "worker-1"
+    service.runtime = SimpleNamespace(close_run=closed)
+    service._lock = _TrackingLock()
+    service._finalize_acceptance = lambda repository, current: repository.update_state(
+        current.run_id,
+        expected_revision=current.revision,
+        status="completed",
+    )
+
+    monkeypatch.setattr(service_module, "unit_of_work", lambda _database: _FakeWork())
+    monkeypatch.setattr(service_module, "PostgresAgentRunRepository", Repository)
+
+    service._persist_runtime_event(
+        AgentEvent(run_id=spec.run_id, event_type="run.settled")
+    )
+
+    closed.assert_called_once_with(spec.run_id)
 
 
 def test_stalled_run_is_restarted_from_durable_progress_checkpoint(monkeypatch) -> None:

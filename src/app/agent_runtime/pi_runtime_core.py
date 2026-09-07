@@ -701,6 +701,15 @@ class PiRpcSession:
                 )
                 continue
             event_type = str(payload.get("type") or "")
+            if self._terminal_seen:
+                log_agent_activity(
+                    "pi.rpc.event_ignored_after_terminal",
+                    category="rpc",
+                    level="warning",
+                    run_id=self.spec.run_id,
+                    fields={"line_number": line_number, "raw_event_type": event_type or None},
+                )
+                continue
             log_agent_activity(
                 "pi.rpc.event_received",
                 category="rpc",

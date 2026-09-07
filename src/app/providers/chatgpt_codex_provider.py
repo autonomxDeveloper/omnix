@@ -38,6 +38,7 @@ DEFAULT_REASONING_EFFORT = "medium"
 FAST_SERVICE_TIER = "fast"
 DEFAULT_CODEX_PATH = "codex"
 DEFAULT_TRANSPORT = "app_server"
+_MODEL_DISCOVERY_LOCK_TIMEOUT_SECONDS = 0.5
 
 
 class ChatGPTCodexProvider(BaseProvider):
@@ -278,14 +279,15 @@ class ChatGPTCodexProvider(BaseProvider):
 
     def get_models(self) -> List[ModelInfo]:
         fallback = self._fallback_model()
+        if not self._lock.acquire(timeout=_MODEL_DISCOVERY_LOCK_TIMEOUT_SECONDS):
+            return [fallback]
         try:
-            with self._lock:
-                self._ensure_app_server()
-                result = self._request(
-                    "model/list",
-                    {"limit": 100, "cursor": None, "includeHidden": False},
-                    timeout=min(float(self.config.timeout), 30.0),
-                )
+            self._ensure_app_server()
+            result = self._request(
+                "model/list",
+                {"limit": 100, "cursor": None, "includeHidden": False},
+                timeout=min(float(self.config.timeout), 30.0),
+            )
             models: list[ModelInfo] = []
             for row in result.get("data", []) if isinstance(result, dict) else []:
                 if not isinstance(row, dict) or row.get("hidden"):
@@ -311,6 +313,8 @@ class ChatGPTCodexProvider(BaseProvider):
             return models or [fallback]
         except Exception:
             return [fallback]
+        finally:
+            self._lock.release()
 
     def _fallback_model(self) -> ModelInfo:
         model = str(self.config.model or DEFAULT_CODEX_MODEL)
