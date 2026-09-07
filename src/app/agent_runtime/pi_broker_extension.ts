@@ -15,6 +15,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "Use omnix_capability only with capability IDs issued in the task authority.",
       "If omnix_capability reports approval is required, do not claim the action happened; wait for approval and retry with the approval_id.",
+      "For local web/UI validation, call browser.open with input { workspace_preview: true, path: '/<route>' } instead of starting npm/vite through the shell. Omnix owns the exact-worktree preview lifecycle and automatically cleans it up after a passing deterministic browser assertion.",
     ],
     parameters: Type.Object({
       capability_id: Type.String(),
