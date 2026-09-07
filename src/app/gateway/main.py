@@ -40,6 +40,7 @@ from app.chat.generation_jobs import (
     chat_submission_lock,
     existing_chat_generation_turn,
     find_chat_generation_job,
+    interrupt_active_chat_generation_jobs,
     mark_chat_acceptance_failed,
     recover_abandoned_chat_generation_jobs,
     start_chat_generation_job,
@@ -478,6 +479,12 @@ def create_gateway_app(
                     status_code=409,
                     detail="accepted chat submission is missing its user message",
                 )
+            interrupt_active_chat_generation_jobs(
+                chat_store,
+                job_store,
+                session_id=session_id,
+                reason="Interrupted by a newer Chat prompt.",
+            )
             appended = chat_store.begin_user_message(session_id, request)
             if appended is None:
                 raise HTTPException(status_code=404, detail="chat session not found")

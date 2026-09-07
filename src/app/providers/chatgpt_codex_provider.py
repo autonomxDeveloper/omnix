@@ -1104,6 +1104,22 @@ class ChatGPTCodexProvider(BaseProvider):
         self._threads.clear()
         self._pending_dynamic_calls.clear()
 
+    def cancel_active_request(self) -> bool:
+        """Interrupt the current Codex turn without permanently closing the provider."""
+
+        process = self._process
+        if process is None or process.poll() is not None:
+            return False
+        try:
+            process.terminate()
+            process.wait(timeout=2)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                return False
+        return True
+
     def close(self) -> None:
         with self._lock:
             if self._closed:

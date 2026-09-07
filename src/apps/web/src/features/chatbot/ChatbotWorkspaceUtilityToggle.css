@@ -43,6 +43,9 @@
 }
 
 .assistant-side-panel-minimize {
+  font-size: 1.35rem;
+  line-height: 1;
+  padding: 0 0.7rem;
   white-space: nowrap;
 }
 
@@ -52,15 +55,4 @@
 
 .assistant-chat-side-minimized .assistant-side-panel-option {
   display: none;
-}
-
-.assistant-chat-side-minimized .assistant-side-panel-minimize {
-  font-size: 0;
-  padding: 0;
-}
-
-.assistant-chat-side-minimized .assistant-side-panel-minimize::before {
-  content: '‹';
-  font-size: 1.35rem;
-  line-height: 1;
 }

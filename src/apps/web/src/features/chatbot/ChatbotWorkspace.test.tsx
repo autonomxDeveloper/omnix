@@ -219,9 +219,10 @@ describe('ChatbotWorkspace', () => {
     });
 
     await waitFor(() => {
-      expect(document.querySelector('.assistant-chat-header h2')).toHaveTextContent('New chat');
+      expect(document.querySelector('.assistant-chat-header h2')).toBeNull();
     });
-    expect(document.querySelector('.assistant-chat-header h2')).not.toHaveTextContent('Existing chat');
+    expect(document.querySelector('.assistant-chat-header')).not.toHaveTextContent('New chat');
+    expect(document.querySelector('.assistant-chat-header')).not.toHaveTextContent('Existing chat');
   });
 
   it('keeps the fullscreen action from overlapping the Personality control', async () => {
@@ -279,10 +280,13 @@ describe('ChatbotWorkspace', () => {
     await screen.findByText('No chat messages yet.');
     const minimize = screen.getByRole('button', { name: 'Minimize side panel' });
     expect(minimize).toHaveAttribute('aria-pressed', 'false');
+    expect(minimize).toHaveTextContent('›');
 
     fireEvent.click(minimize);
 
-    expect(screen.getByRole('button', { name: 'Expand side panel' })).toHaveAttribute('aria-pressed', 'true');
+    const expand = screen.getByRole('button', { name: 'Expand side panel' });
+    expect(expand).toHaveAttribute('aria-pressed', 'true');
+    expect(expand).toHaveTextContent('‹');
     expect(document.querySelector('.assistant-chat-layout')).toHaveClass('assistant-chat-layout-side-minimized');
     expect(document.querySelector('.assistant-chat-side')).toHaveClass('assistant-chat-side-minimized');
     expect(window.localStorage.getItem('omnix.chatbot.sidePanelMinimized')).toBe('true');
@@ -644,7 +648,7 @@ describe('ChatbotWorkspace', () => {
     expect(await screen.findByText('OpenAI compatible')).toBeInTheDocument();
     expect(await screen.findByRole('option', { name: 'Ari Clone' })).toBeInTheDocument();
     expect(screen.getByText('Mic input')).toBeInTheDocument();
-    const chatHeader = screen.getByRole('heading', { name: 'Hey! How are you today?' }).closest('header');
+    const chatHeader = document.querySelector('.assistant-chat-header');
     expect(chatHeader).not.toBeNull();
     expect(within(chatHeader as HTMLElement).queryByRole('button', { name: /Tools/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Share' })).not.toBeInTheDocument();
@@ -1077,7 +1081,7 @@ describe('ChatbotWorkspace', () => {
     });
   });
 
-  it('prevents another submission while an accepted response job is active', async () => {
+  it('interrupts the active response when a newer prompt is submitted', async () => {
     const session = {
       id: 'chat:active-job',
       title: 'Active job',
@@ -1134,11 +1138,15 @@ describe('ChatbotWorkspace', () => {
     fireEvent.change(await screen.findByLabelText('Message'), { target: { value: 'Keep working' } });
     fireEvent.click(screen.getByRole('button', { name: 'Queue response' }));
 
-    const activeButton = await screen.findByRole('button', { name: 'Response in progress' });
-    expect(activeButton).toBeDisabled();
-    expect(fetchMock.mock.calls.filter(
-      ([input, init]) => requestPath(input as RequestInfo | URL).endsWith('/messages') && init?.method === 'POST',
-    )).toHaveLength(1);
+    const activeButton = await screen.findByRole('button', { name: 'Interrupt and send' });
+    expect(activeButton).not.toBeDisabled();
+    fireEvent.change(await screen.findByLabelText('Message'), { target: { value: 'Replace this response' } });
+    fireEvent.click(activeButton);
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(
+        ([input, init]) => requestPath(input as RequestInfo | URL).endsWith('/messages') && init?.method === 'POST',
+      )).toHaveLength(2);
+    });
   });
 
   it('surfaces gateway failures in the replayable activity stream', async () => {

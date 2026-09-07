@@ -748,17 +748,6 @@
   overflow: visible;
 }
 
-.assistant-chat-main .assistant-chat-header > div:first-child {
-  flex: 1 1 10rem;
-  min-width: 7rem;
-}
-
-.assistant-chat-main .assistant-chat-header h2 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .assistant-chat-main .assistant-chat-header > .assistant-chat-header-actions:not(.assistant-chat-integrated-actions) {
   display: none !important;
 }
@@ -1272,7 +1261,6 @@
   border-bottom-color: rgba(86, 102, 145, 0.18);
 }
 
-:root[data-omnix-appearance='light'] .assistant-chat-header h2,
 :root[data-omnix-appearance='light'] .assistant-chat-bubble header strong,
 :root[data-omnix-appearance='light'] .assistant-view-panel > h2,
 :root[data-omnix-appearance='light'] .assistant-live-draft strong,
