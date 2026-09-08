@@ -105,6 +105,17 @@ def _planning_state_should_stale(reasons: list[str]) -> bool:
     return any(reason in authority_drift for reason in reasons)
 
 
+def _planning_state_status_after_submission(
+    plan_status: str,
+    active_plan_revision_id: str | None,
+) -> str:
+    """A rejected proposal must not revoke a still-valid approved plan."""
+
+    if plan_status == "approved" or active_plan_revision_id:
+        return "approved"
+    return plan_status
+
+
 def _inspection_response(mode, revision, evidence, candidates, lenses, state):
     return {
         "mode": mode,
@@ -313,11 +324,12 @@ def _submit_plan(run_id: str, request: PlanningSubmitRequest, *, amend: bool) ->
             if status == "approved"
             else str(state.get("active_plan_revision_id") or "") or None
         )
+        state_status = _planning_state_status_after_submission(status, active_id)
         new_state = planning.set_state(
             run_id,
             mode=mode,
             task_revision_id=revision.revision_id,
-            status=status,
+            status=state_status,
             latest_plan_revision_id=plan.plan_revision_id,
             active_plan_revision_id=active_id,
             planning_baseline_id=baseline_id,
