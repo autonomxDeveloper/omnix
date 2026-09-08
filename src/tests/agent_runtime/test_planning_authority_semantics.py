@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.agent_runtime.contracts import TaskRevision
-from app.agent_runtime.planning import operation_plan_failures
+from app.agent_runtime.planning import classify_operation_effect, operation_plan_failures
 from app.agent_runtime.planning_api import (
     _planning_state_should_stale,
     _planning_state_status_after_submission,
@@ -25,6 +25,44 @@ def test_read_and_validation_do_not_require_an_approved_plan() -> None:
     assert operation_plan_failures(None, revision, effect="validate") == []
     assert operation_plan_failures(None, revision, effect="mutate") == ["approved_plan_missing"]
     assert operation_plan_failures(None, revision, effect="unknown") == ["approved_plan_missing"]
+
+
+def test_npm_prefix_dependency_commands_are_mutations_not_validation() -> None:
+    assert classify_operation_effect(
+        "bash",
+        command="npm --prefix src/apps/web install",
+    ) == "mutate"
+    assert classify_operation_effect(
+        "powershell",
+        command="npm.cmd --prefix src/apps/web update react",
+    ) == "mutate"
+    assert classify_operation_effect(
+        "bash",
+        command="npm --prefix src/apps/web uninstall react",
+    ) == "mutate"
+
+
+def test_npm_prefix_known_checks_remain_validation_and_unknown_scripts_fail_closed() -> None:
+    assert classify_operation_effect(
+        "bash",
+        command="npm --prefix src/apps/web run test -- --runInBand",
+    ) == "validate"
+    assert classify_operation_effect(
+        "bash",
+        command="npm --prefix src/apps/web run build",
+    ) == "validate"
+    assert classify_operation_effect(
+        "powershell",
+        command="npm.cmd --prefix src/apps/web run typecheck",
+    ) == "validate"
+    assert classify_operation_effect(
+        "bash",
+        command="npm --prefix src/apps/web run generate-client",
+    ) == "mutate"
+    assert classify_operation_effect(
+        "bash",
+        command="npm --prefix src/apps/web run custom-script",
+    ) == "unknown"
 
 
 def test_attempted_off_plan_mutation_does_not_stale_valid_plan_authority() -> None:
