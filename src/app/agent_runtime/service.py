@@ -57,6 +57,7 @@ from .contracts import (
 from .debug_logging import log_agent_activity
 from .evidence import evaluate_evidence_set
 from .model_fidelity import resolve_run_model_fidelity
+from .planning_acceptance import evaluate_planning_acceptance
 from .repository import PostgresAgentRunRepository
 from .repository_guidance import compile_repository_guidance
 from .quality_recovery import reconcile_orphaned_quality_reviews
@@ -2062,6 +2063,28 @@ class AgentRunService(_CoreAgentRunService):
         reviews = quality.list_review_results(current.run_id, task_revision_id=revision_id)
         self_reviews = quality.list_self_review_results(current.run_id, task_revision_id=revision_id)
         quality_failures = quality_failure_reasons(current, revision, state, validations, reviews, self_reviews)
+        planning_assessment = evaluate_planning_acceptance(
+            repository.connection,
+            self.context,
+            current,
+            revision,
+        )
+        repository.append_event(
+            AgentEvent(
+                run_id=current.run_id,
+                event_type="planning.conformance_evaluated",
+                payload={
+                    "mode": planning_assessment.mode,
+                    "plan_revision_id": planning_assessment.plan_revision_id,
+                    "would_block": planning_assessment.would_block,
+                    "blocks_acceptance": planning_assessment.blocks_acceptance,
+                    "fail_closed": planning_assessment.fail_closed,
+                    "failures": list(planning_assessment.failures),
+                    "task_revision_id": revision_id,
+                    "workspace_state_id": state.state_id if state else None,
+                },
+            )
+        )
 
         non_reviewer_children = [
             child for child in repository.list_children(current.run_id)
@@ -2070,10 +2093,13 @@ class AgentRunService(_CoreAgentRunService):
         children_terminal = all(child.status in _TERMINAL for child in non_reviewer_children)
         child_failed = any(child.status in {"failed", "cancelled"} for child in non_reviewer_children)
         failures = list(result.failures) + list(quality_failures)
+        if planning_assessment.blocks_acceptance:
+            failures.extend(planning_assessment.failures)
         if not children_terminal:
             failures.append("children_not_terminal")
         if child_failed:
             failures.append("child_run_failed")
+        failures = list(dict.fromkeys(failures))
         passed = result.passed and not failures
 
         repository.append_event(
@@ -2089,6 +2115,14 @@ class AgentRunService(_CoreAgentRunService):
                     "workspace_state_id": state.state_id if state else None,
                     "evidence_set": evidence_set.model_dump(mode="json"),
                     "quality_policy": current.spec.quality_policy,
+                    "planning": {
+                        "mode": planning_assessment.mode,
+                        "plan_revision_id": planning_assessment.plan_revision_id,
+                        "would_block": planning_assessment.would_block,
+                        "blocks_acceptance": planning_assessment.blocks_acceptance,
+                        "fail_closed": planning_assessment.fail_closed,
+                        "failures": list(planning_assessment.failures),
+                    },
                 },
             )
         )
@@ -2113,7 +2147,7 @@ class AgentRunService(_CoreAgentRunService):
             return
 
         repairable_acceptance = _acceptance_failures_retryable(list(result.failures)) if result.failures else True
-        fail_closed = any(
+        fail_closed = planning_assessment.fail_closed or any(
             failure in {
                 "modified_paths_outside_scope",
                 "preexisting_dirty_paths_modified",
