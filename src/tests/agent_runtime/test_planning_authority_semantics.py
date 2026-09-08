@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from app.agent_runtime.contracts import TaskRevision
 from app.agent_runtime.planning import operation_plan_failures
-from app.agent_runtime.planning_api import _planning_state_should_stale
+from app.agent_runtime.planning_api import (
+    _planning_state_should_stale,
+    _planning_state_status_after_submission,
+)
 
 
 def _revision() -> TaskRevision:
@@ -41,3 +44,9 @@ def test_actual_authority_drift_stales_plan_state() -> None:
         "planning_base_commit_changed",
     ):
         assert _planning_state_should_stale([reason])
+
+
+def test_rejected_amendment_does_not_revoke_existing_active_plan() -> None:
+    assert _planning_state_status_after_submission("rejected", "approved-plan-1") == "approved"
+    assert _planning_state_status_after_submission("rejected", None) == "rejected"
+    assert _planning_state_status_after_submission("approved", "approved-plan-2") == "approved"
