@@ -1,0 +1,105 @@
+"""Server-side planning conformance evaluated at final coding acceptance."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from app.persistence.tenant import TenantContext
+
+from .contracts import AgentRunSnapshot, TaskRevision
+from .planning import (
+    engineering_contract_digest,
+    inspection_evidence_digest,
+    plan_conformance_failures,
+    planning_mode,
+)
+from .planning_contracts import PlanningMode
+from .planning_repository import PostgresPlanningRepository
+
+
+@dataclass(frozen=True)
+class PlanningAcceptanceAssessment:
+    mode: PlanningMode
+    plan_revision_id: str | None
+    failures: tuple[str, ...] = ()
+
+    @property
+    def would_block(self) -> bool:
+        return bool(self.failures)
+
+    @property
+    def blocks_acceptance(self) -> bool:
+        return self.mode == "enforce" and self.would_block
+
+
+def evaluate_planning_acceptance(
+    connection: Any,
+    context: TenantContext,
+    snapshot: AgentRunSnapshot,
+    revision: TaskRevision | None,
+) -> PlanningAcceptanceAssessment:
+    """Recompute plan authority and conformance from durable/server truth.
+
+    This is intentionally independent of the model-facing ``omnix_plan check``
+    action. A model may request a check for feedback, but only Omnix acceptance
+    decides whether missing/stale/nonconformant planning evidence is fatal.
+    Shadow mode records the same failures without changing completion authority.
+    """
+
+    mode = planning_mode()
+    if (
+        mode == "off"
+        or snapshot.spec.profile != "coding"
+        or "diff" not in snapshot.spec.expected_artifacts
+    ):
+        return PlanningAcceptanceAssessment(mode=mode, plan_revision_id=None)
+    if revision is None:
+        return PlanningAcceptanceAssessment(
+            mode=mode,
+            plan_revision_id=None,
+            failures=("planning_task_revision_unavailable",),
+        )
+
+    planning = PostgresPlanningRepository(connection, context)
+    state = planning.get_state(snapshot.run_id)
+    evidence = planning.list_inspection_evidence(
+        snapshot.run_id,
+        task_revision_id=revision.revision_id,
+    )
+    candidates = planning.list_impact_candidates(
+        snapshot.run_id,
+        task_revision_id=revision.revision_id,
+    )
+    plan = planning.latest_approved_plan(
+        snapshot.run_id,
+        task_revision_id=revision.revision_id,
+    )
+    failures: list[str] = []
+    if plan is None:
+        failures.append("approved_plan_missing")
+    else:
+        if plan.task_revision_id != revision.revision_id:
+            failures.append("plan_task_revision_stale")
+        if plan.authority.engineering_contract_digest != engineering_contract_digest(revision):
+            failures.append("plan_engineering_contract_stale")
+        if plan.authority.inspection_evidence_digest != inspection_evidence_digest(evidence):
+            failures.append("plan_inspection_evidence_stale")
+        failures.extend(plan_conformance_failures(snapshot.spec, plan, candidates))
+
+    if state is None:
+        failures.append("planning_state_missing")
+    else:
+        if state.get("task_revision_id") != revision.revision_id:
+            failures.append("planning_state_task_revision_stale")
+        status = str(state.get("status") or "required")
+        if status != "approved":
+            failures.append(f"latest_plan_state_not_approved:{status}")
+        active_id = str(state.get("active_plan_revision_id") or "") or None
+        if plan is not None and active_id != plan.plan_revision_id:
+            failures.append("planning_active_plan_identity_mismatch")
+
+    return PlanningAcceptanceAssessment(
+        mode=mode,
+        plan_revision_id=plan.plan_revision_id if plan is not None else None,
+        failures=tuple(dict.fromkeys(failures)),
+    )
