@@ -11,6 +11,7 @@ from app.persistence.unit_of_work import unit_of_work
 
 from .contracts import AgentRunSnapshot
 from .repository import PostgresAgentRunRepository
+from .resource_grants import PostgresResourceGrantRepository
 
 _ZERO_COST_PROVIDERS = {"lmstudio", "llamacpp", "chatgpt_codex"}
 _TERMINAL = {"completed", "failed", "cancelled"}
@@ -214,35 +215,58 @@ class AgentBudgetManager:
             raise KeyError(run_id)
 
     @staticmethod
-    def _quality_state(repository: PostgresAgentRunRepository, snapshot: AgentRunSnapshot) -> tuple[str | None, int]:
+    def _quality_state(
+        repository: PostgresAgentRunRepository,
+        snapshot: AgentRunSnapshot,
+    ) -> tuple[str | None, int]:
         try:
-            row = repository.connection.execute("SELECT stage, attempt FROM omnix_agent_coding_quality_state WHERE workspace_id = %s AND run_id = %s", (repository.context.workspace_id, snapshot.run_id)).fetchone()
+            row = repository.connection.execute(
+                """
+                SELECT stage, attempt
+                  FROM omnix_agent_coding_quality_state
+                 WHERE workspace_id = %s AND run_id = %s
+                """,
+                (repository.context.workspace_id, snapshot.run_id),
+            ).fetchone()
         except Exception:
             return None, 1
         return (str(row[0]), max(1, int(row[1] or 1))) if row else (None, 1)
 
     @classmethod
-    def _quality_reserve(cls, repository: PostgresAgentRunRepository, snapshot: AgentRunSnapshot, children: list[AgentRunSnapshot]) -> dict[str, int | float]:
+    def _quality_reserve(
+        cls,
+        repository: PostgresAgentRunRepository,
+        snapshot: AgentRunSnapshot,
+    ) -> dict[str, int | float]:
+        """Protect future review capacity without pre-spending review attempts."""
+
         spec = snapshot.spec
-        if spec.profile != "coding" or "diff" not in spec.expected_artifacts or spec.quality_policy == "off":
+        if (
+            spec.profile != "coding"
+            or "diff" not in spec.expected_artifacts
+            or spec.quality_policy == "off"
+        ):
             return {"steps": 0, "tools": 0, "tokens": 0, "cost": 0.0}
-        review_fraction = max(0.0, min(float(spec.quality_reserve_fraction), 0.5))
-        stage, attempt = cls._quality_state(repository, snapshot)
-        repair_fraction = 0.10 if attempt <= 1 and stage != "repairing" else 0.0
-        reviewers = [child for child in children if child.spec.profile == "coding-reviewer"]
-        def rem(maximum, attr, fraction):
-            if maximum is None or not fraction: return 0
-            target = max(1, int(maximum * fraction))
-            used = sum(int(getattr(child.spec.limits, attr) or 0) for child in reviewers)
-            return max(0, target - used)
-        def rem_cost(maximum, fraction):
-            if maximum is None or not fraction: return 0.0
-            return max(0.0, float(maximum) * fraction - sum(float(child.spec.limits.max_cost or 0.0) for child in reviewers))
+        stage, _attempt = cls._quality_state(repository, snapshot)
+        # Once reviewer children are running their durable ResourceGrants are the
+        # reservation. Acceptance has no future reviewer work to protect.
+        if stage in {"reviewing", "acceptance"}:
+            return {"steps": 0, "tools": 0, "tokens": 0, "cost": 0.0}
+        fraction = max(0.0, min(float(spec.quality_reserve_fraction), 0.5))
+        limits = spec.limits
         return {
-            "steps": rem(spec.limits.max_steps, "max_steps", review_fraction) + (max(1, int(spec.limits.max_steps * repair_fraction)) if repair_fraction else 0),
-            "tools": rem(spec.limits.max_tool_calls, "max_tool_calls", review_fraction) + (max(1, int(spec.limits.max_tool_calls * repair_fraction)) if repair_fraction else 0),
-            "tokens": rem(spec.limits.max_tokens, "max_tokens", review_fraction) + (max(1, int(spec.limits.max_tokens * repair_fraction)) if repair_fraction and spec.limits.max_tokens is not None else 0),
-            "cost": rem_cost(spec.limits.max_cost, review_fraction) + (float(spec.limits.max_cost) * repair_fraction if repair_fraction and spec.limits.max_cost is not None else 0.0),
+            "steps": max(1, int(limits.max_steps * fraction)) if fraction else 0,
+            "tools": max(1, int(limits.max_tool_calls * fraction)) if fraction else 0,
+            "tokens": (
+                max(1, int(limits.max_tokens * fraction))
+                if fraction and limits.max_tokens is not None
+                else 0
+            ),
+            "cost": (
+                float(limits.max_cost) * fraction
+                if fraction and limits.max_cost is not None
+                else 0.0
+            ),
         }
 
     @classmethod
@@ -251,27 +275,45 @@ class AgentBudgetManager:
         repository: PostgresAgentRunRepository,
         snapshot: AgentRunSnapshot,
     ) -> dict[str, int | float | None]:
-        children = repository.list_children(snapshot.run_id)
-        limits = snapshot.spec.limits
-        reserved_steps = sum(child.spec.limits.max_steps for child in children)
-        reserved_tools = sum(child.spec.limits.max_tool_calls for child in children)
-        reserved_tokens = sum(child.spec.limits.max_tokens or 0 for child in children)
-        reserved_cost = sum(child.spec.limits.max_cost or 0.0 for child in children)
-        quality = cls._quality_reserve(repository, snapshot, children)
-        return {
-            "max_steps": max(0, limits.max_steps - reserved_steps - int(quality["steps"])),
-            "max_tool_calls": max(0, limits.max_tool_calls - reserved_tools - int(quality["tools"])),
-            "max_tokens": (
-                max(0, limits.max_tokens - reserved_tokens - int(quality["tokens"]))
-                if limits.max_tokens is not None
-                else None
-            ),
-            "max_cost": (
-                max(0.0, limits.max_cost - reserved_cost - float(quality["cost"]))
-                if limits.max_cost is not None
-                else None
-            ),
-        }
+        grants = PostgresResourceGrantRepository(repository.connection, repository.context)
+        quality = cls._quality_reserve(repository, snapshot)
+        effective = grants.own_effective_limits(snapshot, quality_reserve=quality)
+
+        # Fail closed for direct children created before migration 0065 or by an
+        # older worker during rolling deployment. New children always receive a
+        # durable grant, but ungranted legacy children must not become free work.
+        granted_ids = {grant.child_run_id for grant in grants.list_direct(snapshot.run_id)}
+        legacy_children = [
+            child for child in repository.list_children(snapshot.run_id)
+            if child.run_id not in granted_ids
+        ]
+        legacy_steps = 0
+        legacy_tools = 0
+        legacy_tokens = 0
+        legacy_cost = 0.0
+        for child in legacy_children:
+            if child.status in _TERMINAL:
+                usage = grants.subtree_usage(child.run_id)
+                legacy_steps += int(usage["steps"])
+                legacy_tools += int(usage["tool_calls"])
+                legacy_tokens += int(usage["output_tokens"])
+                legacy_cost += float(usage["cost"])
+            else:
+                legacy_steps += child.spec.limits.max_steps
+                legacy_tools += child.spec.limits.max_tool_calls
+                legacy_tokens += child.spec.limits.max_tokens or 0
+                legacy_cost += child.spec.limits.max_cost or 0.0
+
+        effective["max_steps"] = max(0, int(effective["max_steps"] or 0) - legacy_steps)
+        effective["max_tool_calls"] = max(
+            0,
+            int(effective["max_tool_calls"] or 0) - legacy_tools,
+        )
+        if effective["max_tokens"] is not None:
+            effective["max_tokens"] = max(0, int(effective["max_tokens"]) - legacy_tokens)
+        if effective["max_cost"] is not None:
+            effective["max_cost"] = max(0.0, float(effective["max_cost"]) - legacy_cost)
+        return effective
 
     @staticmethod
     def _require_runnable(
