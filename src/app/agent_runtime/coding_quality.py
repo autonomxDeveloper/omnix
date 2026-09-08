@@ -824,10 +824,15 @@ def repair_prompt(
         f"Independent review findings JSON: {json.dumps(findings, ensure_ascii=False)}\n"
         f"Reviewer missing tests JSON: {json.dumps(missing_tests, ensure_ascii=False)}\n"
         f"Missing/stale final-state validation JSON: {json.dumps(missing, ensure_ascii=False)}\n"
-        "Repair the implementation, inspect every impacted caller and the complete final diff, then rerun all required "
-        "validation against the new final workspace state. Any previous validation/review is stale after a mutation. "
-        "Do not merely explain the finding; fix it or report a concrete blocker. Do not ask the user to restate the "
-        "already-authoritative objective or wait for clarification."
+        "Treat the review and validation findings above as new planning evidence. Before ANY repair mutation, call "
+        "omnix_plan with action=`inspect` focused on the affected paths, symbols, assertions, and failed invariants, "
+        "then call omnix_plan with action=`amend` against the active approved plan. Classify every newly discovered "
+        "impact candidate and include every repair path in the PlanDelta. If the amendment is rejected, inspect the "
+        "reported planning gaps and amend again; do not bypass planning authority or probe with an unauthorized edit. "
+        "Repair the implementation only after the PlanDelta is accepted by Omnix, inspect every impacted caller and "
+        "the complete final diff, then rerun all required validation against the new final workspace state. Any "
+        "previous validation/review is stale after a mutation. Do not merely explain the finding; fix it or report a "
+        "concrete blocker. Do not ask the user to restate the already-authoritative objective or wait for clarification."
     )
 
 
