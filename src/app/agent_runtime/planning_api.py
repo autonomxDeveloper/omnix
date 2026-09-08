@@ -15,6 +15,7 @@ from .planning import (
     capture_planning_baseline,
     classify_operation_effect,
     derive_planning_lenses,
+    engineering_contract_digest,
     inspection_evidence_digest,
     operation_plan_failures,
     plan_conformance_failures,
@@ -66,6 +67,42 @@ def _current_revision(service, repository: PostgresAgentRunRepository, run_id: s
     if revision is None:
         raise HTTPException(status_code=409, detail="agent_planning_task_revision_unavailable")
     return revision
+
+
+def _plan_freshness_failures(plan, revision, evidence_digest: str) -> list[str]:
+    """Return authority-identity failures independently of operation effect."""
+
+    if plan is None:
+        return ["approved_plan_missing"]
+    failures: list[str] = []
+    if plan.status != "approved":
+        failures.append(f"plan_not_approved:{plan.status}")
+    if plan.task_revision_id != revision.revision_id:
+        failures.append("plan_task_revision_stale")
+    if plan.authority.engineering_contract_digest != engineering_contract_digest(revision):
+        failures.append("plan_engineering_contract_stale")
+    if plan.authority.inspection_evidence_digest != evidence_digest:
+        failures.append("plan_inspection_evidence_stale")
+    return failures
+
+
+def _planning_state_should_stale(reasons: list[str]) -> bool:
+    """Only authority drift may stale an approved plan.
+
+    An attempted off-plan mutation is itself useful shadow/enforce telemetry, but
+    it does not change the TaskRevision, inspection evidence, or planning
+    baseline. Turning such an attempted operation into a durable stale state
+    would let a model mistake poison an otherwise valid plan.
+    """
+
+    authority_drift = {
+        "plan_task_revision_stale",
+        "plan_engineering_contract_stale",
+        "plan_inspection_evidence_stale",
+        "planning_state_task_revision_stale",
+        "planning_base_commit_changed",
+    }
+    return any(reason in authority_drift for reason in reasons)
 
 
 def _inspection_response(mode, revision, evidence, candidates, lenses, state):
@@ -323,16 +360,9 @@ def check_agent_plan(run_id: str) -> dict[str, Any]:
         evidence = planning.list_inspection_evidence(run_id, task_revision_id=revision.revision_id)
         candidates = planning.list_impact_candidates(run_id, task_revision_id=revision.revision_id)
         plan = planning.latest_approved_plan(run_id, task_revision_id=revision.revision_id)
-        failures: list[str] = []
-        if plan is None:
-            failures.append("approved_plan_missing")
-        else:
-            failures.extend(operation_plan_failures(
-                plan,
-                revision,
-                effect="validate",
-                current_evidence_digest=inspection_evidence_digest(evidence),
-            ))
+        digest = inspection_evidence_digest(evidence)
+        failures = _plan_freshness_failures(plan, revision, digest)
+        if plan is not None:
             failures.extend(plan_conformance_failures(snapshot.spec, plan, candidates))
         work.rollback()
     failures = list(dict.fromkeys(failures))
@@ -375,34 +405,40 @@ def authorize_agent_planned_operation(
         evidence = planning.list_inspection_evidence(run_id, task_revision_id=revision.revision_id)
         candidates = planning.list_impact_candidates(run_id, task_revision_id=revision.revision_id)
         plan = planning.latest_approved_plan(run_id, task_revision_id=revision.revision_id)
-        reasons = operation_plan_failures(
-            plan,
-            revision,
-            effect=effect,
-            target_path=target,
-            command=command,
-            current_evidence_digest=inspection_evidence_digest(evidence),
-            quality_stage=quality.get_stage(run_id),
-        )
-        if state is not None and state.get("task_revision_id") != revision.revision_id:
-            reasons.append("planning_state_task_revision_stale")
-        if state is not None and str(state.get("status") or "") in {"rejected", "stale", "invalid"}:
-            reasons.append(f"latest_plan_state_not_approved:{state.get('status')}")
-        if effect == "validate" and plan is not None:
-            reasons.extend(plan_conformance_failures(snapshot.spec, plan, candidates))
-        elif effect in {"mutate", "unknown"} and plan is not None:
-            # Before a mutation, only enforce drift/scope parts of conformance;
-            # planned MODIFY items are not expected to be complete yet.
-            drift = plan_conformance_failures(snapshot.spec, plan, candidates)
-            reasons.extend(
-                item for item in drift
-                if item.startswith("unplanned_modified_path:")
-                or item == "planning_base_commit_changed"
+
+        # The plan is an authority boundary for mutation, not a prerequisite for
+        # inspection or validation. Those operations remain usable to gather
+        # evidence and diagnose failures before a plan or PlanDelta exists.
+        if effect in {"read", "validate"}:
+            reasons: list[str] = []
+        else:
+            reasons = operation_plan_failures(
+                plan,
+                revision,
+                effect=effect,
+                target_path=target,
+                command=command,
+                current_evidence_digest=inspection_evidence_digest(evidence),
+                quality_stage=quality.get_stage(run_id),
             )
+            if state is not None and state.get("task_revision_id") != revision.revision_id:
+                reasons.append("planning_state_task_revision_stale")
+            if state is not None and str(state.get("status") or "") in {"rejected", "stale", "invalid"}:
+                reasons.append(f"latest_plan_state_not_approved:{state.get('status')}")
+            if effect in {"mutate", "unknown"} and plan is not None:
+                # Before a mutation, only enforce drift/scope parts of
+                # conformance; planned MODIFY items are not expected complete.
+                drift = plan_conformance_failures(snapshot.spec, plan, candidates)
+                reasons.extend(
+                    item for item in drift
+                    if item.startswith("unplanned_modified_path:")
+                    or item == "planning_base_commit_changed"
+                )
+
         reasons = list(dict.fromkeys(reasons))
         would_block = bool(reasons)
         allowed = not would_block or mode == "shadow"
-        if would_block and plan is not None:
+        if would_block and plan is not None and _planning_state_should_stale(reasons):
             planning.mark_state_stale(run_id)
         decision = PlanningDecision(
             run_id=run_id,
