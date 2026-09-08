@@ -19,7 +19,7 @@ from .pi_runtime_core import (
     pi_broker_extension_path,
     pi_guard_extension_path,
     pi_model_provider_extension_path,
-    pi_rpc_argv,
+    pi_rpc_argv as _imported_core_pi_rpc_argv,
 )
 from .repository_guidance import compile_repository_guidance
 
@@ -27,17 +27,55 @@ from .repository_guidance import compile_repository_guidance
 _ENGINEERING_WORKFLOW = """MANDATORY ENGINEERING WORKFLOW FOR MUTATING CODING TASKS
 1. INSPECT — inspect the relevant repository structure and existing implementation before editing. Locate tests, callers, interfaces, registrations, schemas and adjacent patterns; do not guess architecture.
 2. DEFINE COMPLETION — re-read the user objective and required success criteria. Identify what implementation and evidence will prove each requirement.
-3. PLAN — form a concise implementation plan from repository truth. Prefer the smallest coherent architectural change over patchwork fixes.
-4. IMPLEMENT — make the change and add/update regression tests where behavior changes.
+3. PLAN — after repository inspection, call `omnix_plan` with action=`inspect` so Omnix can independently capture repository evidence and impact candidates. Then call `omnix_plan` action=`submit` with a structured plan covering every required requirement, high-impact candidate and final validation. The plan is a proposal; only Omnix can approve it. Do not mutate before plan approval when enforcement is active.
+4. IMPLEMENT — make only plan-backed changes and add/update regression tests where behavior changes. If new evidence changes the intended implementation, call `omnix_plan` action=`inspect` with focused queries/paths and then action=`amend` before continuing. Repair/review findings are new evidence, not permission to bypass planning.
 5. INSPECT THE COMPLETE RESULT — after the final edit, inspect the complete diff. Check accidental changes, duplication, dead/debug code, stale names, missing imports, incomplete call sites, migrations and generated contracts.
 6. REREAD REQUIREMENTS — compare every requested requirement against the actual final implementation. Passing tests alone do not prove semantic completeness.
 7. IMPACT / REGRESSION REVIEW — search affected callers and consumers; consider edge cases, compatibility and authority boundaries. Fix material issues found.
-8. FINAL-STATE VALIDATION — run the smallest relevant tests/typecheck/lint/build against the FINAL code state. Validation from before a later mutation is stale and does not count.
-9. SELF-REVIEW — critically review the change as if it were another engineer's patch. Repair incomplete requirements or regressions before settling.
-10. REQUEST COMPLETION — Pi settling is only a completion request. Omnix will independently validate/review the exact final state and is the only authority that can mark the run completed.
+8. PLAN CONFORMANCE — call `omnix_plan` action=`check` and resolve unplanned paths, missing planned impacts, stale evidence or residual superseded references before requesting completion.
+9. FINAL-STATE VALIDATION — run the smallest relevant tests/typecheck/lint/build against the FINAL code state. Validation from before a later mutation is stale and does not count.
+10. SELF-REVIEW — critically review the change as if it were another engineer's patch. Repair incomplete requirements or regressions before settling.
+11. REQUEST COMPLETION — Pi settling is only a completion request. Omnix will independently validate/review the exact final state and is the only authority that can mark the run completed.
 GOVERNED CAPABILITIES — capabilities listed under `Issued governed external capabilities` are already issued by Omnix. When one is needed, invoke it through `omnix_capability`; do not ask the user to issue or enable an already-listed capability.
 WORKTREE UI PREVIEW — for governed browser validation of local web/UI changes, never launch `npm run dev`, Vite, `Start-Process`, or another long-lived preview server through shell commands. Invoke `browser.open` through `omnix_capability` with input `{\"workspace_preview\": true, \"path\": \"/<route>\"}`. Omnix resolves the exact run worktree, allocates the loopback port, and owns preview cleanup. Finish with the required deterministic `browser.assert_*` proof; a passing assertion automatically tears down the workspace preview and browser session, so do not call `browser.close` merely for cleanup.
 """
+
+
+# Keep the internal durable planning tool available whenever coding quality is
+# active. Pi's --tools flag filters extension tools as well as built-ins, so the
+# broker extension registering omnix_plan is insufficient unless argv includes
+# it. This adds no capability authority: every plan decision remains server-side.
+_CORE_PI_RPC_ARGV = getattr(
+    _pi_runtime_core,
+    "_omnix_base_pi_rpc_argv",
+    _imported_core_pi_rpc_argv,
+)
+_pi_runtime_core._omnix_base_pi_rpc_argv = _CORE_PI_RPC_ARGV
+
+
+def pi_rpc_argv(spec: AgentRunSpec, *, pi_path: str = "pi") -> list[str]:
+    argv = list(_CORE_PI_RPC_ARGV(spec, pi_path=pi_path))
+    planning_enabled = (
+        spec.profile == "coding"
+        and "diff" in spec.expected_artifacts
+        and spec.quality_policy != "off"
+    )
+    if not planning_enabled:
+        return argv
+    if "--tools" in argv:
+        index = argv.index("--tools") + 1
+        tools = {item for item in str(argv[index]).split(",") if item}
+        tools.add("omnix_plan")
+        argv[index] = ",".join(sorted(tools))
+    elif "--no-builtin-tools" in argv:
+        index = argv.index("--no-builtin-tools")
+        argv[index:index + 1] = ["--tools", "omnix_plan"]
+    else:
+        argv.extend(["--tools", "omnix_plan"])
+    return argv
+
+
+_pi_runtime_core.pi_rpc_argv = pi_rpc_argv
 
 
 # Pi can report provider failures inside message_end/turn_end rather than through

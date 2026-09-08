@@ -184,6 +184,43 @@ function commandRejectionReason(command: unknown): string | null {
   return null;
 }
 
+async function authorizePlanningOperation(
+  toolName: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  if (!runId) return "Omnix run identity is missing.";
+  try {
+    const response = await fetch(`${brokerUrl}/${encodeURIComponent(runId)}/planning/authorize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool_name: toolName,
+        input,
+        path: typeof input.path === "string" ? input.path : null,
+        command: typeof input.command === "string" ? input.command : null,
+      }),
+    });
+    let payload: any = {};
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
+    // Planning is applicable only to mutating coding runs. Review-only and
+    // non-coding profiles retain their existing authority model.
+    if (response.status === 409 && payload?.detail === "agent_planning_not_applicable") return null;
+    if (!response.ok) {
+      const detail = typeof payload?.detail === "string" ? payload.detail : `HTTP ${response.status}`;
+      return `Omnix planning authorization unavailable: ${detail}`;
+    }
+    if (payload?.allowed === true) return null;
+    const reasons = Array.isArray(payload?.reasons) ? payload.reasons.join(", ") : String(payload?.reason || "plan not approved");
+    return `Omnix planning authority blocked this operation: ${reasons}. Inspect repository evidence and submit/amend the durable plan with omnix_plan before retrying.`;
+  } catch (error) {
+    return `Omnix planning authorization unavailable: ${String(error)}`;
+  }
+}
+
 async function authorizeBlockedCommand(command: string, cwd: unknown): Promise<string | null> {
   if (!runId) return "Omnix run identity is missing.";
   try {
@@ -271,6 +308,14 @@ export default function (pi: ExtensionAPI) {
       for (const key of ["path", "file", "directory", "cwd"]) {
         if (!pathAllowed(input[key])) return { block: true, reason: "Omnix workspace policy blocked a path outside the issued scope." };
       }
+      if (event.toolName === "edit" || event.toolName === "write") {
+        const capabilityId = `workspace.${event.toolName}`;
+        if (!localCapabilities.has(capabilityId)) {
+          return { block: true, reason: `Omnix capability policy did not issue ${capabilityId}.` };
+        }
+        const planningRejection = await authorizePlanningOperation(event.toolName, input);
+        if (planningRejection) return { block: true, reason: planningRejection };
+      }
       if (
         (event.toolName === "edit" || event.toolName === "write")
         && approvalPolicy === "always_ask"
@@ -283,11 +328,19 @@ export default function (pi: ExtensionAPI) {
     if (event.toolName === "bash" || event.toolName === "powershell") {
       const safetyRejection = commandSafetyRejectionReason(input.command);
       if (safetyRejection) return { block: true, reason: safetyRejection };
+
       const commandAllowedByIssuedCapability = commandPrefixAllowed(input.command);
       if (!commandAllowedByIssuedCapability && !localCapabilities.has("workspace.command")) {
         const rejection = commandRejectionReason(input.command);
         if (rejection) return { block: true, reason: rejection };
       }
+
+      // Capability/scope authority remains independent of planning. Only after
+      // the command is known to be within an issued local capability do we ask
+      // the server whether its workspace effect is backed by the active plan.
+      const planningRejection = await authorizePlanningOperation(event.toolName, input);
+      if (planningRejection) return { block: true, reason: planningRejection };
+
       const commandNeedsApproval = localCapabilities.has("workspace.command")
         && approvalPolicy !== "allow_automatic"
         && (approvalPolicy === "always_ask" || !commandAllowedByIssuedCapability);

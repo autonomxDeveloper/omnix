@@ -6,7 +6,67 @@ export default function (pi: ExtensionAPI) {
   const baseUrl = process.env.OMNIX_AGENT_BROKER_URL || "http://127.0.0.1:8000/api/agent-runs";
   const allowed = new Set<string>(JSON.parse(process.env.OMNIX_AGENT_EXTERNAL_CAPABILITIES || "[]"));
   let usedManagedWorkspacePreview = false;
-  if (!runId || allowed.size === 0) return;
+  if (!runId) return;
+
+  pi.registerTool({
+    name: "omnix_plan",
+    label: "Omnix Plan",
+    description: "Inspect, submit, amend, or check the server-authoritative implementation plan for this coding run.",
+    promptSnippet: "Use Omnix durable planning before mutating coding workspaces",
+    promptGuidelines: [
+      "For mutating coding tasks, inspect the repository first, then call omnix_plan with action=inspect before the first edit or mutating command.",
+      "Use the returned TaskRevision requirements, planning lenses, inspection evidence, and impact candidates to build the implementation plan.",
+      "Submit the plan with action=submit. Every required requirement needs plan or verification coverage and validation; classify every high-impact candidate.",
+      "If new repository evidence, a failed validation, reviewer finding, repair request, or user steering changes the intended implementation, use action=inspect with focused queries/paths and then action=amend before further mutation.",
+      "A NOT_IMPACTED disposition for high-risk evidence cannot be justified by prose alone; provide evidence-backed waiver proof and expect Omnix to fail closed when semantic adjudication is still required.",
+      "Use action=check before requesting completion to compare the approved plan with the current workspace.",
+      "Omnix plan approval does not grant capabilities or user approvals. Existing workspace, command, external capability, and approval policies remain independently authoritative.",
+    ],
+    parameters: Type.Object({
+      action: Type.Union([
+        Type.Literal("inspect"),
+        Type.Literal("submit"),
+        Type.Literal("amend"),
+        Type.Literal("check"),
+      ]),
+      queries: Type.Optional(Type.Array(Type.String())),
+      paths: Type.Optional(Type.Array(Type.String())),
+      plan: Type.Optional(Type.Record(Type.String(), Type.Any())),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const action = String(params.action || "");
+      const response = await fetch(`${baseUrl}/${encodeURIComponent(runId)}/planning/${encodeURIComponent(action)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          action === "inspect"
+            ? { queries: params.queries || [], paths: params.paths || [] }
+            : action === "check"
+              ? {}
+              : { plan: params.plan || {} },
+        ),
+        signal,
+      });
+      let payload: any = {};
+      try {
+        payload = await response.json();
+      } catch {
+        payload = { detail: `HTTP ${response.status}` };
+      }
+      if (!response.ok) {
+        return {
+          content: [{ type: "text", text: `Omnix planning error: ${JSON.stringify(payload)}` }],
+          details: { error: true, payload },
+        };
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload) }],
+        details: payload,
+      };
+    },
+  });
+
+  if (allowed.size === 0) return;
 
   pi.registerTool({
     name: "omnix_capability",
