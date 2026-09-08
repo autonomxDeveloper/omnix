@@ -78,8 +78,11 @@ def test_actual_authority_drift_stales_plan_state() -> None:
         "plan_task_revision_stale",
         "plan_engineering_contract_stale",
         "plan_inspection_evidence_stale",
+        "plan_repository_guidance_stale",
         "planning_state_task_revision_stale",
+        "planning_active_plan_identity_mismatch",
         "planning_base_commit_changed",
+        "preexisting_dirty_path_modified:src/preexisting.py",
     ):
         assert _planning_state_should_stale([reason])
 
