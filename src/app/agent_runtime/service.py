@@ -195,6 +195,27 @@ def _self_review_protocol_retry_limit() -> int:
     return max(0, min(value, 5))
 
 
+def _default_review_root(spec: AgentRunSpec) -> str:
+    """Choose a review root that leaves room for repository-relative paths.
+
+    Windows Git worktrees can reject otherwise valid repository paths when the
+    temporary root already consumes most of the MAX_PATH budget. Review
+    snapshots only need to be outside the active checkout, so a short sibling
+    directory is a safer default on Windows. Keep the longer temp-root default
+    for other platforms and retain the explicit environment override at the
+    call site.
+    """
+
+    if os.name == "nt" and spec.workspace is not None:
+        repository = spec.workspace.repository or spec.workspace.root
+        if repository:
+            try:
+                return str(Path(repository).expanduser().resolve().parent / ".omnix-agent-review")
+            except (OSError, RuntimeError):
+                pass
+    return str(Path(tempfile.gettempdir()) / "omnix-agent-review-snapshots")
+
+
 def _self_review_protocol_retry_count(
     repository: PostgresAgentRunRepository,
     *,
@@ -949,6 +970,7 @@ class AgentRunService(_CoreAgentRunService):
                             "task_revision_id": validation.task_revision_id,
                             "workspace_state_id": validation.workspace_state_id,
                             "command": validation.command,
+                            "metadata": dict(validation.metadata),
                         },
                     )
                 )
@@ -1519,7 +1541,7 @@ class AgentRunService(_CoreAgentRunService):
         )
         review_root = os.environ.get(
             "OMNIX_AGENT_REVIEW_ROOT",
-            str(Path(tempfile.gettempdir()) / "omnix-agent-review-snapshots"),
+            _default_review_root(current.spec),
         )
         review_workspace = materialize_review_workspace(
             current.spec,
@@ -1666,6 +1688,10 @@ class AgentRunService(_CoreAgentRunService):
                     f"REVIEW_SNAPSHOT_ID={snapshot.snapshot_id}\n"
                     + review_prompt(revision, snapshot, validations)
                 )
+                reviewer_objective = (
+                    f"Independently review immutable snapshot {snapshot.snapshot_id} "
+                    "for correctness and completeness."
+                )
                 workspace = WorkspaceSpec(
                     root=snapshot.workspace_root,
                     repository=(parent.spec.workspace.repository if parent.spec.workspace else None)
@@ -1685,7 +1711,7 @@ class AgentRunService(_CoreAgentRunService):
                 per_reviewer_fraction = parent.spec.quality_reserve_fraction / max(1, count * quality_attempt_limit())
                 request = ChildRunRequest(
                     task=prompt,
-                    objective=prompt,
+                    objective=reviewer_objective,
                     profile_id="coding-reviewer",
                     provider_id=parent.spec.model.provider_id,
                     model_id=parent.spec.model.model_id,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -11,9 +12,12 @@ from app.agent_runtime.contracts import (
     ModelRef,
     TaskRequirement,
     TaskRevision,
+    ValidationSpec,
+    WorkspaceSpec,
 )
 from app.agent_runtime.service import (
     AgentRunService,
+    _default_review_root,
     _implementation_candidate_failures,
     _implementation_candidate_retry_count,
     _implementation_candidate_retry_limit,
@@ -149,6 +153,23 @@ def test_protocol_retry_limit_is_bounded_and_has_safe_default(monkeypatch) -> No
     assert _self_review_protocol_retry_limit() == 5
     monkeypatch.setenv("OMNIX_AGENT_SELF_REVIEW_PROTOCOL_RETRIES", "invalid")
     assert _self_review_protocol_retry_limit() == 2
+
+
+def test_windows_review_root_uses_short_repository_sibling(monkeypatch) -> None:
+    spec = _snapshot().spec.model_copy(
+        update={
+            "workspace": WorkspaceSpec(
+                root="F:/LLM/omnix",
+                repository="F:/LLM/omnix",
+                worktree="F:/LLM/omnix",
+                base_ref="HEAD",
+                isolation_policy="git_worktree",
+            )
+        }
+    )
+    monkeypatch.setattr(service_module.os, "name", "nt")
+
+    assert _default_review_root(spec) == str(Path("F:/LLM").resolve() / ".omnix-agent-review")
 
 
 def test_quality_resume_is_persisted_to_command_outbox_before_dispatch() -> None:
@@ -380,13 +401,13 @@ def test_pre_review_gate_validates_before_self_review_even_with_nonempty_diff() 
     revision = _revision().model_copy(
         update={
             "validation_plan": [
-                {
-                    "id": "final-state-tests",
-                    "kind": "test",
-                    "description": "focused tests",
-                    "covers": ["requirement-1"],
-                    "required": True,
-                }
+                ValidationSpec(
+                    id="final-state-tests",
+                    kind="test",
+                    description="focused tests",
+                    covers=["requirement-1"],
+                    required=True,
+                )
             ]
         }
     )
@@ -455,13 +476,13 @@ def test_pre_review_gate_rejects_stale_or_extraneous_browser_noop_proof() -> Non
     browser_revision = _revision().model_copy(
         update={
             "validation_plan": [
-                {
-                    "id": "browser-validation",
-                    "kind": "browser",
-                    "description": "prove the requested visible state",
-                    "covers": ["requirement-1"],
-                    "required": True,
-                }
+                ValidationSpec(
+                    id="browser-validation",
+                    kind="browser",
+                    description="prove the requested visible state",
+                    covers=["requirement-1"],
+                    required=True,
+                )
             ]
         }
     )

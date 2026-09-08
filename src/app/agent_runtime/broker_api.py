@@ -95,6 +95,56 @@ class BrokerCapabilityResponse(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
 
 
+_BROWSER_ASSERTION_REQUIRED_INPUTS: dict[str, tuple[str, ...]] = {
+    "browser.assert_text_contains": ("selector", "expected"),
+    "browser.assert_text_not_contains": ("selector", "expected"),
+    "browser.assert_attribute_contains": ("selector", "attribute", "expected"),
+    "browser.assert_url_contains": ("expected",),
+}
+
+
+def _normalize_capability_input(
+    capability_id: str,
+    request: BrokerCapabilityRequest,
+) -> BrokerCapabilityRequest:
+    """Canonicalize and validate deterministic browser assertion arguments.
+
+    Some model providers emit ``expected_text`` for text assertions even though
+    the canonical capability schema uses ``expected``. Normalize that harmless
+    alias before deriving the execution identity. Invalid assertions then fail
+    at the broker boundary and never become durable validation executions.
+    """
+
+    required = _BROWSER_ASSERTION_REQUIRED_INPUTS.get(capability_id)
+    if required is None:
+        return request
+    bounded = dict(request.input)
+    if capability_id in {
+        "browser.assert_text_contains",
+        "browser.assert_text_not_contains",
+    } and "expected_text" in bounded:
+        alias = bounded.pop("expected_text")
+        canonical = bounded.get("expected")
+        if canonical is not None and canonical != "" and str(canonical) != str(alias):
+            raise HTTPException(
+                status_code=422,
+                detail="agent_browser_assertion_conflicting_expected_text",
+            )
+        if canonical is None or canonical == "":
+            bounded["expected"] = alias
+    missing = [
+        field
+        for field in required
+        if bounded.get(field) is None or bounded.get(field) == ""
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"agent_browser_assertion_missing_input:{','.join(missing)}",
+        )
+    return request.model_copy(update={"input": bounded})
+
+
 def _execution_key(run_id: str, capability_id: str, request: BrokerCapabilityRequest) -> str:
     if request.proposal_id:
         raw = str(request.proposal_id).strip()
@@ -412,6 +462,17 @@ def _review_with_run_policy(
     if run_policy == "disabled":
         disabled_request = request.model_copy(update={"approval_policy": "disabled"})
         return disabled_request, review_assistant_tool_request(disabled_request)
+    # Governed browser actions already have explicit capability-level policy:
+    # they are task-scoped, origin-restricted and executed through the bounded
+    # browser adapter. The normal coding default (ask_sensitive) must not turn
+    # those automatic validation interactions into approval waits. An explicit
+    # always_ask run policy still reaches the overlay below.
+    if (
+        run_policy == "ask_sensitive"
+        and request.tool_id == "browser"
+        and request.action_id.startswith("browser.")
+    ):
+        return base_request, base
     # If the canonical tool/action/config already requires approval, preserve
     # that stronger decision rather than replacing it with a weaker run policy.
     if base.approval_required:
@@ -683,6 +744,7 @@ def execute_agent_capability(
     canonical = capability.id
     if canonical not in snapshot.spec.external_capabilities:
         raise HTTPException(status_code=403, detail="agent_capability_outside_run_spec")
+    request = _normalize_capability_input(canonical, request)
     policy, task_revision_id, evidence_started_at, existing_receipts = _effective_evidence_context(
         service,
         snapshot,

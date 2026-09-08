@@ -480,6 +480,10 @@ def test_pi_stdout_reader_survives_event_sink_failure() -> None:
     session.process = type("Process", (), {"stdout": StringIO('{"type":"agent_start"}\n')})()
     session._task_revision_id = None
     session._tool_revision_ids = {}
+    session._terminal_seen = False
+    session._turn_active = False
+    session._assistant_text_parts = []
+    session._terminal_assistant_text_emitted = False
     session._events = deque()
     session._stderr = deque(maxlen=10)
     session.on_event = lambda _event: (_ for _ in ()).throw(RuntimeError("observer failed"))

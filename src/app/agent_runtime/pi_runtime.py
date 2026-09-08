@@ -119,6 +119,11 @@ def normalize_pi_event(
     )
     if provider_failure is not None:
         return provider_failure
+    if (
+        str(payload.get("type") or "") in {"message_end", "turn_end"}
+        and run_id in _LAST_PROVIDER_FAILURE
+    ):
+        return None
     # Once a provider terminal failure has been emitted, Pi may still publish
     # the mechanical agent_settled event for that failed turn. Suppress it so a
     # failed provider request cannot re-enter the quality state machine as an

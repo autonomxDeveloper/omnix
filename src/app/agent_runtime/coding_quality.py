@@ -404,6 +404,34 @@ def validation_result_from_tool_event(
     validation_id = validation_id_for_kind(kind, revision)
     validation_spec = next((item for item in _validation_plan(revision) if item.id == validation_id), None)
     covers_requirement_ids = list(validation_spec.covers) if validation_spec is not None else []
+    metadata: dict[str, object] = {
+        "tool_call_id": call_id,
+        "capability_id": capability_id or None,
+    }
+    if kind == "browser":
+        capability_input = args.get("input") if isinstance(args.get("input"), dict) else {}
+        expected = capability_input.get("expected")
+        if expected is not None and expected != "":
+            metadata["assertion_expected"] = str(expected)
+        result_error = None
+        if isinstance(result, dict):
+            details = result.get("details") if isinstance(result.get("details"), dict) else result
+            broker = details if "executed" in details else details.get("result")
+            if isinstance(broker, dict):
+                result_error = broker.get("error")
+                nested = broker.get("result")
+                if not result_error and isinstance(nested, dict):
+                    result_error = nested.get("error")
+        error_text = str(result_error or event.payload.get("error") or "")
+        if error_text.startswith("browser_policy_rejected:"):
+            metadata["failure_class"] = "input_contract"
+        elif error_text in {
+            "browser_runtime_unavailable",
+            "browser_command_failed",
+        } or error_text.startswith("browser_runtime_error:"):
+            metadata["failure_class"] = "infrastructure"
+        elif error_text == "browser_assertion_failed":
+            metadata["failure_class"] = "assertion"
     return ValidationResult(
         result_id=result_id,
         run_id=run_id,
@@ -417,7 +445,7 @@ def validation_result_from_tool_event(
         output_digest=output_digest,
         covers_requirement_ids=covers_requirement_ids,
         finished_at=event.created_at,
-        metadata={"tool_call_id": call_id, "capability_id": capability_id or None},
+        metadata=metadata,
     )
 
 

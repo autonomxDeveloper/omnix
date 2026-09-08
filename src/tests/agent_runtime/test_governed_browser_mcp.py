@@ -345,7 +345,44 @@ def test_browser_assertion_becomes_state_bound_validation() -> None:
     assert result.workspace_state_id == "state-final"
     assert result.task_revision_id == revision.revision_id
     assert result.success is True
+    assert result.metadata["assertion_expected"] == "20 / 20"
     assert set(browser_spec.covers).issubset(result.covers_requirement_ids)
+
+
+def test_browser_runtime_failure_is_classified_as_infrastructure() -> None:
+    from app.agent_runtime.coding_quality import validation_result_from_tool_event
+    from app.agent_runtime.contracts import AgentEvent
+
+    event = AgentEvent(
+        run_id="run-browser-infrastructure",
+        event_type="tool.completed",
+        payload={
+            "tool_call_id": "browser-proof-failed",
+            "args": {
+                "capability_id": "browser.assert_text_contains",
+                "input": {"selector": "#score", "expected": "20 / 20"},
+            },
+            "is_error": True,
+            "result": {
+                "details": {
+                    "executed": False,
+                    "result": {"error": "browser_runtime_unavailable"},
+                }
+            },
+        },
+    )
+
+    result = validation_result_from_tool_event(
+        event,
+        run_id=event.run_id,
+        task_revision_id="revision-1",
+        workspace_state_id="state-1",
+        revision=None,
+    )
+
+    assert result is not None
+    assert result.success is False
+    assert result.metadata["failure_class"] == "infrastructure"
 
 
 def test_generic_mcp_reference_does_not_union_multiple_servers(

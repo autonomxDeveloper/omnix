@@ -112,6 +112,15 @@ def _seed_ui_label_edit_fixture(worktree: Path) -> None:
     assert committed.returncode == 0, committed.stderr
 
 
+def test_default_llm_ui_fixture_contract_matches_tracked_component() -> None:
+    """Keep the live fixture synchronized even when the costly E2E is disabled."""
+
+    repository = Path(__file__).resolve().parents[3]
+    text = (repository / _TARGET_FILES[0]).read_text(encoding="utf-8")
+
+    _assert_system_mode_label(text, "Personality")
+
+
 def _enabled() -> bool:
     return str(os.environ.get("OMNIX_RUN_DEFAULT_LLM_AGENT_UI_TEST", "")).strip().casefold() in _TRUE
 

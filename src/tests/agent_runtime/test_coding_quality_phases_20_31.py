@@ -111,8 +111,9 @@ def test_structured_review_settles_implementation_and_repair_turns() -> None:
         payload={"phase": "turn_end", "text": "Implementation is complete."},
     )
 
-    assert _terminal_message_settles_quality_stage(structured, "implementing")
-    assert _terminal_message_settles_quality_stage(structured, "repairing")
+    assert not _terminal_message_settles_quality_stage(structured, "implementing")
+    assert not _terminal_message_settles_quality_stage(structured, "repairing")
+    assert _terminal_message_settles_quality_stage(structured, "self_review")
     assert not _terminal_message_settles_quality_stage(prose, "repairing")
     assert not _terminal_message_settles_quality_stage(prose, "self_review")
 
@@ -127,7 +128,12 @@ def test_self_review_response_is_bound_to_latest_quality_request() -> None:
         AgentEvent(
             run_id="run-1",
             event_type="quality.stage",
-            payload={"stage": "self_review", "attempt": 2, "task_revision_id": "revision-1"},
+            payload={
+                "stage": "self_review",
+                "attempt": 2,
+                "task_revision_id": "revision-1",
+                "workspace_state_id": "state-1",
+            },
         ),
         AgentEvent(
             run_id="run-1",
@@ -154,7 +160,12 @@ def test_self_review_response_paginates_to_the_latest_quality_request() -> None:
         run_id="run-1",
         sequence=2,
         event_type="quality.stage",
-        payload={"stage": "self_review", "attempt": 2, "task_revision_id": "revision-1"},
+        payload={
+            "stage": "self_review",
+            "attempt": 2,
+            "task_revision_id": "revision-1",
+            "workspace_state_id": "state-1",
+        },
     )
     current_message = AgentEvent(
         run_id="run-1",
@@ -181,7 +192,7 @@ def test_self_review_response_paginates_to_the_latest_quality_request() -> None:
     ) == '{"verdict":"blocked"}'
 
 
-def test_self_review_reuses_validated_terminal_verdict_before_stage_marker() -> None:
+def test_self_review_rejects_terminal_verdict_before_stage_marker() -> None:
     validation = AgentEvent(
         run_id="run-1",
         sequence=1,
@@ -223,7 +234,7 @@ def test_self_review_reuses_validated_terminal_verdict_before_stage_marker() -> 
         task_revision_id="revision-1",
         workspace_state_id="state-1",
         page_size=10,
-    ) == '{"verdict":"approve"}'
+    ) == ""
 
 
 def test_review_payload_accepts_fenced_json_without_accepting_prose() -> None:
@@ -554,3 +565,27 @@ def test_reviewer_profile_is_read_only_and_quality_recursion_is_disabled(tmp_pat
     assert child.quality_policy == "off"
     assert child.approval_policy == "disabled"
     assert not ({"workspace.edit", "workspace.write", "workspace.command", "workspace.test"} & set(child.capabilities))
+
+
+def test_reviewer_objective_can_stay_short_while_task_keeps_full_review_prompt(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    parent_spec = _spec(root)
+    parent = AgentRunSnapshot(run_id=parent_spec.run_id, spec=parent_spec, status="running")
+    child = derive_child_spec(
+        parent,
+        ChildRunRequest(
+            task="REVIEW_SNAPSHOT_ID=snapshot\n" + ("review detail " * 500),
+            objective="Independently review immutable snapshot snapshot for correctness and completeness.",
+            profile_id="coding-reviewer",
+            capabilities=list(get_agent_profile("coding-reviewer").capabilities),
+        ),
+        workspace_override=WorkspaceSpec(
+            root=str(root),
+            repository=str(root),
+            worktree=str(root),
+            isolation_policy="immutable_review_snapshot",
+        ),
+    )
+
+    assert len(child.task) > 4000
+    assert len(child.objective) < 4000

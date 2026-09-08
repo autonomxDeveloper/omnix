@@ -123,9 +123,15 @@ function issuedCommandPrefixes(): string[] {
 const forbiddenShellSyntax = /[\r\n;&|><`]/;
 const environmentExpansion = /(?:\$\{|\$[A-Za-z_]|%[A-Za-z_][A-Za-z0-9_]*%|~[\\/])/;
 const managedPreviewShellCommand = /(?:\bnpm(?:\.cmd)?\b[\s\S]{0,320}\brun\b[\s\S]{0,120}\b(?:dev|preview)\b|\b(?:npx\s+)?vite(?:\.cmd)?\b)/i;
+const inlinePythonCommand = /^(?:python|python3)(?:\.exe)?\s+-c(?:\s|$)/i;
 
 function commandScopeAllowed(command: string): boolean {
   if (environmentExpansion.test(command)) return false;
+  // Python source passed to ``-c`` can contain escaped quotes and backslashes.
+  // Those are code characters, not workspace paths. The command is still
+  // outside the built-in safe prefixes and therefore goes through the exact
+  // broker approval path before execution.
+  if (inlinePythonCommand.test(command.trim())) return true;
   const tokens = command.match(/"[^"]*"|\'[^\']*\'|\S+/g) || [];
   for (const rawToken of tokens.slice(1)) {
     let token = rawToken.replace(/^["\']|["\']$/g, "");
