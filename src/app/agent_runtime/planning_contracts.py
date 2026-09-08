@@ -1,6 +1,6 @@
 """Durable contracts for evidence-backed coding plans.
 
-Planning is server-authoritative.  Model submissions are proposals; Omnix binds
+Planning is server-authoritative. Model submissions are proposals; Omnix binds
 accepted plan revisions to the current TaskRevision, repository baseline and
 inspection evidence before any enforcement decision can rely on them.
 """
@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PlanningMode = Literal["off", "shadow", "enforce"]
 PlanningStatus = Literal["required", "submitted", "approved", "rejected", "stale", "invalid"]
@@ -23,6 +23,17 @@ CausalStatus = Literal["confirmed", "supported", "tentative"]
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _require_unique(values: list[str], label: str) -> None:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    if duplicates:
+        raise ValueError(f"duplicate {label}: {', '.join(duplicates)}")
 
 
 class InspectionEvidence(BaseModel):
@@ -137,6 +148,17 @@ class ImplementationPlanSubmission(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)
     causal_hypotheses: list[CausalHypothesis] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def reject_ambiguous_duplicate_identities(self) -> "ImplementationPlanSubmission":
+        _require_unique([item.id for item in self.changes], "plan item id")
+        _require_unique([item.id for item in self.validations], "validation id")
+        _require_unique(
+            [item.requirement_id for item in self.requirement_coverage],
+            "requirement coverage id",
+        )
+        _require_unique([item.candidate_id for item in self.impacts], "impact candidate id")
+        return self
 
 
 class ImplementationPlanRevision(BaseModel):
