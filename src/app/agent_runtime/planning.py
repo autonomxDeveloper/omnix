@@ -317,6 +317,23 @@ def waiver_requires_critic(candidate: ImpactCandidate, revision: TaskRevision) -
     return waiver_risk(candidate, revision) >= 12
 
 
+def _path_matches(pattern: str, path: str) -> bool:
+    normalized_pattern = str(pattern or "").replace("\\", "/").lstrip("./")
+    normalized_path = str(path or "").replace("\\", "/").lstrip("./")
+    if not normalized_pattern:
+        return False
+    if normalized_pattern == normalized_path:
+        return True
+    if any(token in normalized_pattern for token in "*?["):
+        return fnmatch.fnmatchcase(normalized_path, normalized_pattern)
+    return normalized_path.startswith(normalized_pattern.rstrip("/") + "/")
+
+
+def _plan_path_too_broad(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").strip()
+    return normalized in {"", ".", "./", "*", "**", "**/*", "./**", "./**/*"}
+
+
 def plan_gate_failures(
     spec: AgentRunSpec,
     revision: TaskRevision,
@@ -325,11 +342,41 @@ def plan_gate_failures(
     evidence: Sequence[InspectionEvidence],
 ) -> list[str]:
     failures: list[str] = []
+    all_requirement_ids = {item.id for item in revision.requirements}
     required_ids = {item.id for item in revision.requirements if item.required}
     plan_items = {item.id: item for item in submission.changes}
-    validation_ids = {item.id for item in revision.validation_plan}
-    validation_ids.update(item.id for item in submission.validations)
+    candidate_map = {item.candidate_id: item for item in candidates}
+    authoritative_validation_ids = {item.id for item in revision.validation_plan}
+    custom_validation_ids = {item.id for item in submission.validations}
+    validation_ids = authoritative_validation_ids | custom_validation_ids
+    evidence_ids = {item.evidence_id for item in evidence}
     coverage = {item.requirement_id: item for item in submission.requirement_coverage}
+    dispositions = {item.candidate_id: item for item in submission.impacts}
+
+    for validation in submission.validations:
+        if validation.id in authoritative_validation_ids:
+            failures.append(f"plan_validation_shadows_authoritative:{validation.id}")
+        for requirement_id in validation.requirement_ids:
+            if requirement_id not in all_requirement_ids:
+                failures.append(f"validation_unknown_requirement:{validation.id}:{requirement_id}")
+
+    for item in submission.changes:
+        for requirement_id in item.requirement_ids:
+            if requirement_id not in all_requirement_ids:
+                failures.append(f"plan_item_unknown_requirement:{item.id}:{requirement_id}")
+        for candidate_id in item.candidate_ids:
+            if candidate_id not in candidate_map:
+                failures.append(f"plan_item_unknown_candidate:{item.id}:{candidate_id}")
+        for validation_id in item.validation_ids:
+            if validation_id not in validation_ids:
+                failures.append(f"plan_item_unknown_validation:{item.id}:{validation_id}")
+        for path in item.paths:
+            if _plan_path_too_broad(path):
+                failures.append(f"plan_path_too_broad:{item.id}:{path}")
+
+    for row in submission.requirement_coverage:
+        if row.requirement_id not in all_requirement_ids:
+            failures.append(f"coverage_unknown_requirement:{row.requirement_id}")
 
     for requirement_id in sorted(required_ids):
         row = coverage.get(requirement_id)
@@ -346,31 +393,70 @@ def plan_gate_failures(
         for validation_id in row.validation_ids:
             if validation_id not in validation_ids:
                 failures.append(f"requirement_unknown_validation:{requirement_id}:{validation_id}")
+            elif validation_id in custom_validation_ids:
+                validation = next(item for item in submission.validations if item.id == validation_id)
+                if requirement_id not in validation.requirement_ids:
+                    failures.append(
+                        f"requirement_validation_missing_reverse_coverage:{requirement_id}:{validation_id}"
+                    )
 
-    evidence_ids = {item.evidence_id for item in evidence}
-    dispositions = {item.candidate_id: item for item in submission.impacts}
+    for disposition in submission.impacts:
+        if disposition.candidate_id not in candidate_map:
+            failures.append(f"impact_disposition_unknown_candidate:{disposition.candidate_id}")
+
     for candidate in candidates:
         high_value = candidate.impact_likelihood == "high" and candidate.relation_strength == "high"
-        if high_value and candidate.candidate_id not in dispositions:
+        disposition = dispositions.get(candidate.candidate_id)
+        if high_value and disposition is None:
             failures.append(f"impact_candidate_unclassified:{candidate.candidate_id}")
             continue
-        disposition = dispositions.get(candidate.candidate_id)
         if disposition is None:
             continue
-        if not set(disposition.evidence_ids).issubset(evidence_ids):
+
+        if not disposition.evidence_ids:
+            failures.append(f"impact_disposition_missing_evidence:{candidate.candidate_id}")
+        elif not set(disposition.evidence_ids).issubset(evidence_ids):
             failures.append(f"impact_disposition_unknown_evidence:{candidate.candidate_id}")
-        if disposition.disposition == "not_impacted" and waiver_requires_critic(candidate, revision):
-            if not disposition.waiver_proof_ids:
-                failures.append(f"high_risk_waiver_missing_proof:{candidate.candidate_id}")
-            elif not set(disposition.waiver_proof_ids).issubset(evidence_ids):
-                failures.append(f"high_risk_waiver_unknown_proof:{candidate.candidate_id}")
-            failures.append(f"semantic_waiver_requires_critic:{candidate.candidate_id}")
+        if not set(candidate.evidence_ids).issubset(set(disposition.evidence_ids)):
+            failures.append(f"impact_disposition_missing_candidate_evidence:{candidate.candidate_id}")
+
+        linked_items = [
+            item for item in submission.changes
+            if candidate.candidate_id in item.candidate_ids
+        ]
+        if disposition.disposition == "modify":
+            if not linked_items:
+                failures.append(f"impact_modify_not_linked_to_plan_item:{candidate.candidate_id}")
+            elif not any(
+                _path_matches(path, candidate.path)
+                for item in linked_items
+                for path in item.paths
+            ):
+                failures.append(f"impact_modify_path_not_planned:{candidate.candidate_id}:{candidate.path}")
+        elif disposition.disposition == "verify":
+            if not str(disposition.invariant or "").strip():
+                failures.append(f"impact_verify_missing_invariant:{candidate.candidate_id}")
+            if high_value and waiver_requires_critic(candidate, revision):
+                failures.append(f"semantic_waiver_requires_critic:{candidate.candidate_id}")
+        else:
+            if not disposition.reason.strip():
+                failures.append(f"impact_not_impacted_missing_reason:{candidate.candidate_id}")
+            if waiver_requires_critic(candidate, revision):
+                if not disposition.waiver_proof_ids:
+                    failures.append(f"high_risk_waiver_missing_proof:{candidate.candidate_id}")
+                elif not set(disposition.waiver_proof_ids).issubset(evidence_ids):
+                    failures.append(f"high_risk_waiver_unknown_proof:{candidate.candidate_id}")
+                failures.append(f"semantic_waiver_requires_critic:{candidate.candidate_id}")
 
         if high_value:
             for evidence_id in candidate.evidence_ids:
                 item = next((row for row in evidence if row.evidence_id == evidence_id), None)
                 if item is not None and item.completeness != "complete":
                     failures.append(f"inspection_evidence_incomplete:{evidence_id}")
+
+    for hypothesis in submission.causal_hypotheses:
+        if not set(hypothesis.evidence_ids).issubset(evidence_ids):
+            failures.append("causal_hypothesis_unknown_evidence")
 
     if submission.blockers:
         failures.extend(f"plan_blocker:{index + 1}" for index, _ in enumerate(submission.blockers))
@@ -417,18 +503,6 @@ def classify_operation_effect(tool_name: str, *, command: str = "") -> Operation
     return "unknown"
 
 
-def _path_matches(pattern: str, path: str) -> bool:
-    normalized_pattern = str(pattern or "").replace("\\", "/").lstrip("./")
-    normalized_path = str(path or "").replace("\\", "/").lstrip("./")
-    if not normalized_pattern:
-        return False
-    if normalized_pattern == normalized_path:
-        return True
-    if any(token in normalized_pattern for token in "*?["):
-        return fnmatch.fnmatchcase(normalized_path, normalized_pattern)
-    return normalized_path.startswith(normalized_pattern.rstrip("/") + "/")
-
-
 def planned_paths(plan: ImplementationPlanRevision) -> list[str]:
     return list(dict.fromkeys(
         path.replace("\\", "/")
@@ -436,6 +510,22 @@ def planned_paths(plan: ImplementationPlanRevision) -> list[str]:
         for path in item.paths
         if str(path).strip()
     ))
+
+
+def command_target_paths(command: str) -> list[str]:
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        tokens = command.split()
+    output: list[str] = []
+    for token in tokens[1:]:
+        value = token.strip("'\"")
+        if not value or value.startswith("-"):
+            continue
+        normalized = value.replace("\\", "/")
+        if "/" in normalized or normalized.startswith("."):
+            output.append(normalized)
+    return output
 
 
 def operation_plan_failures(
@@ -476,6 +566,10 @@ def operation_plan_failures(
                 failures.append(f"mutation_not_in_plan:{target_path}")
         elif command:
             normalized = command.casefold()
+            target_paths = command_target_paths(command)
+            for target in target_paths:
+                if not any(_path_matches(path, target) for path in planned_paths(plan)):
+                    failures.append(f"mutation_not_in_plan:{target}")
             explicit = any(
                 effect in item.allowed_effects
                 and any(normalized.startswith(hint.casefold()) for hint in item.command_hints)
@@ -541,19 +635,3 @@ def plan_conformance_failures(
                 failures.append(f"residual_impacted_reference:{candidate.candidate_id}:{candidate.path}")
 
     return list(dict.fromkeys(failures))
-
-
-def command_target_paths(command: str) -> list[str]:
-    try:
-        tokens = shlex.split(command, posix=os.name != "nt")
-    except ValueError:
-        tokens = command.split()
-    output: list[str] = []
-    for token in tokens[1:]:
-        value = token.strip("'\"")
-        if not value or value.startswith("-"):
-            continue
-        normalized = value.replace("\\", "/")
-        if "/" in normalized or normalized.startswith("."):
-            output.append(normalized)
-    return output
