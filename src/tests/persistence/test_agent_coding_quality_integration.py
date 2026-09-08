@@ -75,6 +75,18 @@ def test_coding_quality_state_and_evidence_survive_repository_reconstruction() -
             output_digest="d" * 64,
             covers_requirement_ids=["R1"],
         )
+        browser_validation = ValidationResult(
+            run_id=run_id,
+            validation_id="browser-validation",
+            kind="browser",
+            task_revision_id=revision_id,
+            workspace_state_id=state.state_id,
+            command="omnix_capability browser.assert_text_contains",
+            exit_code=0,
+            success=True,
+            output_digest="e" * 64,
+            covers_requirement_ids=["R1"],
+        )
         self_review = SelfReviewResult(run_id=run_id, task_revision_id=revision_id, workspace_state_id=state.state_id, verdict="approve", requirements=[ReviewRequirementResult(requirement_id="R1", status="satisfied", evidence="Exact state checked")])
         review_snapshot = ReviewSnapshot(
             run_id=run_id,
@@ -134,6 +146,7 @@ def test_coding_quality_state_and_evidence_survive_repository_reconstruction() -
             )
             quality.add_workspace_state(state)
             quality.add_validation_result(validation)
+            quality.add_validation_result(browser_validation)
             quality.add_self_review_result(self_review)
             quality.add_review_snapshot(review_snapshot)
             quality.add_review_result(review)
@@ -163,8 +176,10 @@ def test_coding_quality_state_and_evidence_survive_repository_reconstruction() -
         assert stage["task_revision_id"] == revision_id
         assert stage["workspace_state_id"] == state.state_id
         assert persisted_state == state
-        assert validations == [validation]
-        assert validations[0].covers_requirement_ids == ["R1"]
+        assert {item.kind for item in validations} == {"test", "browser"}
+        assert validation in validations
+        assert browser_validation in validations
+        assert all(item.covers_requirement_ids == ["R1"] for item in validations)
         assert self_reviews == [self_review]
         assert snapshot == review_snapshot
         assert reviews == [review]

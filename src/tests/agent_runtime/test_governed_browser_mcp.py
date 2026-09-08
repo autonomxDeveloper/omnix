@@ -21,6 +21,11 @@ from app.assistant_tools.models import AssistantToolRequest
 from app.assistant_tools.validation import is_valid_action_id
 
 
+@pytest.fixture(autouse=True)
+def _use_agent_browser_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OMNIX_AGENT_BROWSER_BACKEND", "agent-browser")
+
+
 def _write_policy(path: Path) -> None:
     path.write_text(
         json.dumps(
@@ -64,6 +69,7 @@ def test_browser_registry_surface_excludes_arbitrary_eval() -> None:
     assert "browser.open" in ids
     assert "browser.snapshot" in ids
     assert "browser.screenshot" in ids
+    assert "browser.assert_text_not_contains" in ids
     assert "browser.evaluate" not in ids
     assert "browser.eval" not in ids
 
@@ -78,6 +84,10 @@ def test_browser_authority_is_coding_only_and_task_scoped() -> None:
     assert "browser.open" in coding_external_capabilities_for_task(
         "Fix the React modal and verify the UI"
     )
+    assert task_requires_browser_authority("remove tools option from side bar")
+    assert "browser.open" in coding_external_capabilities_for_task(
+        "remove tools option from side bar"
+    )
     assert not task_requires_browser_authority("Refactor the Python repository layer")
     assert "browser.open" not in coding_external_capabilities_for_task(
         "Refactor the Python repository layer"
@@ -85,6 +95,19 @@ def test_browser_authority_is_coding_only_and_task_scoped() -> None:
     assert not task_requires_browser_authority(
         "Fix the frontend CSS but do not use the browser"
     )
+
+
+def test_explicit_browser_assertion_request_issues_browser_authority() -> None:
+    task = (
+        "Remove the Tools option from the Live Voice sidebar. Use the governed browser "
+        "to verify the final rendered UI, and use browser.assert_text_not_contains to "
+        "confirm that Tools is absent."
+    )
+
+    capabilities = coding_external_capabilities_for_task(task)
+
+    assert task_requires_browser_authority(task)
+    assert "browser.assert_text_not_contains" in capabilities
 
 
 def test_browser_open_is_origin_scoped_and_uses_agent_browser_safeguards(
@@ -322,7 +345,44 @@ def test_browser_assertion_becomes_state_bound_validation() -> None:
     assert result.workspace_state_id == "state-final"
     assert result.task_revision_id == revision.revision_id
     assert result.success is True
+    assert result.metadata["assertion_expected"] == "20 / 20"
     assert set(browser_spec.covers).issubset(result.covers_requirement_ids)
+
+
+def test_browser_runtime_failure_is_classified_as_infrastructure() -> None:
+    from app.agent_runtime.coding_quality import validation_result_from_tool_event
+    from app.agent_runtime.contracts import AgentEvent
+
+    event = AgentEvent(
+        run_id="run-browser-infrastructure",
+        event_type="tool.completed",
+        payload={
+            "tool_call_id": "browser-proof-failed",
+            "args": {
+                "capability_id": "browser.assert_text_contains",
+                "input": {"selector": "#score", "expected": "20 / 20"},
+            },
+            "is_error": True,
+            "result": {
+                "details": {
+                    "executed": False,
+                    "result": {"error": "browser_runtime_unavailable"},
+                }
+            },
+        },
+    )
+
+    result = validation_result_from_tool_event(
+        event,
+        run_id=event.run_id,
+        task_revision_id="revision-1",
+        workspace_state_id="state-1",
+        revision=None,
+    )
+
+    assert result is not None
+    assert result.success is False
+    assert result.metadata["failure_class"] == "infrastructure"
 
 
 def test_generic_mcp_reference_does_not_union_multiple_servers(
@@ -361,3 +421,53 @@ def test_generic_mcp_reference_does_not_union_multiple_servers(
     assert coding_external_capabilities_for_task("Use the docs MCP server") == (
         "mcp.docs.search",
     )
+
+
+def test_negative_browser_assertion_proves_removed_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(browser_adapter, "browser_available", lambda: True)
+    monkeypatch.setattr(
+        browser_adapter,
+        "_run",
+        lambda argv: subprocess.CompletedProcess(argv, 0, stdout="Live Voice   Minimize", stderr=""),
+    )
+    passed = browser_adapter.run_browser_tool_request(
+        AssistantToolRequest(
+            tool_id="browser",
+            action_id="browser.assert_text_not_contains",
+            session_id="run-browser-negative",
+            input={"selector": "#side-panel", "expected": "Tools"},
+        )
+    )
+    assert passed.error is None
+    assert passed.output["assertion_passed"] is True
+
+    monkeypatch.setattr(
+        browser_adapter,
+        "_run",
+        lambda argv: subprocess.CompletedProcess(argv, 0, stdout="Live Voice   Tools   Minimize", stderr=""),
+    )
+    failed = browser_adapter.run_browser_tool_request(
+        AssistantToolRequest(
+            tool_id="browser",
+            action_id="browser.assert_text_not_contains",
+            session_id="run-browser-negative",
+            input={"selector": "#side-panel", "expected": "Tools"},
+        )
+    )
+    assert failed.error == "browser_assertion_failed"
+
+
+def test_plain_sidebar_mutation_requires_browser_proof() -> None:
+    from app.agent_runtime.coding_quality import compile_task_engineering_contract
+
+    _requirements, _constraints, plan = compile_task_engineering_contract(
+        "remove tools option from side bar",
+        [],
+        profile="coding",
+        mutating=True,
+    )
+    browser_spec = next(item for item in plan if item.id == "browser-validation")
+    assert browser_spec.required is True
+    assert "browser.assert_text_not_contains" in browser_spec.description

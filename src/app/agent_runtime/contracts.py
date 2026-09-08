@@ -57,9 +57,17 @@ AgentEventType = Literal[
     "run.superseded",
     "quality.stage",
     "quality.self_review_completed",
+    "quality.self_review_protocol_retry_requested",
+    "quality.self_review_protocol_exhausted",
     "quality.validation_recorded",
     "quality.review_started",
+    "quality.review_attempt_started",
+    "quality.review_attempt_completed",
+    "quality.review_retry_requested",
+    "quality.review_runtime_exhausted",
     "quality.review_completed",
+    "quality.implementation_continuation_requested",
+    "quality.implementation_candidate_exhausted",
     "quality.repair_requested",
 ]
 AgentApprovalState = Literal["pending", "approved", "rejected", "expired"]
@@ -104,6 +112,24 @@ QualityStage = Literal[
 ]
 ReviewVerdict = Literal["approve", "changes_required", "blocked"]
 RequirementReviewStatus = Literal["satisfied", "partial", "missing", "not_applicable"]
+ReviewAttemptStatus = Literal[
+    "running",
+    "completed",
+    "runtime_failed",
+    "protocol_failed",
+    "cancelled",
+]
+ReviewAttemptFailureClass = Literal[
+    "reviewer_local_budget_exhausted",
+    "parent_global_budget_exhausted",
+    "provider_rate_limited",
+    "provider_transport_failure",
+    "provider_unavailable",
+    "review_protocol_invalid",
+    "runtime_failure",
+    "cancelled",
+]
+ResourceGrantState = Literal["active", "released", "exhausted"]
 
 
 def utc_now() -> datetime:
@@ -356,6 +382,36 @@ class ReviewSnapshot(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ReviewAttempt(BaseModel):
+    """One reviewer execution attempt against an immutable review snapshot.
+
+    This is execution/protocol evidence, not a substantive code-quality verdict.
+    Runtime or protocol failures therefore cannot be mistaken for ReviewResult.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    review_attempt_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    run_id: str
+    reviewer_run_id: str
+    review_snapshot_id: str
+    task_revision_id: str | None = None
+    workspace_state_id: str
+    reviewer_slot: int = Field(ge=0)
+    runtime_attempt: int = Field(ge=1)
+    protocol_version: str
+    model_provider_id: str
+    model_id: str
+    reasoning_effort: str | None = None
+    status: ReviewAttemptStatus = "running"
+    failure_class: ReviewAttemptFailureClass | None = None
+    failure_reason: str | None = None
+    retryable: bool = False
+    started_at: datetime = Field(default_factory=utc_now)
+    finished_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class ReviewResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -478,6 +534,25 @@ class RunLimits(BaseModel):
     max_tokens: int | None = Field(default=None, ge=1)
     max_cost: float | None = Field(default=None, ge=0)
     max_tool_calls: int = Field(default=500, ge=1, le=100_000)
+
+
+class ResourceGrant(BaseModel):
+    """Durable parent-to-child resource authority.
+
+    Grant ceilings are local circuit breakers. Parent/global accounting charges
+    actual terminal child spend and reserves only the unused capacity of active
+    direct-child grants, so unused child capacity is reclaimable.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    grant_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    parent_run_id: str
+    child_run_id: str
+    limits: RunLimits
+    state: ResourceGrantState = "active"
+    created_at: datetime = Field(default_factory=utc_now)
+    released_at: datetime | None = None
 
 
 class AgentRunSpec(BaseModel):

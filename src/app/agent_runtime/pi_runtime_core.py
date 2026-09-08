@@ -15,6 +15,7 @@ from typing import Any
 import uuid
 
 from .contracts import AgentArtifact, AgentEvent, AgentRunCommand, AgentRunSnapshot, AgentRunSpec
+from .debug_logging import configure_agent_debug_logging, log_agent_activity
 from .interfaces import AgentRuntime
 from .isolation import launch_agent_process
 
@@ -156,9 +157,17 @@ def pi_rpc_argv(spec: AgentRunSpec, *, pi_path: str = "pi") -> list[str]:
         "workspace.git_status": "powershell" if os.name == "nt" else "bash",
         "workspace.git_diff": "powershell" if os.name == "nt" else "bash",
     }
-    tools = sorted({tool for capability, tool in mapping.items() if capability in spec.capabilities})
+    tools = {tool for capability, tool in mapping.items() if capability in spec.capabilities}
+    # Pi's --tools option is a global active-tool allowlist: it filters extension
+    # tools as well as built-ins. Whenever Omnix issues governed external
+    # capabilities, keep the broker extension's canonical tool active or the
+    # model can see the authority in its prompt but has no callable path to use
+    # it. This is intentionally independent of the specific external capability
+    # IDs; pi_broker_extension.ts still enforces the RunSpec allowlist itself.
+    if spec.external_capabilities:
+        tools.add("omnix_capability")
     if tools:
-        argv.extend(["--tools", ",".join(tools)])
+        argv.extend(["--tools", ",".join(sorted(tools))])
     else:
         argv.append("--no-builtin-tools")
     if spec.model.reasoning_effort:
@@ -278,6 +287,63 @@ def normalize_pi_event(
     return None
 
 
+def _rpc_payload_for_log(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep RPC diagnostics useful without writing image blobs to disk."""
+
+    def transform(value: Any, key: str = "") -> Any:
+        if isinstance(value, dict):
+            block_type = str(value.get("type") or "").casefold()
+            if block_type in {
+                "thinking",
+                "reasoning",
+                "analysis",
+                "thinking_delta",
+                "reasoning_delta",
+                "analysis_delta",
+            }:
+                return {
+                    "type": block_type,
+                    "content": "[omitted-private-reasoning]",
+                }
+            output: dict[str, Any] = {}
+            for item_key, item_value in value.items():
+                normalized_key = str(item_key)
+                if normalized_key.casefold() in {"data", "image_data", "base64"} and (
+                    key.casefold() in {"image", "images"}
+                    or "image" in normalized_key.casefold()
+                ):
+                    if isinstance(item_value, str):
+                        output[normalized_key] = f"<image-data:{len(item_value)} chars>"
+                    else:
+                        output[normalized_key] = "<image-data>"
+                else:
+                    output[normalized_key] = transform(item_value, normalized_key)
+            return output
+        if isinstance(value, list):
+            return [transform(item, key) for item in value]
+        return value
+
+    return transform(payload)
+
+
+def _spec_for_log(spec: AgentRunSpec, *, cwd: Path, argv: list[str]) -> dict[str, Any]:
+    return {
+        "profile": spec.profile,
+        "task": spec.task,
+        "objective": spec.objective,
+        "provider_id": spec.model.provider_id,
+        "model_id": spec.model.model_id,
+        "reasoning_effort": spec.model.reasoning_effort,
+        "capabilities": list(spec.capabilities),
+        "external_capabilities": list(spec.external_capabilities),
+        "command_policy": spec.execution.command_policy,
+        "approval_policy": spec.approval_policy,
+        "network_policy": spec.execution.network_policy,
+        "workspace": str(cwd),
+        "argv": argv,
+    }
+
+
 class PiRpcSession:
     def __init__(
         self,
@@ -287,6 +353,7 @@ class PiRpcSession:
         on_event: Callable[[AgentEvent], None] | None = None,
         process_factory: Callable[..., subprocess.Popen[str]] | None = None,
     ) -> None:
+        configure_agent_debug_logging()
         self.spec = spec
         self.on_event = on_event
         self._events: deque[AgentEvent] = deque(maxlen=10_000)
@@ -307,6 +374,13 @@ class PiRpcSession:
             cwd = self._temporary_cwd
         else:
             cwd = Path(spec.workspace.worktree or spec.workspace.root).expanduser().resolve()
+        argv: list[str] = []
+        log_agent_activity(
+            "pi.session.initializing",
+            category="lifecycle",
+            run_id=spec.run_id,
+            fields={"workspace": str(cwd)},
+        )
         try:
             env = build_agent_environment(
                 spec,
@@ -314,6 +388,12 @@ class PiRpcSession:
                 model_session_id=uuid.uuid4().hex,
             )
             argv = pi_rpc_argv(spec, pi_path=pi_path)
+            log_agent_activity(
+                "pi.process.launch_requested",
+                category="lifecycle",
+                run_id=spec.run_id,
+                fields=_spec_for_log(spec, cwd=cwd, argv=argv),
+            )
             if process_factory is not None:
                 self.process = process_factory(
                     argv,
@@ -329,17 +409,42 @@ class PiRpcSession:
                 )
             else:
                 self.process = launch_agent_process(spec, argv=argv, cwd=cwd, env=env)
-        except Exception:
+        except Exception as exc:
+            log_agent_activity(
+                "pi.process.start_failed",
+                category="lifecycle",
+                level="error",
+                run_id=spec.run_id,
+                fields={"workspace": str(cwd), "argv": argv},
+                error=exc,
+                include_traceback=True,
+            )
             if self._temporary_cwd is not None:
                 shutil.rmtree(self._temporary_cwd, ignore_errors=True)
                 self._temporary_cwd = None
             raise
+        log_agent_activity(
+            "pi.process.started",
+            category="lifecycle",
+            run_id=spec.run_id,
+            fields={
+                "pid": getattr(self.process, "pid", None),
+                "workspace": str(cwd),
+                "argv": argv,
+            },
+        )
         self._reader = threading.Thread(target=self._read_stdout, name=f"pi-rpc-{spec.run_id[:8]}", daemon=True)
         self._stderr_reader = threading.Thread(target=self._read_stderr, name=f"pi-stderr-{spec.run_id[:8]}", daemon=True)
         self._monitor = threading.Thread(target=self._monitor_process, name=f"pi-monitor-{spec.run_id[:8]}", daemon=True)
         self._reader.start()
         self._stderr_reader.start()
         self._monitor.start()
+        log_agent_activity(
+            "pi.reader_threads.started",
+            category="lifecycle",
+            run_id=spec.run_id,
+            fields={"pid": getattr(self.process, "pid", None)},
+        )
 
     def prompt(
         self,
@@ -355,6 +460,12 @@ class PiRpcSession:
         payload: dict[str, Any] = {"type": "prompt", "message": message}
         if images:
             payload["images"] = images
+        log_agent_activity(
+            "pi.turn.prompt_requested",
+            category="turn",
+            run_id=getattr(getattr(self, "spec", None), "run_id", None),
+            fields={"message_chars": len(message), "has_images": bool(images)},
+        )
         self.send(payload)
 
     def prompt_after_interrupted_turn(self, message: str) -> None:
@@ -371,7 +482,14 @@ class PiRpcSession:
         # second agent_settled event. Keep the abort for genuinely active
         # turns (approval/tool recovery), where it is needed to clear Pi's
         # interrupted RPC state.
-        if getattr(self, "_turn_active", True):
+        turn_active = getattr(self, "_turn_active", True)
+        log_agent_activity(
+            "pi.turn.interrupted_follow_up_requested",
+            category="turn",
+            run_id=getattr(getattr(self, "spec", None), "run_id", None),
+            fields={"turn_active_before_abort": turn_active, "message_chars": len(message)},
+        )
+        if turn_active:
             self.abort()
         self.prompt(message)
 
@@ -389,17 +507,70 @@ class PiRpcSession:
         payload: dict[str, Any] = {"type": "steer", "message": message}
         if images:
             payload["images"] = images
+        log_agent_activity(
+            "pi.turn.steer_requested",
+            category="turn",
+            run_id=getattr(getattr(self, "spec", None), "run_id", None),
+            fields={
+                "message_chars": len(message),
+                "task_revision_id": task_revision_id,
+                "has_images": bool(images),
+            },
+        )
         self.send(payload)
 
     def abort(self) -> None:
         self._turn_active = False
+        log_agent_activity(
+            "pi.turn.abort_requested",
+            category="turn",
+            run_id=self.spec.run_id,
+        )
         self.send({"type": "abort"})
 
     def send(self, payload: dict[str, Any]) -> None:
         if self._closed or self.process.poll() is not None or self.process.stdin is None:
-            raise PiRuntimeError(self._process_error("Pi RPC process is not running"))
-        self.process.stdin.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
-        self.process.stdin.flush()
+            error = PiRuntimeError(self._process_error("Pi RPC process is not running"))
+            log_agent_activity(
+                "pi.rpc.send_rejected",
+                category="rpc",
+                level="error",
+                run_id=self.spec.run_id,
+                fields={"payload": _rpc_payload_for_log(payload), "closed": self._closed},
+                error=error,
+            )
+            raise error
+        serialized = json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n"
+        log_agent_activity(
+            "pi.rpc.outbound",
+            category="rpc",
+            run_id=self.spec.run_id,
+            fields={
+                "message_type": payload.get("type"),
+                "bytes": len(serialized.encode("utf-8")),
+                "payload": _rpc_payload_for_log(payload),
+            },
+        )
+        try:
+            self.process.stdin.write(serialized)
+            self.process.stdin.flush()
+        except Exception as exc:
+            log_agent_activity(
+                "pi.rpc.send_failed",
+                category="rpc",
+                level="error",
+                run_id=self.spec.run_id,
+                fields={"message_type": payload.get("type")},
+                error=exc,
+                include_traceback=True,
+            )
+            raise
+        log_agent_activity(
+            "pi.rpc.outbound_flushed",
+            category="rpc",
+            run_id=self.spec.run_id,
+            fields={"message_type": payload.get("type")},
+        )
 
     def events(self) -> list[AgentEvent]:
         return list(self._events)
@@ -407,6 +578,12 @@ class PiRpcSession:
     def close(self) -> None:
         if self._closed:
             return
+        log_agent_activity(
+            "pi.session.close_requested",
+            category="lifecycle",
+            run_id=self.spec.run_id,
+            fields={"pid": getattr(self.process, "pid", None), "returncode": self.process.poll()},
+        )
         self._closed = True
         if self.process.poll() is None:
             try:
@@ -420,8 +597,15 @@ class PiRpcSession:
         if self._temporary_cwd is not None:
             shutil.rmtree(self._temporary_cwd, ignore_errors=True)
             self._temporary_cwd = None
+        log_agent_activity(
+            "pi.session.closed",
+            category="lifecycle",
+            run_id=self.spec.run_id,
+            fields={"pid": getattr(self.process, "pid", None), "returncode": self.process.poll()},
+        )
 
     def _monitor_process(self) -> None:
+        returncode: int | None = None
         try:
             returncode = self.process.wait()
             prefix = (
@@ -430,6 +614,18 @@ class PiRpcSession:
             )
         except Exception as exc:
             prefix = f"Pi RPC process monitor failed: {type(exc).__name__}: {exc}"
+        log_agent_activity(
+            "pi.process.exit_observed",
+            category="lifecycle",
+            level="warning" if not self._closed and not self._terminal_seen else "info",
+            run_id=self.spec.run_id,
+            fields={
+                "returncode": returncode,
+                "closed": self._closed,
+                "terminal_seen": self._terminal_seen,
+                "stderr_tail": list(self._stderr)[-20:],
+            },
+        )
         if self._closed or self._terminal_seen:
             return
         detail = self._process_error(prefix)
@@ -439,6 +635,13 @@ class PiRpcSession:
             payload={"source": "pi", "error": detail},
         )
         self._events.append(event)
+        log_agent_activity(
+            "pi.process.failure_emitted",
+            category="lifecycle",
+            level="error",
+            run_id=self.spec.run_id,
+            fields={"returncode": returncode, "error": detail},
+        )
         if self.on_event is not None:
             self.on_event(event)
 
@@ -446,7 +649,7 @@ class PiRpcSession:
         stream = self.process.stdout
         if stream is None:
             return
-        for line in stream:
+        for line_number, line in enumerate(stream, start=1):
             text = line[:-1] if line.endswith("\n") else line
             if text.endswith("\r"):
                 text = text[:-1]
@@ -454,15 +657,65 @@ class PiRpcSession:
                 continue
             try:
                 payload = json.loads(text)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
                 self._stderr.append(f"non-json stdout: {text[:500]}")
+                log_agent_activity(
+                    "pi.rpc.stdout.invalid_json",
+                    category="rpc",
+                    level="warning",
+                    run_id=self.spec.run_id,
+                    fields={
+                        "line_number": line_number,
+                        "bytes": len(text.encode("utf-8")),
+                        "line_preview": text[:1000],
+                    },
+                    error=exc,
+                )
                 continue
+            log_agent_activity(
+                "pi.rpc.stdout.received",
+                category="rpc",
+                run_id=self.spec.run_id,
+                fields={
+                    "line_number": line_number,
+                    "bytes": len(text.encode("utf-8")),
+                    "payload": _rpc_payload_for_log(payload) if isinstance(payload, dict) else payload,
+                },
+            )
             if not isinstance(payload, dict):
+                log_agent_activity(
+                    "pi.rpc.stdout.non_object",
+                    category="rpc",
+                    level="warning",
+                    run_id=self.spec.run_id,
+                    fields={"line_number": line_number, "payload_type": type(payload).__name__},
+                )
                 continue
             if payload.get("type") == "response":
                 self._responses.put(payload)
+                log_agent_activity(
+                    "pi.rpc.response_received",
+                    category="rpc",
+                    run_id=self.spec.run_id,
+                    fields={"line_number": line_number, "response": _rpc_payload_for_log(payload)},
+                )
                 continue
             event_type = str(payload.get("type") or "")
+            if self._terminal_seen:
+                log_agent_activity(
+                    "pi.rpc.event_ignored_after_terminal",
+                    category="rpc",
+                    level="warning",
+                    run_id=self.spec.run_id,
+                    fields={"line_number": line_number, "raw_event_type": event_type or None},
+                )
+                continue
+            log_agent_activity(
+                "pi.rpc.event_received",
+                category="rpc",
+                run_id=self.spec.run_id,
+                fields={"line_number": line_number, "raw_event_type": event_type or None},
+            )
             if event_type == "turn_start":
                 self._assistant_text_parts = []
                 self._terminal_assistant_text_emitted = False
@@ -493,12 +746,30 @@ class PiRpcSession:
                         },
                     )
                     self._events.append(recovered)
+                    log_agent_activity(
+                        "pi.event.recovered_from_text_deltas",
+                        category="event",
+                        run_id=self.spec.run_id,
+                        fields={
+                            "event_type": recovered.event_type,
+                            "text_chars": len(recovered_text),
+                        },
+                    )
                     if self.on_event is not None:
                         try:
                             self.on_event(recovered)
                         except Exception as exc:
                             self._stderr.append(
                                 f"event sink failed for {recovered.event_type}: {type(exc).__name__}: {exc}"
+                            )
+                            log_agent_activity(
+                                "pi.event_sink.failed",
+                                category="event",
+                                level="error",
+                                run_id=self.spec.run_id,
+                                fields={"event_type": recovered.event_type},
+                                error=exc,
+                                include_traceback=True,
                             )
             tool_call_id = str(payload.get("toolCallId") or "")
             revision_id = self._task_revision_id
@@ -516,6 +787,18 @@ class PiRpcSession:
                 self._tool_revision_ids.pop(tool_call_id, None)
             if event is not None:
                 self._events.append(event)
+                log_agent_activity(
+                    "pi.event.normalized",
+                    category="event",
+                    run_id=self.spec.run_id,
+                    fields={
+                        "raw_event_type": event_type,
+                        "event_type": event.event_type,
+                        "tool_call_id": tool_call_id or None,
+                        "task_revision_id": revision_id,
+                        "payload": event.payload,
+                    },
+                )
                 if event.event_type in {"run.settled", "run.completed", "run.failed"}:
                     self._terminal_seen = True
                 if self.on_event is not None:
@@ -530,6 +813,23 @@ class PiRpcSession:
                         self._stderr.append(
                             f"event sink failed for {event.event_type}: {type(exc).__name__}: {exc}"
                         )
+                        log_agent_activity(
+                            "pi.event_sink.failed",
+                            category="event",
+                            level="error",
+                            run_id=self.spec.run_id,
+                            fields={"event_type": event.event_type},
+                            error=exc,
+                            include_traceback=True,
+                        )
+            else:
+                log_agent_activity(
+                    "pi.event.unmapped",
+                    category="event",
+                    level="debug",
+                    run_id=self.spec.run_id,
+                    fields={"raw_event_type": event_type, "payload": _rpc_payload_for_log(payload)},
+                )
 
     def _read_stderr(self) -> None:
         stream = self.process.stderr
@@ -537,7 +837,15 @@ class PiRpcSession:
             return
         for line in stream:
             if line.strip():
-                self._stderr.append(line.rstrip())
+                stderr_line = line.rstrip()
+                self._stderr.append(stderr_line)
+                log_agent_activity(
+                    "pi.process.stderr",
+                    category="process",
+                    level="warning",
+                    run_id=self.spec.run_id,
+                    fields={"line": stderr_line},
+                )
 
     def _process_error(self, prefix: str) -> str:
         detail = "\n".join(self._stderr)
@@ -548,6 +856,7 @@ class PiAgentRuntime(AgentRuntime):
     """Process-local Pi runtime. Durable orchestration is layered above this class."""
 
     def __init__(self, *, pi_path: str = "pi", event_sink: Callable[[AgentEvent], None] | None = None) -> None:
+        configure_agent_debug_logging()
         self.pi_path = pi_path
         self.event_sink = event_sink
         self._sessions: dict[str, PiRpcSession] = {}
@@ -565,8 +874,26 @@ class PiAgentRuntime(AgentRuntime):
         reference_context: str = "",
         reference_images: list[dict[str, str]] | None = None,
     ) -> AgentRunSnapshot:
+        log_agent_activity(
+            "runtime.start.requested",
+            category="runtime",
+            run_id=spec.run_id,
+            fields={
+                "profile": spec.profile,
+                "task": spec.task,
+                "provider_id": spec.model.provider_id,
+                "model_id": spec.model.model_id,
+                "has_reference_context": bool(reference_context),
+                "reference_image_count": len(reference_images or []),
+            },
+        )
         with self._lock:
             if spec.run_id in self._sessions:
+                log_agent_activity(
+                    "runtime.start.duplicate",
+                    category="runtime",
+                    run_id=spec.run_id,
+                )
                 return self._snapshots[spec.run_id]
             snapshot = AgentRunSnapshot(run_id=spec.run_id, spec=spec, status="starting")
             self._snapshots[spec.run_id] = snapshot
@@ -596,8 +923,23 @@ class PiAgentRuntime(AgentRuntime):
                     ),
                     **({"images": reference_images} if reference_images else {}),
                 )
+                log_agent_activity(
+                    "runtime.start.accepted",
+                    category="runtime",
+                    run_id=spec.run_id,
+                    fields={"status": running.status, "revision": running.revision},
+                )
                 return running
-            except Exception:
+            except Exception as exc:
+                log_agent_activity(
+                    "runtime.start.failed",
+                    category="runtime",
+                    level="error",
+                    run_id=spec.run_id,
+                    fields={"has_session": session is not None},
+                    error=exc,
+                    include_traceback=True,
+                )
                 self._sessions.pop(spec.run_id, None)
                 self._snapshots.pop(spec.run_id, None)
                 if session is not None:
@@ -632,6 +974,16 @@ class PiAgentRuntime(AgentRuntime):
         reference_context: str = "",
         reference_images: list[dict[str, str]] | None = None,
     ) -> AgentRunSnapshot:
+        log_agent_activity(
+            "runtime.command.requested",
+            category="runtime",
+            run_id=command.run_id,
+            fields={
+                "command_id": command.command_id,
+                "command_type": command.command_type,
+                "payload": command.payload,
+            },
+        )
         with self._lock:
             session = self._sessions.get(command.run_id)
             snapshot = self._snapshots.get(command.run_id)
@@ -718,14 +1070,37 @@ class PiAgentRuntime(AgentRuntime):
                         abort()
                     session.prompt(approval_prompt)
             self._snapshots[command.run_id] = snapshot
+            log_agent_activity(
+                "runtime.command.dispatched",
+                category="runtime",
+                run_id=command.run_id,
+                fields={
+                    "command_id": command.command_id,
+                    "command_type": command.command_type,
+                    "status": snapshot.status,
+                    "desired_state": snapshot.desired_state,
+                    "revision": snapshot.revision,
+                },
+            )
             return snapshot
 
     def close_run(self, run_id: str) -> None:
+        log_agent_activity(
+            "runtime.close_requested",
+            category="runtime",
+            run_id=run_id,
+        )
         with self._lock:
             session = self._sessions.pop(run_id, None)
             self._snapshots.pop(run_id, None)
         if session is not None:
             session.close()
+        log_agent_activity(
+            "runtime.closed",
+            category="runtime",
+            run_id=run_id,
+            fields={"had_session": session is not None},
+        )
 
     def active_run_ids(self) -> set[str]:
         with self._lock:
@@ -745,6 +1120,17 @@ class PiAgentRuntime(AgentRuntime):
         return list(self._artifacts.get(run_id, []))
 
     def _on_event(self, event: AgentEvent) -> None:
+        log_agent_activity(
+            "runtime.event.observed",
+            category="runtime",
+            run_id=event.run_id,
+            fields={
+                "event_type": event.event_type,
+                "sequence": event.sequence,
+                "event_id": event.event_id,
+                "payload": event.payload,
+            },
+        )
         with self._lock:
             snapshot = self._snapshots.get(event.run_id)
             if snapshot is not None:
@@ -763,7 +1149,19 @@ class PiAgentRuntime(AgentRuntime):
                         }
                     )
         if self.event_sink is not None:
-            self.event_sink(event)
+            try:
+                self.event_sink(event)
+            except Exception as exc:
+                log_agent_activity(
+                    "runtime.event_sink.failed",
+                    category="runtime",
+                    level="error",
+                    run_id=event.run_id,
+                    fields={"event_type": event.event_type},
+                    error=exc,
+                    include_traceback=True,
+                )
+                raise
 
     @staticmethod
     def _initial_prompt(

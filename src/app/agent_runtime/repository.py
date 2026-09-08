@@ -21,6 +21,7 @@ from .contracts import (
     TaskRevision,
     WorkerLease,
 )
+from .debug_logging import log_agent_activity
 
 
 def _json_default(value: Any) -> Any:
@@ -427,6 +428,52 @@ class PostgresAgentRunRepository:
         return updated
 
     def append_event(self, event: AgentEvent) -> AgentEvent:
+        """Persist an event and mirror the durable result to the agent trace."""
+
+        log_agent_activity(
+            "durable.event.append_requested",
+            category="durable",
+            run_id=event.run_id,
+            fields={
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                "expected_sequence": event.sequence,
+                "payload": event.payload,
+            },
+        )
+        try:
+            stored = self._append_event(event)
+        except Exception as exc:
+            log_agent_activity(
+                "durable.event.append_failed",
+                category="durable",
+                level="error",
+                run_id=event.run_id,
+                fields={
+                    "event_id": event.event_id,
+                    "event_type": event.event_type,
+                    "expected_sequence": event.sequence,
+                },
+                error=exc,
+                include_traceback=True,
+            )
+            raise
+        log_agent_activity(
+            "durable.event.persisted",
+            category="durable",
+            run_id=stored.run_id,
+            fields={
+                "event_id": stored.event_id,
+                "sequence": stored.sequence,
+                "event_type": stored.event_type,
+                "correlation_id": stored.correlation_id,
+                "causation_id": stored.causation_id,
+                "payload": stored.payload,
+            },
+        )
+        return stored
+
+    def _append_event(self, event: AgentEvent) -> AgentEvent:
         # Lock the run row so MAX(sequence)+1 remains deterministic under concurrent writers.
         locked = self.connection.execute(
             "SELECT revision FROM omnix_agent_runs WHERE workspace_id = %s AND run_id = %s FOR UPDATE",

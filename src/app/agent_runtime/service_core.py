@@ -45,6 +45,7 @@ from .contracts import (
     TaskRevision,
     WorkspaceSpec,
 )
+from .debug_logging import configure_agent_debug_logging, log_agent_activity
 from .pi_runtime import PiAgentRuntime
 from .repository import PostgresAgentRunRepository
 from .semantic_task_parser import (
@@ -219,6 +220,7 @@ class AgentRunService:
         worker_id: str | None = None,
         blob_store: LocalBlobStore | None = None,
     ) -> None:
+        configure_agent_debug_logging()
         self.database = database or default_database()
         self.context = bootstrap_local_tenant(self.database)
         self.worker_id = worker_id or f"agent-worker:{os.getpid()}"
@@ -232,6 +234,26 @@ class AgentRunService:
         self._supervisor_lock = threading.Lock()
         self._supervisor_started = False
         self._supervisor_stop = threading.Event()
+
+    def _close_terminal_runtime(self, run_id: str) -> None:
+        """Stop a local runtime as soon as durable state becomes terminal."""
+
+        runtime = getattr(self, "runtime", None)
+        close_run = getattr(runtime, "close_run", None)
+        if not callable(close_run):
+            return
+        try:
+            close_run(run_id)
+        except Exception as exc:
+            log_agent_activity(
+                "service.runtime_terminal_cleanup_failed",
+                category="service",
+                level="error",
+                run_id=run_id,
+                fields={"worker_id": self.worker_id},
+                error=exc,
+                include_traceback=True,
+            )
 
     def start(self, spec: AgentRunSpec) -> AgentRunSnapshot:
         return self.start_with_context(spec)
@@ -250,14 +272,77 @@ class AgentRunService:
         remain owned by the Chat subsystem.
         """
 
-        self._ensure_supervisor()
-        self._validate_run_spec_authority(spec)
-        self._validate_evidence_authority(spec)
-        issued = self._prepare_workspace(self._bind_github_repository_authority(spec))
-        with unit_of_work(self.database) as work:
-            repository = PostgresAgentRunRepository(work.connection, self.context)
-            snapshot = self._persist_starting_run(repository, issued)
-            work.commit()
+        log_agent_activity(
+            "service.start.requested",
+            category="service",
+            run_id=spec.run_id,
+            fields={
+                "profile": spec.profile,
+                "task": spec.task,
+                "objective": spec.objective,
+                "provider_id": spec.model.provider_id,
+                "model_id": spec.model.model_id,
+                "capabilities": list(spec.capabilities),
+                "has_reference_context": bool(reference_context),
+                "reference_image_count": len(reference_images or []),
+            },
+        )
+        try:
+            self._ensure_supervisor()
+            self._validate_run_spec_authority(spec)
+            self._validate_evidence_authority(spec)
+        except Exception as exc:
+            log_agent_activity(
+                "service.start.validation_failed",
+                category="service",
+                level="error",
+                run_id=spec.run_id,
+                fields={"profile": spec.profile},
+                error=exc,
+                include_traceback=True,
+            )
+            raise
+        try:
+            issued = self._prepare_workspace(self._bind_github_repository_authority(spec))
+        except Exception as exc:
+            log_agent_activity(
+                "service.start.workspace_failed",
+                category="service",
+                level="error",
+                run_id=spec.run_id,
+                fields={"profile": spec.profile},
+                error=exc,
+                include_traceback=True,
+            )
+            raise
+        log_agent_activity(
+            "service.start.workspace_prepared",
+            category="service",
+            run_id=issued.run_id,
+            fields={"workspace": issued.workspace.model_dump(mode="json") if issued.workspace else None},
+        )
+        try:
+            with unit_of_work(self.database) as work:
+                repository = PostgresAgentRunRepository(work.connection, self.context)
+                snapshot = self._persist_starting_run(repository, issued)
+                work.commit()
+        except Exception as exc:
+            log_agent_activity(
+                "service.start.persistence_failed",
+                category="service",
+                level="error",
+                run_id=issued.run_id,
+                fields={"workspace": issued.workspace.model_dump(mode="json") if issued.workspace else None},
+                error=exc,
+                include_traceback=True,
+            )
+            raise
+        log_agent_activity(
+            "service.start.persisted",
+            category="service",
+            run_id=issued.run_id,
+            fields={"status": snapshot.status, "revision": snapshot.revision},
+        )
         if reference_context or reference_images:
             return self._launch_runtime(
                 issued,
@@ -315,15 +400,28 @@ class AgentRunService:
         repository: PostgresAgentRunRepository,
         issued: AgentRunSpec,
     ) -> AgentRunSnapshot:
+        log_agent_activity(
+            "service.start.persisting_run",
+            category="service",
+            run_id=issued.run_id,
+            fields={"worker_id": self.worker_id},
+        )
         snapshot = repository.create_run(issued)
         self._capture_workspace_baseline(repository, issued)
         repository.acquire_lease(issued.run_id, worker_id=self.worker_id, ttl_seconds=90)
-        return repository.update_state(
+        started = repository.update_state(
             issued.run_id,
             expected_revision=snapshot.revision,
             status="starting",
             worker_id=self.worker_id,
         )
+        log_agent_activity(
+            "service.start.run_persisted",
+            category="service",
+            run_id=issued.run_id,
+            fields={"status": started.status, "revision": started.revision},
+        )
+        return started
 
     def _launch_runtime(
         self,
@@ -334,6 +432,12 @@ class AgentRunService:
         reference_images: list[dict[str, str]] | None = None,
     ) -> AgentRunSnapshot:
         try:
+            log_agent_activity(
+                "service.runtime.launch_requested",
+                category="service",
+                run_id=issued.run_id,
+                fields={"status": snapshot.status, "revision": snapshot.revision},
+            )
             contextual_start = getattr(self.runtime, "start_with_context", None)
             if (reference_context or reference_images) and callable(contextual_start):
                 contextual_start(
@@ -344,6 +448,15 @@ class AgentRunService:
             else:
                 self.runtime.start(issued)
         except Exception as exc:
+            log_agent_activity(
+                "service.runtime.launch_failed",
+                category="service",
+                level="error",
+                run_id=issued.run_id,
+                fields={"status_before_launch": snapshot.status},
+                error=exc,
+                include_traceback=True,
+            )
             self.runtime.close_run(issued.run_id)
             with unit_of_work(self.database) as work:
                 repository = PostgresAgentRunRepository(work.connection, self.context)
@@ -353,12 +466,20 @@ class AgentRunService:
                         issued.run_id,
                         expected_revision=current.revision,
                         status="failed",
+                        desired_state="cancelled",
                         last_error=f"{type(exc).__name__}: {exc}"[:2000],
                     )
                 self._maybe_finalize_parent_in_repository(repository, issued.run_id)
                 work.commit()
             raise
-        return self.get(issued.run_id) or snapshot
+        result = self.get(issued.run_id) or snapshot
+        log_agent_activity(
+            "service.runtime.launch_completed",
+            category="service",
+            run_id=issued.run_id,
+            fields={"status": result.status, "revision": result.revision},
+        )
+        return result
 
     def get(self, run_id: str) -> AgentRunSnapshot | None:
         self._ensure_supervisor()
@@ -381,17 +502,51 @@ class AgentRunService:
     ) -> AgentRunSnapshot:
         """Apply a command while keeping conversational context ephemeral."""
 
-        self._ensure_supervisor()
-        if command.command_type == "steer":
-            current = self.get(command.run_id)
-            if current is None:
-                raise KeyError(command.run_id)
-            steering = self._compile_steering(
-                current,
-                command,
-                reference_context=reference_context,
-                turn_plan=turn_plan,
+        log_agent_activity(
+            "service.command.requested",
+            category="service",
+            run_id=command.run_id,
+            fields={
+                "command_id": command.command_id,
+                "command_type": command.command_type,
+                "payload": command.payload,
+            },
+        )
+        try:
+            self._ensure_supervisor()
+        except Exception as exc:
+            log_agent_activity(
+                "service.command.supervisor_failed",
+                category="service",
+                level="error",
+                run_id=command.run_id,
+                fields={"command_id": command.command_id, "command_type": command.command_type},
+                error=exc,
+                include_traceback=True,
             )
+            raise
+        if command.command_type == "steer":
+            try:
+                current = self.get(command.run_id)
+                if current is None:
+                    raise KeyError(command.run_id)
+                steering = self._compile_steering(
+                    current,
+                    command,
+                    reference_context=reference_context,
+                    turn_plan=turn_plan,
+                )
+            except Exception as exc:
+                log_agent_activity(
+                    "service.command.steering_failed",
+                    category="service",
+                    level="error",
+                    run_id=command.run_id,
+                    fields={"command_id": command.command_id},
+                    error=exc,
+                    include_traceback=True,
+                )
+                raise
             if steering["superseding_spec"] is not None:
                 return self._start_superseding_revision(
                     current,
@@ -430,9 +585,25 @@ class AgentRunService:
                         stored.command_id,
                     )
                 work.commit()
+                log_agent_activity(
+                    "service.command.terminal_short_circuit",
+                    category="service",
+                    run_id=command.run_id,
+                    fields={
+                        "command_id": stored.command_id,
+                        "command_type": stored.command_type,
+                        "status": current.status,
+                    },
+                )
                 return current
             if status == "consumed" or not repository.claim_command(command.run_id, stored.command_id):
                 work.commit()
+                log_agent_activity(
+                    "service.command.already_consumed",
+                    category="service",
+                    run_id=command.run_id,
+                    fields={"command_id": stored.command_id, "status": status},
+                )
                 return current
             work.commit()
 
@@ -449,6 +620,18 @@ class AgentRunService:
                     **({"reference_images": reference_images} if reference_images else {}),
                 )
         except Exception as exc:
+            log_agent_activity(
+                "service.command.failed",
+                category="service",
+                level="error",
+                run_id=stored.run_id,
+                fields={
+                    "command_id": stored.command_id,
+                    "command_type": stored.command_type,
+                },
+                error=exc,
+                include_traceback=True,
+            )
             self._mark_command_failed(stored, exc)
             raise
         else:
@@ -464,7 +647,20 @@ class AgentRunService:
                 repository = PostgresAgentRunRepository(work.connection, self.context)
                 self._maybe_finalize_parent_in_repository(repository, stored.run_id)
                 work.commit()
-        return self.get(stored.run_id) or current
+        result = self.get(stored.run_id) or current
+        log_agent_activity(
+            "service.command.completed",
+            category="service",
+            run_id=stored.run_id,
+            fields={
+                "command_id": stored.command_id,
+                "command_type": stored.command_type,
+                "status": result.status,
+                "desired_state": result.desired_state,
+                "revision": result.revision,
+            },
+        )
+        return result
 
     @staticmethod
     def _validate_run_spec_authority(spec: AgentRunSpec) -> None:
@@ -851,6 +1047,14 @@ class AgentRunService:
         the runtime process has already exited, leaving that intermediate state
         durable makes runs appear permanently paused or cancellation-pending.
         """
+        log_agent_activity(
+            "service.command.failure_state_persisting",
+            category="service",
+            level="error",
+            run_id=command.run_id,
+            fields={"command_id": command.command_id, "command_type": command.command_type},
+            error=error,
+        )
         self.runtime.close_run(command.run_id)
         terminal_status = "cancelled" if command.command_type == "cancel" else "failed"
         desired_state = "cancelled"
@@ -1075,6 +1279,7 @@ class AgentRunService:
                 parent.run_id,
                 expected_revision=parent.revision,
                 status="failed",
+                desired_state="cancelled",
                 last_error="acceptance_failed:child_run_failed",
             )
         else:
@@ -1220,16 +1425,35 @@ class AgentRunService:
             current.run_id,
             expected_revision=latest.revision,
             status="completed" if passed else "failed",
+            desired_state=None if passed else "cancelled",
             worker_id=self.worker_id,
             last_error=None if passed else "acceptance_failed:" + ",".join(failures),
         )
 
     def _persist_runtime_event(self, event: AgentEvent) -> None:
+        log_agent_activity(
+            "service.runtime_event.persisting",
+            category="service",
+            run_id=event.run_id,
+            fields={
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                "sequence": event.sequence,
+                "payload": event.payload,
+            },
+        )
         with self._lock:
             with unit_of_work(self.database) as work:
                 repository = PostgresAgentRunRepository(work.connection, self.context)
                 current = repository.get_run(event.run_id)
                 if current is None:
+                    log_agent_activity(
+                        "service.runtime_event.ignored_unknown_run",
+                        category="service",
+                        level="warning",
+                        run_id=event.run_id,
+                        fields={"event_type": event.event_type},
+                    )
                     work.rollback()
                     return
                 if _is_clarification_request(event):
@@ -1241,8 +1465,16 @@ class AgentRunService:
                     })
                 repository.append_event(event)
                 if current.status in {"completed", "failed", "cancelled"}:
+                    log_agent_activity(
+                        "service.runtime_event.terminal_run_no_transition",
+                        category="service",
+                        run_id=event.run_id,
+                        fields={"event_type": event.event_type, "status": current.status},
+                    )
                     work.commit()
+                    self._close_terminal_runtime(event.run_id)
                     return
+                terminal_runtime = False
                 if _is_clarification_request(event):
                     repository.update_state(
                         event.run_id,
@@ -1283,11 +1515,21 @@ class AgentRunService:
                         event.run_id,
                         expected_revision=current.revision,
                         status="failed",
+                        desired_state="cancelled",
                         worker_id=self.worker_id,
                         last_error=str(event.payload.get("error") or "Pi runtime failed")[:2000],
                     )
                 self._maybe_finalize_parent_in_repository(repository, event.run_id)
+                latest = repository.get_run(event.run_id)
+                terminal_runtime = latest is not None and latest.status in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                }
                 work.commit()
+                if terminal_runtime:
+                    self._close_terminal_runtime(event.run_id)
+
     @staticmethod
     def _events_for_revision(
         events: list[AgentEvent],
@@ -1387,6 +1629,13 @@ class AgentRunService:
                 # Mutating runs must have a start-of-run provenance snapshot.
                 # Failing closed prevents a pre-existing dirty workspace from
                 # being misattributed to a recovered or legacy run.
+                log_agent_activity(
+                    "service.diff_capture.skipped_no_baseline",
+                    category="quality",
+                    level="warning",
+                    run_id=spec.run_id,
+                    fields={"workspace": str(root), "task_revision_id": task_revision_id},
+                )
                 return
             baseline_metadata = baseline_artifact.metadata
             dirty_paths = (
@@ -1404,7 +1653,16 @@ class AgentRunService:
                 {str(key): str(value) for key, value in dirty_digests.items()}
             )
             diff = authority.git_diff(modified_paths)
-        except Exception:
+        except Exception as exc:
+            log_agent_activity(
+                "service.diff_capture.failed",
+                category="quality",
+                level="error",
+                run_id=spec.run_id,
+                fields={"workspace": str(root)},
+                error=exc,
+                include_traceback=True,
+            )
             return
         content = diff.encode("utf-8")
         workspace_key = hashlib.sha256(
@@ -1561,8 +1819,15 @@ class AgentRunService:
         while not self._supervisor_stop.is_set():
             try:
                 self._supervise_once()
-            except Exception:
-                pass
+            except Exception as exc:
+                log_agent_activity(
+                    "service.supervisor.loop_failed",
+                    category="recovery",
+                    level="error",
+                    fields={"worker_id": self.worker_id},
+                    error=exc,
+                    include_traceback=True,
+                )
             self._supervisor_stop.wait(30.0)
 
     def _supervise_once(self) -> None:
@@ -1581,20 +1846,46 @@ class AgentRunService:
             run_id = str(row[0])
             try:
                 self.budgets.enforce_wall_time(run_id)
-            except AgentBudgetError:
+            except AgentBudgetError as exc:
+                log_agent_activity(
+                    "service.supervisor.budget_exceeded",
+                    category="recovery",
+                    level="error",
+                    run_id=run_id,
+                    fields={"worker_id": self.worker_id},
+                    error=exc,
+                )
                 self.runtime.close_run(run_id)
                 self._cancel_descendants(run_id)
                 continue
             try:
                 self.heartbeat(run_id, ttl_seconds=90)
-            except Exception:
+            except Exception as exc:
+                log_agent_activity(
+                    "service.supervisor.heartbeat_failed",
+                    category="recovery",
+                    level="error",
+                    run_id=run_id,
+                    fields={"worker_id": self.worker_id},
+                    error=exc,
+                    include_traceback=True,
+                )
                 continue
             try:
                 self._supervise_stalled_run(run_id)
-            except Exception:
+            except Exception as exc:
                 # A transient supervisor/database failure must not take down
                 # supervision for every other active run. Lease expiry and
                 # orphan recovery remain the fallback safety net.
+                log_agent_activity(
+                    "service.supervisor.stall_check_failed",
+                    category="recovery",
+                    level="error",
+                    run_id=run_id,
+                    fields={"worker_id": self.worker_id},
+                    error=exc,
+                    include_traceback=True,
+                )
                 continue
 
         with unit_of_work(self.database) as work:
@@ -1643,6 +1934,15 @@ class AgentRunService:
         restart keeps a hung model/tool process from remaining ``running``
         forever, while preserving the existing workspace and task revision.
         """
+        log_agent_activity(
+            "service.recovery.check_started",
+            category="recovery",
+            run_id=run_id,
+            fields={
+                "idle_timeout_seconds": _progress_idle_timeout_seconds(),
+                "recovery_limit": _stalled_recovery_limit(),
+            },
+        )
         now = datetime.now(timezone.utc)
         terminalize = False
         current: AgentRunSnapshot | None = None
@@ -1654,6 +1954,16 @@ class AgentRunService:
                 repository = PostgresAgentRunRepository(work.connection, self.context)
                 current = repository.get_run(run_id)
                 if current is None or current.status != "running" or current.desired_state != "running":
+                    log_agent_activity(
+                        "service.recovery.not_eligible",
+                        category="recovery",
+                        run_id=run_id,
+                        fields={
+                            "found": current is not None,
+                            "status": current.status if current is not None else None,
+                            "desired_state": current.desired_state if current is not None else None,
+                        },
+                    )
                     work.rollback()
                     return
                 progress_event = repository.latest_progress_event(run_id)
@@ -1663,11 +1973,30 @@ class AgentRunService:
                     else current.updated_at or current.created_at
                 )
                 if progress_at is None:
+                    log_agent_activity(
+                        "service.recovery.no_checkpoint",
+                        category="recovery",
+                        level="warning",
+                        run_id=run_id,
+                        fields={"status": current.status, "revision": current.revision},
+                    )
                     work.rollback()
                     return
                 if progress_at.tzinfo is None:
                     progress_at = progress_at.replace(tzinfo=timezone.utc)
                 if now - progress_at < timedelta(seconds=_progress_idle_timeout_seconds()):
+                    log_agent_activity(
+                        "service.recovery.progress_current",
+                        category="recovery",
+                        level="debug",
+                        run_id=run_id,
+                        fields={
+                            "last_progress_event": progress_event.event_type if progress_event else None,
+                            "last_progress_sequence": progress_event.sequence if progress_event else None,
+                            "last_progress_at": progress_at.isoformat(),
+                            "idle_seconds": round((now - progress_at).total_seconds(), 3),
+                        },
+                    )
                     work.rollback()
                     return
 
@@ -1683,8 +2012,35 @@ class AgentRunService:
                     f"no durable agent progress for {int((now - progress_at).total_seconds())}s"
                     f" after {progress_event.event_type if progress_event else 'run start'}"
                 )
+                log_agent_activity(
+                    "service.recovery.stall_detected",
+                    category="recovery",
+                    level="warning",
+                    run_id=run_id,
+                    fields={
+                        "attempt": attempt,
+                        "reason": reason,
+                        "last_progress_event": progress_event.event_type if progress_event else None,
+                        "last_progress_sequence": progress_event.sequence if progress_event else None,
+                        "last_progress_at": progress_at.isoformat(),
+                        "idle_seconds": round((now - progress_at).total_seconds(), 3),
+                        "quality_stage": quality_stage,
+                    },
+                )
                 if attempt > _stalled_recovery_limit():
                     terminalize = True
+                    log_agent_activity(
+                        "service.recovery.exhausted",
+                        category="recovery",
+                        level="error",
+                        run_id=run_id,
+                        fields={
+                            "attempt": attempt,
+                            "recovery_limit": _stalled_recovery_limit(),
+                            "reason": reason,
+                            "quality_stage": quality_stage,
+                        },
+                    )
                     repository.append_event(AgentEvent(
                         run_id=run_id,
                         event_type="run.recovery_failed",
@@ -1703,6 +2059,18 @@ class AgentRunService:
                         last_error=f"stalled_run:{reason}; recovery limit exhausted"[:2000],
                     )
                 else:
+                    log_agent_activity(
+                        "service.recovery.requested",
+                        category="recovery",
+                        level="warning",
+                        run_id=run_id,
+                        fields={
+                            "attempt": attempt,
+                            "recovery_limit": _stalled_recovery_limit(),
+                            "reason": reason,
+                            "quality_stage": quality_stage,
+                        },
+                    )
                     repository.append_event(AgentEvent(
                         run_id=run_id,
                         event_type="run.recovery_requested",
@@ -1724,11 +2092,25 @@ class AgentRunService:
                 work.commit()
 
             if terminalize:
+                log_agent_activity(
+                    "service.recovery.terminalizing",
+                    category="recovery",
+                    level="error",
+                    run_id=run_id,
+                    fields={"attempt": attempt},
+                )
                 self.runtime.close_run(run_id)
                 self._cancel_descendants(run_id)
                 return
 
             assert current is not None
+            log_agent_activity(
+                "service.recovery.dispatching_resume",
+                category="recovery",
+                level="warning",
+                run_id=run_id,
+                fields={"attempt": attempt, "quality_stage": quality_stage},
+            )
             recovery_message = (
                 "The previous runtime stopped producing progress. The workspace and durable task "
                 "state are authoritative. Resume the current task from the existing workspace, "
@@ -1774,7 +2156,29 @@ class AgentRunService:
                             worker_id=self.worker_id,
                         )
                     work.commit()
+                log_agent_activity(
+                    "service.recovery.resume_dispatched",
+                    category="recovery",
+                    level="warning",
+                    run_id=run_id,
+                    fields={
+                        "attempt": attempt,
+                        "reused_active_session": reuse_active_session,
+                    },
+                )
             except Exception as exc:
+                log_agent_activity(
+                    "service.recovery.resume_failed",
+                    category="recovery",
+                    level="error",
+                    run_id=run_id,
+                    fields={
+                        "attempt": attempt,
+                        "reused_active_session": reuse_active_session,
+                    },
+                    error=exc,
+                    include_traceback=True,
+                )
                 self.runtime.close_run(run_id)
                 with unit_of_work(self.database) as work:
                     repository = PostgresAgentRunRepository(work.connection, self.context)
@@ -1797,6 +2201,12 @@ class AgentRunService:
                 self._cancel_descendants(run_id)
 
     def heartbeat(self, run_id: str, *, ttl_seconds: int = 60) -> None:
+        log_agent_activity(
+            "service.heartbeat.requested",
+            category="recovery",
+            run_id=run_id,
+            fields={"ttl_seconds": ttl_seconds, "worker_id": self.worker_id},
+        )
         with unit_of_work(self.database) as work:
             repository = PostgresAgentRunRepository(work.connection, self.context)
             repository.acquire_lease(run_id, worker_id=self.worker_id, ttl_seconds=ttl_seconds)

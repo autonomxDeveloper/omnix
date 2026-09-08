@@ -2051,7 +2051,6 @@ export function ChatbotWorkspace({ module }: { module: OmnixModuleDefinition }) 
           {activeView === 'chats' ? (
             <>
               <header className="assistant-chat-header">
-                <div><p className="eyebrow">Current chat</p><h2>{activeSession?.title ?? 'Hey! How are you today?'}</h2></div>
                 <div className="assistant-chat-header-actions assistant-chat-integrated-actions">
                   <ChatIdentityModeControl
                     sessionId={selectedSessionId}
@@ -2126,7 +2125,7 @@ export function ChatbotWorkspace({ module }: { module: OmnixModuleDefinition }) 
                 {pastedChatTextFile ? <div className="assistant-chat-file-attachment" role="status"><span aria-hidden="true">📄</span><div><strong>{pastedChatTextFile.filename}</strong><small>{pastedChatTextFile.mimeType} · {(pastedChatTextFile.size / 1024).toFixed(0)} KB</small></div><button type="button" aria-label="Remove attached file" onClick={() => { setPastedChatTextFile(null); setChatImageError(null); }}>×</button></div> : null}
                 {chatImageError ? <p className="assistant-chat-image-error" role="alert">{chatImageError}</p> : null}
                 <label className="assistant-message-input"><span>Message <small className="assistant-chat-paste-hint">Paste an image, or use + to add a photo or text file</small></span><textarea rows={3} aria-label="Message" aria-invalid={Boolean(errors.content)} placeholder="Message Omnix Assistant, or use the microphone…" onKeyDown={handleComposerTextareaKeyDown} onPaste={handleComposerPaste} {...register('content', { validate: (value) => (value.trim() || pastedChatImages.length > 0 || pastedChatTextFile) ? true : 'Enter a message, paste an image, or add a file before sending.' })} /></label>
-                <div className="assistant-composer-actions"><button type="button" className="assistant-mic-button" aria-label={liveVoiceActive ? 'Stop voice input' : 'Start voice input'} onClick={() => void (liveVoiceActive ? stopLiveCall() : startLiveCall())}>{liveVoiceActive ? '■' : '◉'}</button><button aria-label={sendMutation.isPending ? 'Queueing response' : chatJobInProgress ? 'Response in progress' : 'Queue response'} className="assistant-send-button" type="submit" disabled={sendMutation.isPending || chatJobInProgress}>{sendMutation.isPending ? 'Queueing response…' : chatJobInProgress ? 'Response in progress…' : 'Send message'}</button></div>
+                <div className="assistant-composer-actions"><button type="button" className="assistant-mic-button" aria-label={liveVoiceActive ? 'Stop voice input' : 'Start voice input'} onClick={() => void (liveVoiceActive ? stopLiveCall() : startLiveCall())}>{liveVoiceActive ? '■' : '◉'}</button><button aria-label={sendMutation.isPending ? 'Queueing response' : chatJobInProgress ? 'Interrupt and send' : 'Queue response'} className="assistant-send-button" type="submit" disabled={sendMutation.isPending}>{sendMutation.isPending ? 'Queueing response…' : chatJobInProgress ? 'Interrupt & send' : 'Send message'}</button></div>
               </form>
             </>
           ) : (
@@ -2166,10 +2165,9 @@ export function ChatbotWorkspace({ module }: { module: OmnixModuleDefinition }) 
           </div>
         </section>
 
-        <aside className={`assistant-chat-side${isSidePanelMinimized ? ' assistant-chat-side-minimized' : ''}`} aria-label="Live voice, tools, and workspace activity">
+        <aside className={`assistant-chat-side${isSidePanelMinimized ? ' assistant-chat-side-minimized' : ''}`} aria-label="Live voice and workspace activity">
           <div className="assistant-side-panel-toggle" aria-label="Assistant utility panel">
             <button type="button" className={activeUtilityPanel === 'voice' ? 'assistant-side-panel-option active' : 'assistant-side-panel-option'} onClick={() => setActiveUtilityPanel('voice')}>Live Voice</button>
-            <button type="button" className={activeUtilityPanel === 'tools' ? 'assistant-side-panel-option active' : 'assistant-side-panel-option'} onClick={() => setActiveUtilityPanel('tools')}>Tools</button>
             <button
               type="button"
               className="assistant-side-panel-minimize"
@@ -2178,7 +2176,7 @@ export function ChatbotWorkspace({ module }: { module: OmnixModuleDefinition }) 
               title={isSidePanelMinimized ? 'Expand side panel' : 'Minimize side panel'}
               onClick={() => setIsSidePanelMinimized((current) => !current)}
             >
-              {isSidePanelMinimized ? 'Expand' : 'Minimize'}
+              <span aria-hidden="true">{isSidePanelMinimized ? '‹' : '›'}</span>
             </button>
           </div>
           <div className="assistant-live-tools-grid" data-active-panel={activeUtilityPanel}>
@@ -2207,7 +2205,7 @@ export function ChatbotWorkspace({ module }: { module: OmnixModuleDefinition }) 
                 <i aria-hidden="true"><b /></i>
               </div>
               <time className="assistant-call-timer" dateTime={`PT${Math.floor(callElapsedMs / 1000)}S`}>{liveCallTimerLabel}</time>
-              <div className="assistant-voice-controls"><button type="button" onClick={clearVoiceTranscript}>Clear</button><button type="button" className={liveVoiceActive ? 'danger' : undefined} onClick={() => void (liveVoiceActive ? stopLiveCall() : startLiveCall())}>{liveVoiceActive ? 'End Call' : 'Start Call'}</button><button type="button" onClick={sendVoiceTranscript} disabled={sendMutation.isPending || chatJobInProgress || !(liveDraftText || composerContent).trim()}>Send text</button></div>
+              <div className="assistant-voice-controls"><button type="button" onClick={clearVoiceTranscript}>Clear</button><button type="button" className={liveVoiceActive ? 'danger' : undefined} onClick={() => void (liveVoiceActive ? stopLiveCall() : startLiveCall())}>{liveVoiceActive ? 'End Call' : 'Start Call'}</button><button type="button" onClick={sendVoiceTranscript} disabled={sendMutation.isPending || !(liveDraftText || composerContent).trim()}>Send text</button></div>
               <label className="assistant-voice-toggle"><input type="checkbox" checked={autoSpeakResponses} onChange={(event) => setAutoSpeakResponses(event.currentTarget.checked)} /> Auto-speak assistant replies</label>
               <div className="assistant-live-draft" aria-live="polite"><strong>Voice draft</strong><p>{liveDraftText || 'Start Live Voice and speak. Final speech is copied into the message composer.'}</p></div>
               <div className="assistant-voice-transcript"><div className="assistant-voice-transcript-header"><h3>Transcript</h3><button type="button" onClick={clearVoiceTranscript}>Clear</button></div>{visibleVoiceTranscriptMessages.length ? visibleVoiceTranscriptMessages.map((message) => <p key={`transcript-${message.id}`} className={message.role === 'assistant' ? 'assistant' : 'user'}><span><strong>{message.role === 'assistant' ? 'Omnix' : 'You'}</strong><time dateTime={message.created_at}>{formatMessageTime(message.created_at)}</time></span>{message.content}</p>) : <p className="muted">Voice transcript will appear here during live calls.</p>}</div>
