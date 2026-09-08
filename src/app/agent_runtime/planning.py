@@ -39,11 +39,19 @@ _READ_COMMANDS = (
 _VALIDATE_COMMANDS = (
     "python -m pytest", "pytest", "python -m py_compile",
     "ruff check", "npm test", "npm run test", "npm run build", "npm run typecheck",
-    "npm run lint", "npm --prefix", "npx vitest", "npx tsc", "eslint",
+    "npm run lint", "npx vitest", "npx tsc", "eslint",
 )
 _MUTATING_MARKERS = (
     "--fix", "npm install", "npm update", "npm uninstall", "npm add",
     "makemigrations", "alembic revision", "codegen", "generate", "prettier --write",
+)
+_NPM_MUTATING = re.compile(
+    r"^npm(?:\.cmd)?(?:\s+--prefix\s+\S+)*\s+(?:install|i|add|update|uninstall|remove)(?:\s|$)",
+    re.I,
+)
+_NPM_VALIDATE = re.compile(
+    r"^npm(?:\.cmd)?(?:\s+--prefix\s+\S+)*\s+(?:test|run\s+(?:test|build|typecheck|lint))(?:\s|$)",
+    re.I,
 )
 
 
@@ -376,10 +384,18 @@ def classify_operation_effect(tool_name: str, *, command: str = "") -> Operation
         return "mutate"
     if tool not in {"bash", "powershell"}:
         return "unknown"
+    # Parse npm command shape before generic prefix checks. In particular,
+    # `npm --prefix <dir> install` changes dependency state and must never be
+    # mistaken for validation merely because the command starts with
+    # `npm --prefix`. Unknown npm scripts still fail closed as `unknown`.
+    if _NPM_MUTATING.match(normalized):
+        return "mutate"
     if any(marker in normalized for marker in _MUTATING_MARKERS):
         return "mutate"
     if any(normalized == prefix or normalized.startswith(prefix + " ") for prefix in _READ_COMMANDS):
         return "read"
+    if _NPM_VALIDATE.match(normalized):
+        return "validate"
     if any(normalized == prefix or normalized.startswith(prefix + " ") for prefix in _VALIDATE_COMMANDS):
         return "validate"
     return "unknown"
