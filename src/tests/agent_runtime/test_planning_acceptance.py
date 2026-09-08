@@ -33,12 +33,15 @@ def test_enforce_authority_integrity_failures_fail_closed() -> None:
         "plan_task_revision_stale",
         "plan_engineering_contract_stale",
         "plan_inspection_evidence_stale",
+        "plan_repository_guidance_stale",
         "planning_state_missing",
         "planning_state_task_revision_stale",
         "planning_active_plan_identity_mismatch",
         "planning_base_commit_changed",
+        "planning_workspace_unavailable",
         "latest_plan_state_not_approved:stale",
         "unplanned_modified_path:src/unplanned.py",
+        "preexisting_dirty_path_modified:src/preexisting.py",
     ):
         assessment = PlanningAcceptanceAssessment(
             mode="enforce",
