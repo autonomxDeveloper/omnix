@@ -20,12 +20,12 @@ from .planning import (
     operation_plan_failures,
     plan_conformance_failures,
     plan_gate_failures,
+    planned_paths,
     planning_mode,
 )
 from .planning_contracts import (
     ImplementationPlanRevision,
     ImplementationPlanSubmission,
-    OperationEffect,
     PlanningDecision,
 )
 from .planning_repository import PostgresPlanningRepository
@@ -50,7 +50,6 @@ class PlanningAuthorizeRequest(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
     path: str | None = None
     command: str | None = None
-    effect: OperationEffect | None = None
 
 
 def _load(service, run_id: str):
@@ -69,7 +68,23 @@ def _current_revision(service, repository: PostgresAgentRunRepository, run_id: s
     return revision
 
 
-def _plan_freshness_failures(plan, revision, evidence_digest: str) -> list[str]:
+def _repository_guidance_digest(snapshot, revision, plan) -> str | None:
+    if plan is None:
+        return None
+    _, digest = compile_repository_guidance(
+        snapshot.spec.workspace,
+        objective=revision.effective_objective,
+        relevant_paths=planned_paths(plan),
+    )
+    return digest
+
+
+def _plan_freshness_failures(
+    plan,
+    revision,
+    evidence_digest: str,
+    repository_guidance_digest: str | None = None,
+) -> list[str]:
     """Return authority-identity failures independently of operation effect."""
 
     if plan is None:
@@ -83,6 +98,12 @@ def _plan_freshness_failures(plan, revision, evidence_digest: str) -> list[str]:
         failures.append("plan_engineering_contract_stale")
     if plan.authority.inspection_evidence_digest != evidence_digest:
         failures.append("plan_inspection_evidence_stale")
+    if (
+        plan.authority.repository_guidance_digest is not None
+        and repository_guidance_digest is not None
+        and plan.authority.repository_guidance_digest != repository_guidance_digest
+    ):
+        failures.append("plan_repository_guidance_stale")
     return failures
 
 
@@ -99,10 +120,15 @@ def _planning_state_should_stale(reasons: list[str]) -> bool:
         "plan_task_revision_stale",
         "plan_engineering_contract_stale",
         "plan_inspection_evidence_stale",
+        "plan_repository_guidance_stale",
         "planning_state_task_revision_stale",
+        "planning_active_plan_identity_mismatch",
         "planning_base_commit_changed",
     }
-    return any(reason in authority_drift for reason in reasons)
+    return any(
+        reason in authority_drift or reason.startswith("preexisting_dirty_path_modified:")
+        for reason in reasons
+    )
 
 
 def _planning_state_status_after_submission(
@@ -128,6 +154,29 @@ def _inspection_response(mode, revision, evidence, candidates, lenses, state):
         "inspection_evidence_digest": inspection_evidence_digest(evidence),
         "planning_state": state,
     }
+
+
+def _lock_planning_state(work, workspace_id: str, run_id: str) -> None:
+    work.connection.execute(
+        """
+        SELECT run_id
+          FROM omnix_agent_planning_state
+         WHERE workspace_id = %s AND run_id = %s
+         FOR UPDATE
+        """,
+        (workspace_id, run_id),
+    ).fetchone()
+
+
+def _unknown_command_is_explicitly_planned(plan, command: str) -> bool:
+    if plan is None or not command.strip():
+        return False
+    normalized = command.strip().casefold()
+    return any(
+        "unknown" in item.allowed_effects
+        and any(normalized.startswith(hint.strip().casefold()) for hint in item.command_hints if hint.strip())
+        for item in plan.changes
+    )
 
 
 @router.post("/{run_id}/planning/inspect")
@@ -191,11 +240,14 @@ def inspect_agent_plan(run_id: str, request: PlanningInspectRequest) -> dict[str
         active_id = str(state.get("active_plan_revision_id") or "") if state else ""
         active_plan = planning.get_plan(run_id, active_id) if active_id else None
         current_digest = inspection_evidence_digest(evidence)
-        if (
-            active_plan is not None
-            and active_plan.task_revision_id == revision.revision_id
-            and active_plan.authority.inspection_evidence_digest != current_digest
-        ):
+        guidance_digest = _repository_guidance_digest(snapshot, revision, active_plan)
+        freshness = _plan_freshness_failures(
+            active_plan,
+            revision,
+            current_digest,
+            guidance_digest,
+        ) if active_plan is not None else []
+        if active_plan is not None and freshness:
             state = planning.set_state(
                 run_id,
                 mode=mode,
@@ -237,21 +289,29 @@ def _submit_plan(run_id: str, request: PlanningSubmitRequest, *, amend: bool) ->
                 baseline_provenance=baseline,
             )
 
+        # Serialize plan lineage and sequence allocation for this run. This
+        # closes duplicate/retry races where two concurrent submissions could
+        # both extend the same revision or claim the same sequence number.
+        _lock_planning_state(work, service.context.workspace_id, run_id)
+        state = planning.get_state(run_id) or state
+        active_id = str(state.get("active_plan_revision_id") or "") or None
+
         previous = None
         previous_id = request.plan.previous_plan_revision_id
         if amend:
-            if not previous_id:
-                previous_id = (
-                    str(state.get("active_plan_revision_id"))
-                    if state.get("active_plan_revision_id") else None
-                )
-            if not previous_id:
-                raise HTTPException(status_code=409, detail="agent_plan_amend_requires_previous_revision")
+            if not active_id:
+                raise HTTPException(status_code=409, detail="agent_plan_amend_requires_active_revision")
+            if previous_id and previous_id != active_id:
+                raise HTTPException(status_code=409, detail="agent_plan_amend_must_extend_active_revision")
+            previous_id = active_id
             previous = planning.get_plan(run_id, previous_id)
             if previous is None or previous.task_revision_id != revision.revision_id:
                 raise HTTPException(status_code=409, detail="agent_plan_previous_revision_stale")
-        elif previous_id:
-            raise HTTPException(status_code=422, detail="agent_plan_submit_must_not_set_previous_revision")
+        else:
+            if previous_id:
+                raise HTTPException(status_code=422, detail="agent_plan_submit_must_not_set_previous_revision")
+            if active_id:
+                raise HTTPException(status_code=409, detail="agent_plan_submit_requires_amend")
 
         evidence = planning.list_inspection_evidence(run_id, task_revision_id=revision.revision_id)
         candidates = planning.list_impact_candidates(run_id, task_revision_id=revision.revision_id)
@@ -322,7 +382,7 @@ def _submit_plan(run_id: str, request: PlanningSubmitRequest, *, amend: bool) ->
         active_id = (
             plan.plan_revision_id
             if status == "approved"
-            else str(state.get("active_plan_revision_id") or "") or None
+            else active_id
         )
         state_status = _planning_state_status_after_submission(status, active_id)
         new_state = planning.set_state(
@@ -369,13 +429,25 @@ def check_agent_plan(run_id: str) -> dict[str, Any]:
         runs = PostgresAgentRunRepository(work.connection, service.context)
         planning = PostgresPlanningRepository(work.connection, service.context)
         revision = _current_revision(service, runs, run_id)
+        state = planning.get_state(run_id)
         evidence = planning.list_inspection_evidence(run_id, task_revision_id=revision.revision_id)
         candidates = planning.list_impact_candidates(run_id, task_revision_id=revision.revision_id)
         plan = planning.latest_approved_plan(run_id, task_revision_id=revision.revision_id)
         digest = inspection_evidence_digest(evidence)
-        failures = _plan_freshness_failures(plan, revision, digest)
+        guidance_digest = _repository_guidance_digest(snapshot, revision, plan)
+        failures = _plan_freshness_failures(plan, revision, digest, guidance_digest)
         if plan is not None:
             failures.extend(plan_conformance_failures(snapshot.spec, plan, candidates))
+        if state is None:
+            failures.append("planning_state_missing")
+        else:
+            if state.get("task_revision_id") != revision.revision_id:
+                failures.append("planning_state_task_revision_stale")
+            if str(state.get("status") or "") != "approved":
+                failures.append(f"latest_plan_state_not_approved:{state.get('status')}")
+            active_id = str(state.get("active_plan_revision_id") or "") or None
+            if plan is not None and active_id != plan.plan_revision_id:
+                failures.append("planning_active_plan_identity_mismatch")
         work.rollback()
     failures = list(dict.fromkeys(failures))
     return {
@@ -397,7 +469,9 @@ def authorize_agent_planned_operation(
     mode = planning_mode()
     command = str(request.command or request.input.get("command") or "")
     target = str(request.path or request.input.get("path") or "").strip() or None
-    effect = request.effect or classify_operation_effect(request.tool_name, command=command)
+    # Effect is always server-derived from the actual tool + command. A caller
+    # may not relabel a mutating command as validation to bypass plan authority.
+    effect = classify_operation_effect(request.tool_name, command=command)
 
     if mode == "off":
         return {
@@ -424,6 +498,7 @@ def authorize_agent_planned_operation(
         if effect in {"read", "validate"}:
             reasons: list[str] = []
         else:
+            guidance_digest = _repository_guidance_digest(snapshot, revision, plan)
             reasons = operation_plan_failures(
                 plan,
                 revision,
@@ -433,10 +508,27 @@ def authorize_agent_planned_operation(
                 current_evidence_digest=inspection_evidence_digest(evidence),
                 quality_stage=quality.get_stage(run_id),
             )
-            if state is not None and state.get("task_revision_id") != revision.revision_id:
-                reasons.append("planning_state_task_revision_stale")
-            if state is not None and str(state.get("status") or "") in {"rejected", "stale", "invalid"}:
-                reasons.append(f"latest_plan_state_not_approved:{state.get('status')}")
+            reasons.extend(
+                item for item in _plan_freshness_failures(
+                    plan,
+                    revision,
+                    inspection_evidence_digest(evidence),
+                    guidance_digest,
+                )
+                if item not in reasons
+            )
+            if state is None:
+                reasons.append("planning_state_missing")
+            else:
+                if state.get("task_revision_id") != revision.revision_id:
+                    reasons.append("planning_state_task_revision_stale")
+                if str(state.get("status") or "") in {"rejected", "stale", "invalid", "required", "submitted"}:
+                    reasons.append(f"latest_plan_state_not_approved:{state.get('status')}")
+                active_id = str(state.get("active_plan_revision_id") or "") or None
+                if plan is not None and active_id != plan.plan_revision_id:
+                    reasons.append("planning_active_plan_identity_mismatch")
+            if effect == "unknown" and command and not _unknown_command_is_explicitly_planned(plan, command):
+                reasons.append("unknown_command_requires_explicit_plan_hint")
             if effect in {"mutate", "unknown"} and plan is not None:
                 # Before a mutation, only enforce drift/scope parts of
                 # conformance; planned MODIFY items are not expected complete.
@@ -444,6 +536,7 @@ def authorize_agent_planned_operation(
                 reasons.extend(
                     item for item in drift
                     if item.startswith("unplanned_modified_path:")
+                    or item.startswith("preexisting_dirty_path_modified:")
                     or item == "planning_base_commit_changed"
                 )
 
