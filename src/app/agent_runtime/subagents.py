@@ -1,4 +1,4 @@
-"""Parent/child agent authority narrowing and aggregate budget reservation."""
+"""Parent/child agent authority narrowing and local child circuit breakers."""
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
@@ -136,31 +136,40 @@ def reserve_child_budget(
     *,
     parent_usage: dict[str, object] | None = None,
 ) -> None:
+    """Legacy aggregate reservation check.
+
+    New durable service paths use ``PostgresResourceGrantRepository`` so terminal
+    child spend can be reclaimed accurately. Keep this helper for compatibility
+    callers, but do not add wall times: wall time is a deadline-like bound, not
+    a consumable quantity.
+    """
+
     limits = parent.spec.limits
     usage = parent_usage or {}
-    children = [item.spec.limits for item in existing_children]
+    active = [
+        item.spec.limits
+        for item in existing_children
+        if item.status not in {"completed", "failed", "cancelled"}
+    ]
     _bounded_sum(
         "max_steps",
         limits.max_steps,
-        [int(usage.get("steps", 0)), *[item.max_steps for item in children], child.limits.max_steps],
+        [int(usage.get("steps", 0)), *[item.max_steps for item in active], child.limits.max_steps],
     )
     _bounded_sum(
         "max_tool_calls",
         limits.max_tool_calls,
-        [int(usage.get("tool_calls", 0)), *[item.max_tool_calls for item in children], child.limits.max_tool_calls],
+        [int(usage.get("tool_calls", 0)), *[item.max_tool_calls for item in active], child.limits.max_tool_calls],
     )
-    _bounded_sum(
-        "max_wall_time_seconds",
-        limits.max_wall_time_seconds,
-        [item.max_wall_time_seconds for item in children] + [child.limits.max_wall_time_seconds],
-    )
+    if child.limits.max_wall_time_seconds > limits.max_wall_time_seconds:
+        raise ValueError("child max_wall_time_seconds exceeds parent")
     if limits.max_tokens is not None:
         _bounded_sum(
             "max_tokens",
             limits.max_tokens,
             [
                 int(usage.get("output_tokens", 0)),
-                *[item.max_tokens or 0 for item in children],
+                *[item.max_tokens or 0 for item in active],
                 child.limits.max_tokens or 0,
             ],
         )
@@ -170,20 +179,53 @@ def reserve_child_budget(
             limits.max_cost,
             [
                 float(usage.get("cost", 0.0)),
-                *[item.max_cost or 0 for item in children],
+                *[item.max_cost or 0 for item in active],
                 child.limits.max_cost or 0,
             ],
         )
 
 
-def default_reviewer_limits(parent: RunLimits, reserve_fraction: float = 0.25) -> RunLimits:
-    fraction = max(0.01, min(float(reserve_fraction), 0.5))
+def default_reviewer_limits(
+    parent: RunLimits,
+    reserve_fraction: float | None = None,
+    *,
+    complexity_score: int = 0,
+    available: dict[str, int | float | None] | None = None,
+) -> RunLimits:
+    """Return a reviewer *circuit breaker*, not a pre-spent quality slice.
+
+    ``reserve_fraction`` remains accepted for older callers but no longer drives
+    reviewer sizing. Reviewer capacity is completion-oriented and is instead
+    clamped by the parent's currently available global grant at launch time.
+    """
+
+    del reserve_fraction
+    score = max(0, min(int(complexity_score), 16))
+    target_steps = min(parent.max_steps, max(60, min(120, 72 + score * 3)))
+    target_tools = min(parent.max_tool_calls, max(150, min(260, 170 + score * 6)))
+    target_wall = min(parent.max_wall_time_seconds, 1200)
+    target_tokens = (
+        max(1, min(parent.max_tokens, int(parent.max_tokens * 0.60)))
+        if parent.max_tokens is not None
+        else None
+    )
+    target_cost = parent.max_cost * 0.60 if parent.max_cost is not None else None
+
+    if available is not None:
+        target_steps = max(1, min(target_steps, int(available.get("max_steps") or 0)))
+        target_tools = max(1, min(target_tools, int(available.get("max_tool_calls") or 0)))
+        target_wall = max(1, min(target_wall, int(available.get("max_wall_time_seconds") or 0)))
+        if target_tokens is not None and available.get("max_tokens") is not None:
+            target_tokens = max(1, min(target_tokens, int(available["max_tokens"] or 0)))
+        if target_cost is not None and available.get("max_cost") is not None:
+            target_cost = max(0.0, min(target_cost, float(available["max_cost"] or 0.0)))
+
     return RunLimits(
-        max_steps=max(1, min(60, int(parent.max_steps * fraction) or 1)),
-        max_wall_time_seconds=max(1, min(parent.max_wall_time_seconds, 1200, max(30, int(parent.max_wall_time_seconds * fraction) or 1))),
-        max_tokens=max(1, int(parent.max_tokens * fraction)) if parent.max_tokens is not None else None,
-        max_cost=parent.max_cost * fraction if parent.max_cost is not None else None,
-        max_tool_calls=max(1, min(120, int(parent.max_tool_calls * fraction) or 1)),
+        max_steps=target_steps,
+        max_wall_time_seconds=target_wall,
+        max_tokens=target_tokens,
+        max_cost=target_cost,
+        max_tool_calls=target_tools,
     )
 
 
@@ -228,7 +270,10 @@ def _validate_scopes(parent: list[ResourceScope], child: list[ResourceScope]) ->
 def _child_workspace(parent: WorkspaceSpec | None, capabilities: list[str]) -> WorkspaceSpec | None:
     if parent is None:
         return None
-    mutating = any(item in {"workspace.edit", "workspace.write", "workspace.command", "workspace.test"} for item in capabilities)
+    mutating = any(
+        item in {"workspace.edit", "workspace.write", "workspace.command", "workspace.test"}
+        for item in capabilities
+    )
     if not mutating:
         return parent
     if not parent.repository:
