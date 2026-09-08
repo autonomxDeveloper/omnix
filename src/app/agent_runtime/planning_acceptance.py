@@ -16,6 +16,18 @@ from .planning import (
 from .planning_contracts import PlanningMode
 from .planning_repository import PostgresPlanningRepository
 
+_FATAL_PLANNING_FAILURES = {
+    "planning_task_revision_unavailable",
+    "approved_plan_missing",
+    "plan_task_revision_stale",
+    "plan_engineering_contract_stale",
+    "plan_inspection_evidence_stale",
+    "planning_state_missing",
+    "planning_state_task_revision_stale",
+    "planning_active_plan_identity_mismatch",
+    "planning_base_commit_changed",
+}
+
 
 @dataclass(frozen=True)
 class PlanningAcceptanceAssessment:
@@ -30,6 +42,17 @@ class PlanningAcceptanceAssessment:
     @property
     def blocks_acceptance(self) -> bool:
         return self.mode == "enforce" and self.would_block
+
+    @property
+    def fail_closed(self) -> bool:
+        """Authority-integrity failures cannot be retroactively repaired."""
+
+        return self.mode == "enforce" and any(
+            failure in _FATAL_PLANNING_FAILURES
+            or failure.startswith("latest_plan_state_not_approved:")
+            or failure.startswith("unplanned_modified_path:")
+            for failure in self.failures
+        )
 
 
 def evaluate_planning_acceptance(
