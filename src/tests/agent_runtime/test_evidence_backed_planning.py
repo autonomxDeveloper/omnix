@@ -161,6 +161,27 @@ def test_inspection_promotes_source_tests_and_e2e_but_not_docs_to_high_impact(tm
     assert "docs/history.md" not in high_paths
     assert {"ui_behavior", "refactor", "regression"} <= set(lenses)
     assert all(item.query == "Character settings" for item in evidence)
+    observations = [item for item in evidence if item.kind == "search_observation"]
+    assert len(observations) == 1
+    assert observations[0].observed_result_count == 4
+
+
+def test_inspection_records_complete_zero_result_observation(tmp_path: Path):
+    spec, revision = _fixture(tmp_path)
+    component = tmp_path / "src/apps/web/ChatIdentityModeControl.tsx"
+    component.write_text('export const label = "Character Settings";\n', encoding="utf-8")
+
+    evidence, candidates, _ = build_inspection_bundle(
+        spec,
+        revision,
+        paths=["src/apps/web/ChatIdentityModeControl.tsx"],
+    )
+
+    observations = [item for item in evidence if item.kind == "search_observation"]
+    assert len(observations) == 1
+    assert observations[0].observed_result_count == 0
+    assert observations[0].completeness == "complete"
+    assert not candidates
 
 
 def test_plan_gate_rejects_unclassified_high_impact_e2e_reference(tmp_path: Path):
@@ -257,6 +278,26 @@ def test_plan_conformance_catches_residual_reference_then_passes_after_complete_
     assert not [item for item in failures if item.startswith("planned_impact_not_modified:")]
     assert not [item for item in failures if item.startswith("residual_impacted_reference:")]
     assert not [item for item in failures if item.startswith("unplanned_modified_path:")]
+
+
+def test_plan_conformance_detects_changes_to_preexisting_dirty_paths(tmp_path: Path):
+    spec, revision = _fixture(tmp_path)
+    component = tmp_path / "src/apps/web/ChatIdentityModeControl.tsx"
+    component.write_text(
+        component.read_text(encoding="utf-8") + "// preexisting user edit\n",
+        encoding="utf-8",
+    )
+    evidence, candidates, _ = build_inspection_bundle(spec, revision)
+    submission = _submission(revision, candidates)
+    plan = _approved_plan(spec, revision, evidence, candidates, submission)
+
+    component.write_text(
+        component.read_text(encoding="utf-8").replace("Character settings", "Character Settings"),
+        encoding="utf-8",
+    )
+    failures = plan_conformance_failures(spec, plan, candidates)
+
+    assert "preexisting_dirty_path_modified:src/apps/web/ChatIdentityModeControl.tsx" in failures
 
 
 def test_operation_effect_classification_fails_unknown_closed_at_policy_layer():
