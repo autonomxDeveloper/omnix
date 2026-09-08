@@ -41,12 +41,14 @@ _VALIDATE_COMMANDS = (
     "ruff check", "npm test", "npm run test", "npm run build", "npm run typecheck",
     "npm run lint", "npx vitest", "npx tsc", "eslint",
 )
-_MUTATING_MARKERS = (
-    "--fix", "npm install", "npm update", "npm uninstall", "npm add",
-    "makemigrations", "alembic revision", "codegen", "generate", "prettier --write",
+_MUTATING_COMMAND = re.compile(
+    r"(?:^|\s)--fix(?:\s|$)|\bmakemigrations\b|\balembic\s+revision\b|"
+    r"(?:^|\s)(?:codegen|generate)(?:\s|$)|\bprettier\s+--write\b",
+    re.I,
 )
 _NPM_MUTATING = re.compile(
-    r"^npm(?:\.cmd)?(?:\s+--prefix\s+\S+)*\s+(?:install|i|add|update|uninstall|remove)(?:\s|$)",
+    r"^npm(?:\.cmd)?(?:\s+--prefix\s+\S+)*\s+"
+    r"(?:install|i|add|update|uninstall|remove|run\s+(?:generate|codegen))(?:\s|$)",
     re.I,
 )
 _NPM_VALIDATE = re.compile(
@@ -193,6 +195,31 @@ def build_inspection_bundle(
     for query in search_queries[:16]:
         for scope in scopes[:16]:
             rows, completeness = _git_grep(authority, query, scope)
+            observation_id = _stable_digest({
+                "run_id": spec.run_id,
+                "task_revision_id": revision.revision_id,
+                "kind": "search_observation",
+                "query": query,
+                "scope": scope,
+            })
+            observation_excerpt = "\n".join(
+                f"{path}:{line}:{text}" for path, line, text in rows[:8]
+            )
+            evidence.append(InspectionEvidence(
+                evidence_id=observation_id,
+                run_id=spec.run_id,
+                task_revision_id=revision.revision_id,
+                kind="search_observation",
+                query=query,
+                bounded_excerpt=observation_excerpt[:4000],
+                evidence_confidence="high",
+                relation_strength="medium",
+                completeness=completeness,  # type: ignore[arg-type]
+                observed_result_count=len(rows),
+                reported_total_count=None,
+                search_scope=scope,
+                result_digest=_stable_digest(rows),
+            ))
             grouped: dict[str, list[tuple[int, str]]] = defaultdict(list)
             for path, line, text in rows:
                 grouped[path].append((line, text))
@@ -390,7 +417,7 @@ def classify_operation_effect(tool_name: str, *, command: str = "") -> Operation
     # `npm --prefix`. Unknown npm scripts still fail closed as `unknown`.
     if _NPM_MUTATING.match(normalized):
         return "mutate"
-    if any(marker in normalized for marker in _MUTATING_MARKERS):
+    if _MUTATING_COMMAND.search(normalized):
         return "mutate"
     if any(normalized == prefix or normalized.startswith(prefix + " ") for prefix in _READ_COMMANDS):
         return "read"
@@ -496,10 +523,17 @@ def plan_conformance_failures(
         return ["planning_base_commit_changed"]
 
     baseline_dirty = {str(item).replace("\\", "/") for item in baseline.get("dirty_paths", []) or []}
+    baseline_dirty_digests = {
+        str(path).replace("\\", "/"): str(digest)
+        for path, digest in dict(baseline.get("dirty_digests", {}) or {}).items()
+    }
     current_dirty = {str(item).replace("\\", "/") for item in provenance.get("dirty_paths", []) or []}
     run_owned = current_dirty - baseline_dirty
     patterns = planned_paths(plan)
     failures: list[str] = []
+
+    for path in authority.baseline_conflicts(baseline_dirty_digests):
+        failures.append(f"preexisting_dirty_path_modified:{path}")
     for path in sorted(run_owned):
         if not any(_path_matches(pattern, path) for pattern in patterns):
             failures.append(f"unplanned_modified_path:{path}")
@@ -509,7 +543,11 @@ def plan_conformance_failures(
         candidate = candidate_map.get(disposition.candidate_id)
         if candidate is None or disposition.disposition != "modify":
             continue
-        if candidate.path not in current_dirty:
+        if candidate.path in baseline_dirty_digests:
+            if authority.file_digest(candidate.path) == baseline_dirty_digests[candidate.path]:
+                failures.append(f"planned_impact_not_modified:{candidate.candidate_id}:{candidate.path}")
+                continue
+        elif candidate.path not in current_dirty:
             failures.append(f"planned_impact_not_modified:{candidate.candidate_id}:{candidate.path}")
             continue
         if candidate.query:
