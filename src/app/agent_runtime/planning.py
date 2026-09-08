@@ -416,7 +416,11 @@ def operation_plan_failures(
     current_evidence_digest: str | None = None,
     quality_stage: dict[str, object] | None = None,
 ) -> list[str]:
-    if effect == "read":
+    # Planning is a mutation authority boundary. Read-only inspection and
+    # non-mutating validation must remain available before or between plans so
+    # the agent can gather evidence, diagnose failures, and prove the final
+    # state. Any command classified as unknown still fails closed below.
+    if effect in {"read", "validate"}:
         return []
     if plan is None:
         return ["approved_plan_missing"]
