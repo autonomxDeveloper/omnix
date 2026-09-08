@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from app.agent_runtime import service as service_module
 from app.agent_runtime.contracts import (
@@ -155,7 +158,8 @@ def test_protocol_retry_limit_is_bounded_and_has_safe_default(monkeypatch) -> No
     assert _self_review_protocol_retry_limit() == 2
 
 
-def test_windows_review_root_uses_short_repository_sibling(monkeypatch) -> None:
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only pathlib semantics")
+def test_windows_review_root_uses_short_repository_sibling() -> None:
     spec = _snapshot().spec.model_copy(
         update={
             "workspace": WorkspaceSpec(
@@ -167,7 +171,6 @@ def test_windows_review_root_uses_short_repository_sibling(monkeypatch) -> None:
             )
         }
     )
-    monkeypatch.setattr(service_module.os, "name", "nt")
 
     assert _default_review_root(spec) == str(Path("F:/LLM").resolve() / ".omnix-agent-review")
 
