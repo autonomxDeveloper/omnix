@@ -60,7 +60,28 @@ def test_persisting_latest_revision_retires_pending_superseded_quality_resumes()
     assert params == ("workspace-1", "run-1", "revision-2")
 
 
-def test_persisting_non_latest_revision_does_not_retire_quality_resumes() -> None:
+def test_persisting_latest_revision_stales_superseded_planning_authority() -> None:
+    connection = _Connection("revision-2")
+
+    persist_task_revision_contract(
+        connection,
+        SimpleNamespace(workspace_id="workspace-1"),
+        _revision("revision-2"),
+    )
+
+    planning_calls = [
+        (sql, params)
+        for sql, params in connection.calls
+        if "UPDATE omnix_agent_planning_state" in sql
+    ]
+    assert len(planning_calls) == 1
+    sql, params = planning_calls[0]
+    assert "SET status = 'stale'" in sql
+    assert "task_revision_id IS DISTINCT FROM" in sql
+    assert params == ("workspace-1", "run-1", "revision-2")
+
+
+def test_persisting_non_latest_revision_does_not_retire_or_stale_authority() -> None:
     connection = _Connection("revision-3")
 
     persist_task_revision_contract(
@@ -71,5 +92,9 @@ def test_persisting_non_latest_revision_does_not_retire_quality_resumes() -> Non
 
     assert not any(
         "UPDATE omnix_agent_run_commands" in sql
+        for sql, _params in connection.calls
+    )
+    assert not any(
+        "UPDATE omnix_agent_planning_state" in sql
         for sql, _params in connection.calls
     )
