@@ -11,10 +11,12 @@ from .planning import (
     engineering_contract_digest,
     inspection_evidence_digest,
     plan_conformance_failures,
+    planned_paths,
     planning_mode,
 )
 from .planning_contracts import PlanningMode
 from .planning_repository import PostgresPlanningRepository
+from .repository_guidance import compile_repository_guidance
 
 _FATAL_PLANNING_FAILURES = {
     "planning_task_revision_unavailable",
@@ -22,10 +24,12 @@ _FATAL_PLANNING_FAILURES = {
     "plan_task_revision_stale",
     "plan_engineering_contract_stale",
     "plan_inspection_evidence_stale",
+    "plan_repository_guidance_stale",
     "planning_state_missing",
     "planning_state_task_revision_stale",
     "planning_active_plan_identity_mismatch",
     "planning_base_commit_changed",
+    "planning_workspace_unavailable",
 }
 
 
@@ -51,6 +55,7 @@ class PlanningAcceptanceAssessment:
             failure in _FATAL_PLANNING_FAILURES
             or failure.startswith("latest_plan_state_not_approved:")
             or failure.startswith("unplanned_modified_path:")
+            or failure.startswith("preexisting_dirty_path_modified:")
             for failure in self.failures
         )
 
@@ -107,6 +112,14 @@ def evaluate_planning_acceptance(
             failures.append("plan_engineering_contract_stale")
         if plan.authority.inspection_evidence_digest != inspection_evidence_digest(evidence):
             failures.append("plan_inspection_evidence_stale")
+        if plan.authority.repository_guidance_digest is not None:
+            _, guidance_digest = compile_repository_guidance(
+                snapshot.spec.workspace,
+                objective=revision.effective_objective,
+                relevant_paths=planned_paths(plan),
+            )
+            if plan.authority.repository_guidance_digest != guidance_digest:
+                failures.append("plan_repository_guidance_stale")
         failures.extend(plan_conformance_failures(snapshot.spec, plan, candidates))
 
     if state is None:
