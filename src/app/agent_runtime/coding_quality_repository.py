@@ -1,6 +1,6 @@
 """PostgreSQL persistence for the coding quality controller.
 
-Quality state is deliberately separate from AgentRunStatus.  A worker crash can
+Quality state is deliberately separate from AgentRunStatus. A worker crash can
 therefore recover the run lifecycle and the exact quality stage independently.
 """
 from __future__ import annotations
@@ -10,7 +10,14 @@ from typing import Any
 
 from app.persistence.tenant import TenantContext
 
-from .contracts import ReviewResult, ReviewSnapshot, SelfReviewResult, ValidationResult, WorkspaceState
+from .contracts import (
+    ReviewAttempt,
+    ReviewResult,
+    ReviewSnapshot,
+    SelfReviewResult,
+    ValidationResult,
+    WorkspaceState,
+)
 
 
 def _json_default(value: Any) -> Any:
@@ -254,39 +261,73 @@ class PostgresCodingQualityRepository:
                 success=bool(row[7]),
                 output_digest=str(row[8]),
                 covers_requirement_ids=list(row[9] or []),
-                started_at=row[10], finished_at=row[11], metadata=dict(row[12] or {}),
+                started_at=row[10],
+                finished_at=row[11],
+                metadata=dict(row[12] or {}),
             )
             for row in rows
         ]
 
     def add_self_review_result(self, result: SelfReviewResult) -> SelfReviewResult:
-        self.connection.execute("""
+        self.connection.execute(
+            """
             INSERT INTO omnix_agent_self_review_results (
                 workspace_id, run_id, self_review_result_id, task_revision_id, workspace_state_id,
                 verdict, requirements, findings, missing_tests, residual_risks, created_at
             ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
             ON CONFLICT (workspace_id, run_id, self_review_result_id) DO NOTHING
-        """, (self.context.workspace_id, result.run_id, result.self_review_result_id, result.task_revision_id,
-              result.workspace_state_id, result.verdict, _json(result.requirements), _json(result.findings),
-              _json(result.missing_tests), _json(result.residual_risks), result.created_at))
+            """,
+            (
+                self.context.workspace_id,
+                result.run_id,
+                result.self_review_result_id,
+                result.task_revision_id,
+                result.workspace_state_id,
+                result.verdict,
+                _json(result.requirements),
+                _json(result.findings),
+                _json(result.missing_tests),
+                _json(result.residual_risks),
+                result.created_at,
+            ),
+        )
         return result
 
-    def list_self_review_results(self, run_id: str, *, task_revision_id: str | None = None) -> list[SelfReviewResult]:
+    def list_self_review_results(
+        self,
+        run_id: str,
+        *,
+        task_revision_id: str | None = None,
+    ) -> list[SelfReviewResult]:
         where = "WHERE workspace_id = %s AND run_id = %s"
         args: tuple[object, ...] = (self.context.workspace_id, run_id)
         if task_revision_id is not None:
             where += " AND task_revision_id = %s"
             args = (*args, task_revision_id)
-        rows = self.connection.execute(f"""
+        rows = self.connection.execute(
+            f"""
             SELECT self_review_result_id, task_revision_id, workspace_state_id, verdict,
                    requirements, findings, missing_tests, residual_risks, created_at
               FROM omnix_agent_self_review_results {where}
              ORDER BY created_at, self_review_result_id
-        """, args).fetchall()
-        return [SelfReviewResult(self_review_result_id=str(row[0]), run_id=run_id,
-            task_revision_id=str(row[1]) if row[1] else None, workspace_state_id=str(row[2]), verdict=str(row[3]),
-            requirements=list(row[4] or []), findings=list(row[5] or []), missing_tests=list(row[6] or []),
-            residual_risks=list(row[7] or []), created_at=row[8]) for row in rows]
+            """,
+            args,
+        ).fetchall()
+        return [
+            SelfReviewResult(
+                self_review_result_id=str(row[0]),
+                run_id=run_id,
+                task_revision_id=str(row[1]) if row[1] else None,
+                workspace_state_id=str(row[2]),
+                verdict=str(row[3]),
+                requirements=list(row[4] or []),
+                findings=list(row[5] or []),
+                missing_tests=list(row[6] or []),
+                residual_risks=list(row[7] or []),
+                created_at=row[8],
+            )
+            for row in rows
+        ]
 
     def add_review_snapshot(self, snapshot: ReviewSnapshot) -> ReviewSnapshot:
         self.connection.execute(
@@ -366,6 +407,119 @@ class PostgresCodingQualityRepository:
             (self.context.workspace_id, run_id, task_revision_id, workspace_state_id),
         ).fetchone()
         return self.get_review_snapshot(run_id, str(row[0])) if row else None
+
+    def add_review_attempt(self, attempt: ReviewAttempt) -> ReviewAttempt:
+        self.connection.execute(
+            """
+            INSERT INTO omnix_agent_review_attempts (
+                workspace_id, run_id, review_attempt_id, reviewer_run_id,
+                review_snapshot_id, task_revision_id, workspace_state_id,
+                reviewer_slot, runtime_attempt, protocol_version,
+                model_provider_id, model_id, reasoning_effort, status,
+                failure_class, failure_reason, retryable, started_at,
+                finished_at, created_at
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (workspace_id, run_id, review_attempt_id) DO UPDATE
+               SET status = EXCLUDED.status,
+                   failure_class = EXCLUDED.failure_class,
+                   failure_reason = EXCLUDED.failure_reason,
+                   retryable = EXCLUDED.retryable,
+                   finished_at = EXCLUDED.finished_at
+            """,
+            (
+                self.context.workspace_id,
+                attempt.run_id,
+                attempt.review_attempt_id,
+                attempt.reviewer_run_id,
+                attempt.review_snapshot_id,
+                attempt.task_revision_id,
+                attempt.workspace_state_id,
+                attempt.reviewer_slot,
+                attempt.runtime_attempt,
+                attempt.protocol_version,
+                attempt.model_provider_id,
+                attempt.model_id,
+                attempt.reasoning_effort,
+                attempt.status,
+                attempt.failure_class,
+                attempt.failure_reason,
+                attempt.retryable,
+                attempt.started_at,
+                attempt.finished_at,
+                attempt.created_at,
+            ),
+        )
+        return attempt
+
+    def get_review_attempt_by_reviewer(self, reviewer_run_id: str) -> ReviewAttempt | None:
+        row = self.connection.execute(
+            """
+            SELECT run_id, review_attempt_id, reviewer_run_id, review_snapshot_id,
+                   task_revision_id, workspace_state_id, reviewer_slot,
+                   runtime_attempt, protocol_version, model_provider_id,
+                   model_id, reasoning_effort, status, failure_class,
+                   failure_reason, retryable, started_at, finished_at, created_at
+              FROM omnix_agent_review_attempts
+             WHERE workspace_id = %s AND reviewer_run_id = %s
+            """,
+            (self.context.workspace_id, reviewer_run_id),
+        ).fetchone()
+        return self._review_attempt_from_row(row) if row else None
+
+    def list_review_attempts(
+        self,
+        run_id: str,
+        *,
+        review_snapshot_id: str | None = None,
+        task_revision_id: str | None = None,
+    ) -> list[ReviewAttempt]:
+        clauses = ["workspace_id = %s", "run_id = %s"]
+        args: list[object] = [self.context.workspace_id, run_id]
+        if review_snapshot_id is not None:
+            clauses.append("review_snapshot_id = %s")
+            args.append(review_snapshot_id)
+        if task_revision_id is not None:
+            clauses.append("task_revision_id IS NOT DISTINCT FROM %s")
+            args.append(task_revision_id)
+        rows = self.connection.execute(
+            f"""
+            SELECT run_id, review_attempt_id, reviewer_run_id, review_snapshot_id,
+                   task_revision_id, workspace_state_id, reviewer_slot,
+                   runtime_attempt, protocol_version, model_provider_id,
+                   model_id, reasoning_effort, status, failure_class,
+                   failure_reason, retryable, started_at, finished_at, created_at
+              FROM omnix_agent_review_attempts
+             WHERE {' AND '.join(clauses)}
+             ORDER BY reviewer_slot, runtime_attempt, created_at, review_attempt_id
+            """,
+            tuple(args),
+        ).fetchall()
+        return [self._review_attempt_from_row(row) for row in rows]
+
+    @staticmethod
+    def _review_attempt_from_row(row: object) -> ReviewAttempt:
+        values = list(row)
+        return ReviewAttempt(
+            run_id=str(values[0]),
+            review_attempt_id=str(values[1]),
+            reviewer_run_id=str(values[2]),
+            review_snapshot_id=str(values[3]),
+            task_revision_id=str(values[4]) if values[4] else None,
+            workspace_state_id=str(values[5]),
+            reviewer_slot=int(values[6]),
+            runtime_attempt=int(values[7]),
+            protocol_version=str(values[8]),
+            model_provider_id=str(values[9]),
+            model_id=str(values[10]),
+            reasoning_effort=str(values[11]) if values[11] else None,
+            status=str(values[12]),
+            failure_class=str(values[13]) if values[13] else None,
+            failure_reason=str(values[14]) if values[14] else None,
+            retryable=bool(values[15]),
+            started_at=values[16],
+            finished_at=values[17],
+            created_at=values[18],
+        )
 
     def add_review_result(self, result: ReviewResult) -> ReviewResult:
         self.connection.execute(
