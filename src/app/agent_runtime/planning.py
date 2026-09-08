@@ -48,7 +48,8 @@ _MUTATING_COMMAND = re.compile(
 )
 _NPM_MUTATING = re.compile(
     r"^npm(?:\.cmd)?(?:\s+--prefix\s+\S+)*\s+"
-    r"(?:install|i|add|update|uninstall|remove|run\s+(?:generate|codegen))(?:\s|$)",
+    r"(?:install|i|add|update|uninstall|remove|"
+    r"run\s+(?:generate|codegen)(?:[-_:][A-Za-z0-9_.-]+)?)(?:\s|$)",
     re.I,
 )
 _NPM_VALIDATE = re.compile(
@@ -103,10 +104,6 @@ def extract_change_literals(revision: TaskRevision) -> list[str]:
         normalized = value.strip()
         if normalized and normalized not in values:
             values.append(normalized)
-    # A two-sided quoted rename/replacement is the high-value case. The first
-    # literal is the superseded behavior; the second is the requested target.
-    # Searching the target as an impact candidate creates false obligations when
-    # the desired value already exists legitimately elsewhere.
     if len(values) >= 2 and re.search(r"\b(?:rename|replace|change|update)\b", revision.effective_objective, re.I):
         return values[:1]
     return values[:8]
@@ -367,10 +364,6 @@ def plan_gate_failures(
                 failures.append(f"high_risk_waiver_missing_proof:{candidate.candidate_id}")
             elif not set(disposition.waiver_proof_ids).issubset(evidence_ids):
                 failures.append(f"high_risk_waiver_unknown_proof:{candidate.candidate_id}")
-            # Deterministic evidence proves the reference exists, not the
-            # semantic claim that it is intentionally unaffected. Escalation is
-            # based on impact likelihood, task risk, relation strength and
-            # semantic uncertainty rather than a single overloaded confidence.
             failures.append(f"semantic_waiver_requires_critic:{candidate.candidate_id}")
 
         if high_value:
@@ -411,10 +404,6 @@ def classify_operation_effect(tool_name: str, *, command: str = "") -> Operation
         return "mutate"
     if tool not in {"bash", "powershell"}:
         return "unknown"
-    # Parse npm command shape before generic prefix checks. In particular,
-    # `npm --prefix <dir> install` changes dependency state and must never be
-    # mistaken for validation merely because the command starts with
-    # `npm --prefix`. Unknown npm scripts still fail closed as `unknown`.
     if _NPM_MUTATING.match(normalized):
         return "mutate"
     if _MUTATING_COMMAND.search(normalized):
@@ -459,10 +448,6 @@ def operation_plan_failures(
     current_evidence_digest: str | None = None,
     quality_stage: dict[str, object] | None = None,
 ) -> list[str]:
-    # Planning is a mutation authority boundary. Read-only inspection and
-    # non-mutating validation must remain available before or between plans so
-    # the agent can gather evidence, diagnose failures, and prove the final
-    # state. Any command classified as unknown still fails closed below.
     if effect in {"read", "validate"}:
         return []
     if plan is None:
