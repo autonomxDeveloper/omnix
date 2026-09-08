@@ -21,7 +21,7 @@ def _retire_stale_quality_commands(
     connection: Any,
     context: TenantContext,
     revision: TaskRevision,
-) -> None:
+) -> bool:
     """Consume pending internal quality resumes from superseded task revisions.
 
     A quality-stage transition and its resume prompt are committed together, so
@@ -30,6 +30,10 @@ def _retire_stale_quality_commands(
     prompt is no longer authoritative. Retire only Omnix-internal quality resumes
     and only when ``revision`` is the current latest revision; user commands and
     recovery commands without quality identity remain untouched.
+
+    Returns whether ``revision`` is the current latest revision so the caller can
+    invalidate other revision-bound authority in the same transaction without a
+    second race-prone latest-revision lookup.
     """
 
     row = connection.execute(
@@ -43,7 +47,7 @@ def _retire_stale_quality_commands(
         (context.workspace_id, revision.run_id),
     ).fetchone()
     if row is None or str(row[0]) != revision.revision_id:
-        return
+        return False
     connection.execute(
         """
         UPDATE omnix_agent_run_commands
@@ -54,6 +58,31 @@ def _retire_stale_quality_commands(
            AND command_type = 'resume'
            AND payload ? 'quality_stage'
            AND (payload ->> 'task_revision_id') IS DISTINCT FROM %s
+        """,
+        (context.workspace_id, revision.run_id, revision.revision_id),
+    )
+    return True
+
+
+def _stale_superseded_planning_state(
+    connection: Any,
+    context: TenantContext,
+    revision: TaskRevision,
+) -> None:
+    """Invalidate durable planning authority when user steering creates a revision.
+
+    Planning state intentionally keeps the old ``task_revision_id`` and active
+    plan lineage for auditability. The next plan inspection sees the mismatch and
+    establishes a fresh baseline/state for the new authoritative TaskRevision.
+    """
+
+    connection.execute(
+        """
+        UPDATE omnix_agent_planning_state
+           SET status = 'stale', updated_at = CURRENT_TIMESTAMP
+         WHERE workspace_id = %s
+           AND run_id = %s
+           AND task_revision_id IS DISTINCT FROM %s
         """,
         (context.workspace_id, revision.run_id, revision.revision_id),
     )
@@ -77,7 +106,8 @@ def persist_task_revision_contract(connection: Any, context: TenantContext, revi
             revision.revision_id,
         ),
     )
-    _retire_stale_quality_commands(connection, context, revision)
+    if _retire_stale_quality_commands(connection, context, revision):
+        _stale_superseded_planning_state(connection, context, revision)
 
 
 def hydrate_task_revision(connection: Any, context: TenantContext, revision: TaskRevision) -> TaskRevision:
