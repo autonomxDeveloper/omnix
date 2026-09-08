@@ -12,7 +12,6 @@ from functools import lru_cache
 import hashlib
 import os
 from pathlib import Path
-import re
 import tempfile
 
 from app.persistence.unit_of_work import unit_of_work
@@ -32,8 +31,6 @@ from .coding_quality import (
     required_review_count,
     review_is_acceptable,
     review_payload_from_text,
-    review_prompt,
-    review_workspace_matches_snapshot,
     self_review_is_acceptable,
     self_review_prompt,
     validation_kind_for_capability,
@@ -47,12 +44,10 @@ from .contracts import (
     AgentRunCommand,
     AgentRunSnapshot,
     AgentRunSpec,
-    ReviewFinding,
     ReviewResult,
     ReviewSnapshot,
     SelfReviewResult,
     TaskRevision,
-    WorkspaceSpec,
 )
 from .debug_logging import log_agent_activity
 from .evidence import evaluate_evidence_set
@@ -61,6 +56,13 @@ from .planning_acceptance import evaluate_planning_acceptance
 from .repository import PostgresAgentRunRepository
 from .repository_guidance import compile_repository_guidance
 from .quality_recovery import reconcile_orphaned_quality_reviews
+from .resource_grants import PostgresResourceGrantRepository
+from .review_orchestration import (
+    finalize_reviewer_child_in_repository,
+    launch_reviewer_children,
+    review_snapshot_id_from_child,
+)
+from .review_runtime import latest_reviewer_text, review_payload_is_protocol_valid
 from .semantic_task_parser import default_semantic_task_parser
 from .workspace import WorkspaceAuthority
 from . import service_core as _service_core
@@ -69,12 +71,7 @@ from .service_core import (
     _acceptance_failures_retryable,
     _acceptance_retry_count as _acceptance_retry_count,
 )
-from .subagents import (
-    ChildRunRequest,
-    default_reviewer_limits,
-    derive_child_spec,
-    reserve_child_budget,
-)
+from .subagents import ChildRunRequest, derive_child_spec
 from .task_revision_quality import (
     hydrate_task_revision,
     hydrate_task_revisions,
@@ -82,7 +79,6 @@ from .task_revision_quality import (
 )
 
 
-_REVIEW_MARKER = re.compile(r"REVIEW_SNAPSHOT_ID=([a-f0-9]+)")
 _TERMINAL = {"completed", "failed", "cancelled"}
 _BLOCKED_SETTLE = {
     "waiting_for_approval",
@@ -257,7 +253,6 @@ def _self_review_protocol_retry_count(
     return count
 
 
-
 def _implementation_candidate_retry_limit() -> int:
     raw = str(os.environ.get("OMNIX_AGENT_IMPLEMENTATION_SETTLE_RETRIES", "2") or "2").strip()
     try:
@@ -343,8 +338,7 @@ def _pre_review_gate(
     if missing:
         return "validating", list(missing)
     current_validations = [
-        item
-        for item in validations
+        item for item in validations
         if getattr(item, "workspace_state_id", None) == workspace_state_id
     ]
     allow_browser_noop = any(
@@ -359,6 +353,7 @@ def _pre_review_gate(
     if candidate_failures:
         return "implementing", candidate_failures
     return "self_review", []
+
 
 def _self_review_response_text(
     events: list[AgentEvent],
@@ -447,15 +442,6 @@ def _self_review_response_from_repository(
     return response if marker_seen else ""
 
 
-_READ_REVIEW_CAPABILITIES = [
-    "workspace.read",
-    "workspace.list",
-    "workspace.search",
-    "workspace.git_status",
-    "workspace.git_diff",
-]
-
-
 def _sync_core_compat() -> None:
     """Keep Phase 1-19 patch/test seams anchored at the public service module.
 
@@ -493,10 +479,8 @@ class AgentRunService(_CoreAgentRunService):
         )
 
     def _supervise_once(self) -> None:
-        # Reconcile durable review-stage parents first. A recovered repair is
-        # changed back to runnable and its stale lease is removed, allowing the
-        # Phase 1-19 generic orphan recovery below to restart Pi immediately in
-        # this same supervisor pass.
+        # Review reconciliation is idempotent and now also drives same-snapshot
+        # reviewer runtime/protocol retries, not only orphan recovery.
         reconcile_orphaned_quality_reviews(self)
         super()._supervise_once()
 
@@ -517,13 +501,7 @@ class AgentRunService(_CoreAgentRunService):
         )
 
     def start_child(self, parent_run_id: str, request) -> AgentRunSnapshot:
-        """Start a narrowed child while preserving the Phase 1-19 lock contract.
-
-        Keep this implementation on the public service facade rather than only
-        in service_core: the lock-before-reservation ordering is part of the
-        repository's audited concurrency contract and existing tooling inspects
-        this public module directly.
-        """
+        """Start a narrowed child under a durable parent resource grant."""
 
         self._ensure_supervisor()
         initial_parent = self.get(parent_run_id)
@@ -550,18 +528,28 @@ class AgentRunService(_CoreAgentRunService):
             child_spec = derive_child_spec(parent, request)
             self._validate_run_spec_authority(child_spec)
             self._validate_evidence_authority(child_spec)
-            existing = repository.list_children(parent_run_id)
             parent_usage = repository.get_usage(parent_run_id)
-            reserve_child_budget(
+            grants = PostgresResourceGrantRepository(work.connection, self.context)
+            protected_fraction = (
+                parent.spec.quality_reserve_fraction
+                if self._quality_enabled(parent.spec)
+                else 0.0
+            )
+            grants.assert_can_grant(
                 parent,
-                existing,
-                child_spec,
+                child_spec.limits,
                 parent_usage=parent_usage,
+                protected_fraction=protected_fraction,
             )
             issued = self._prepare_workspace(
                 self._bind_github_repository_authority(child_spec)
             )
             snapshot = self._persist_starting_run(repository, issued)
+            grants.add_grant(
+                parent_run_id=parent_run_id,
+                child_run_id=issued.run_id,
+                limits=issued.limits,
+            )
             work.commit()
         return self._launch_runtime(issued, snapshot)
 
@@ -665,6 +653,12 @@ class AgentRunService(_CoreAgentRunService):
     def review_results(self, run_id: str):
         with unit_of_work(self.database) as work:
             rows = PostgresCodingQualityRepository(work.connection, self.context).list_review_results(run_id)
+            work.rollback()
+        return rows
+
+    def review_attempts(self, run_id: str):
+        with unit_of_work(self.database) as work:
+            rows = PostgresCodingQualityRepository(work.connection, self.context).list_review_attempts(run_id)
             work.rollback()
         return rows
 
@@ -896,12 +890,24 @@ class AgentRunService(_CoreAgentRunService):
             attempt = max(1, int(stage_state.get("attempt") or 1))
             revision_key = stage_state.get("task_revision_id")
             if stage_now == "inspect" and tool in {"read", "ls", "grep"}:
-                self._set_quality_stage(repository, run_id=event.run_id, stage="planning", attempt=attempt,
-                    task_revision_id=str(revision_key) if revision_key else None, reason="repository_inspection_observed")
+                self._set_quality_stage(
+                    repository,
+                    run_id=event.run_id,
+                    stage="planning",
+                    attempt=attempt,
+                    task_revision_id=str(revision_key) if revision_key else None,
+                    reason="repository_inspection_observed",
+                )
                 stage_now = "planning"
             if stage_now in {"inspect", "planning"} and tool in {"edit", "write"}:
-                self._set_quality_stage(repository, run_id=event.run_id, stage="implementing", attempt=attempt,
-                    task_revision_id=str(revision_key) if revision_key else None, reason="first_workspace_mutation_observed")
+                self._set_quality_stage(
+                    repository,
+                    run_id=event.run_id,
+                    stage="implementing",
+                    attempt=attempt,
+                    task_revision_id=str(revision_key) if revision_key else None,
+                    reason="first_workspace_mutation_observed",
+                )
             mutating_or_validation = (
                 tool in {"edit", "write", "bash", "powershell"}
                 or validation_kind_for_command(command) is not None
@@ -925,7 +931,6 @@ class AgentRunService(_CoreAgentRunService):
                 )
                 work.rollback()
                 return
-            quality = PostgresCodingQualityRepository(work.connection, self.context)
             quality.add_workspace_state(state)
             augmented = event.model_copy(
                 update={
@@ -1070,14 +1075,7 @@ class AgentRunService(_CoreAgentRunService):
         task_revision_id: str | None,
         workspace_state_id: str | None,
     ) -> tuple | None:
-        """Persist an internal quality command before dispatching it to Pi.
-
-        The command table is the durable outbox already used by normal Agent
-        commands. Persisting quality resumes in the same transaction as the
-        quality-stage transition closes the crash window where Omnix could move
-        to ``self_review`` but lose the follow-up prompt before it reached Pi.
-        Orphan recovery resets/replays pending commands from this table.
-        """
+        """Persist an internal quality command before dispatching it to Pi."""
 
         command = AgentRunCommand(
             run_id=run_id,
@@ -1375,9 +1373,6 @@ class AgentRunService(_CoreAgentRunService):
                     prior_stage=stage,
                 )
 
-            # Self-review is now an explicit phase entered only after the current
-            # implementation has attributable diff/no-op proof and fresh required
-            # validation. Never interpret the implementation turn itself as review.
             self._set_quality_stage(
                 repository,
                 run_id=current.run_id,
@@ -1436,13 +1431,23 @@ class AgentRunService(_CoreAgentRunService):
                 workspace_state_id=state.state_id,
             )
             quality.add_self_review_result(self_review)
-            repository.append_event(AgentEvent(run_id=current.run_id, event_type="quality.self_review_completed", payload={
-                "attempt": attempt, "self_review_result_id": self_review.self_review_result_id, "verdict": self_review.verdict,
-                "requirements": [item.model_dump(mode="json") for item in self_review.requirements],
-                "findings": [item.model_dump(mode="json") for item in self_review.findings],
-                "missing_tests": list(self_review.missing_tests), "residual_risks": list(self_review.residual_risks),
-                "task_revision_id": revision.revision_id, "workspace_state_id": state.state_id,
-            }))
+            repository.append_event(
+                AgentEvent(
+                    run_id=current.run_id,
+                    event_type="quality.self_review_completed",
+                    payload={
+                        "attempt": attempt,
+                        "self_review_result_id": self_review.self_review_result_id,
+                        "verdict": self_review.verdict,
+                        "requirements": [item.model_dump(mode="json") for item in self_review.requirements],
+                        "findings": [item.model_dump(mode="json") for item in self_review.findings],
+                        "missing_tests": list(self_review.missing_tests),
+                        "residual_risks": list(self_review.residual_risks),
+                        "task_revision_id": revision.revision_id,
+                        "workspace_state_id": state.state_id,
+                    },
+                )
+            )
             if not self_review_is_acceptable(self_review, revision):
                 return self._request_quality_repair(
                     repository,
@@ -1451,8 +1456,14 @@ class AgentRunService(_CoreAgentRunService):
                     self_review,
                     failures=["quality_self_review_not_approved"],
                 )
-            self._set_quality_stage(repository, run_id=current.run_id, stage="validating", attempt=attempt,
-                task_revision_id=revision.revision_id, workspace_state_id=state.state_id)
+            self._set_quality_stage(
+                repository,
+                run_id=current.run_id,
+                stage="validating",
+                attempt=attempt,
+                task_revision_id=revision.revision_id,
+                workspace_state_id=state.state_id,
+            )
 
         validations = quality.list_validation_results(
             current.run_id,
@@ -1461,8 +1472,15 @@ class AgentRunService(_CoreAgentRunService):
         current_validations = [
             item for item in validations if item.workspace_state_id == state.state_id
         ]
-        self_reviews = quality.list_self_review_results(current.run_id, task_revision_id=revision.revision_id)
-        self_review_fresh = any(item.workspace_state_id == state.state_id and self_review_is_acceptable(item, revision) for item in self_reviews)
+        self_reviews = quality.list_self_review_results(
+            current.run_id,
+            task_revision_id=revision.revision_id,
+        )
+        self_review_fresh = any(
+            item.workspace_state_id == state.state_id
+            and self_review_is_acceptable(item, revision)
+            for item in self_reviews
+        )
         if not self_review_fresh:
             self._set_quality_stage(
                 repository,
@@ -1608,13 +1626,8 @@ class AgentRunService(_CoreAgentRunService):
         if action[0] == "dispatch_command":
             _, command = action
             try:
-                # Use the normal durable command path. It claims and consumes the
-                # command only after the runtime side effect succeeds; orphan
-                # recovery can replay a pending/processing command after a crash.
                 self.command(command)
             except Exception:
-                # command() already records the transport failure durably and
-                # terminalizes the run through _mark_command_failed.
                 pass
             return
         if action[0] == "launch_reviews":
@@ -1622,15 +1635,6 @@ class AgentRunService(_CoreAgentRunService):
             self._launch_reviewer_children(parent_run_id, snapshot_id, int(count))
 
     def _dispatch_pending_quality_commands(self, run_id: str, *, include_parent: bool = False) -> None:
-        """Dispatch committed quality-outbox commands without bypassing durability.
-
-        Repair can be requested while finalizing a reviewer child or acceptance,
-        where the caller cannot return a post-commit action. Read the committed
-        outbox after those transactions and send only internal quality resumes
-        through the normal command path. Idempotent claiming prevents duplicate
-        dispatch if this overlaps with a direct post-action or recovery replay.
-        """
-
         targets: list[str] = []
         pending: list[AgentRunCommand] = []
         try:
@@ -1661,142 +1665,43 @@ class AgentRunService(_CoreAgentRunService):
             self._execute_quality_action(("dispatch_command", command))
 
     def _launch_reviewer_children(self, parent_run_id: str, snapshot_id: str, count: int) -> None:
-        for index in range(max(1, count)):
-            launch: tuple[AgentRunSpec, AgentRunSnapshot] | None = None
-            with unit_of_work(self.database) as work:
-                repository = PostgresAgentRunRepository(work.connection, self.context)
-                parent = repository.get_run(parent_run_id)
-                if parent is None or parent.status in _TERMINAL:
-                    work.rollback()
-                    return
-                quality = PostgresCodingQualityRepository(work.connection, self.context)
-                snapshot = quality.get_review_snapshot(parent_run_id, snapshot_id)
-                revision = self._current_revision(repository, parent_run_id)
-                if snapshot is None or revision is None:
-                    work.rollback()
-                    return
-                if (
-                    snapshot.task_revision_id != revision.revision_id
-                    or snapshot.workspace_state_id != (quality.get_stage(parent_run_id) or {}).get("workspace_state_id")
-                ):
-                    work.rollback()
-                    return
-                validations = quality.list_validation_results(
-                    parent_run_id,
-                    task_revision_id=revision.revision_id,
-                )
-                prompt = (
-                    f"REVIEW_SNAPSHOT_ID={snapshot.snapshot_id}\n"
-                    + review_prompt(revision, snapshot, validations)
-                )
-                reviewer_objective = (
-                    f"Independently review immutable snapshot {snapshot.snapshot_id} "
-                    "for correctness and completeness."
-                )
-                workspace = WorkspaceSpec(
-                    root=snapshot.workspace_root,
-                    repository=(parent.spec.workspace.repository if parent.spec.workspace else None)
-                    or (parent.spec.workspace.root if parent.spec.workspace else snapshot.workspace_root),
-                    base_ref=snapshot.base_commit_sha,
-                    worktree=snapshot.workspace_root,
-                    isolation_policy="immutable_review_snapshot",
-                    allowed_paths=list(parent.spec.workspace.allowed_paths if parent.spec.workspace else ["**"]),
-                    forbidden_paths=list(parent.spec.workspace.forbidden_paths if parent.spec.workspace else []),
-                )
-                if not review_workspace_matches_snapshot(parent.spec, snapshot):
-                    latest = repository.get_run(parent_run_id) or parent
-                    repository.update_state(parent_run_id, expected_revision=latest.revision, status="failed",
-                        desired_state="cancelled", last_error="quality_review_snapshot_integrity_mismatch")
-                    work.commit()
-                    return
-                per_reviewer_fraction = parent.spec.quality_reserve_fraction / max(1, count * quality_attempt_limit())
-                request = ChildRunRequest(
-                    task=prompt,
-                    objective=reviewer_objective,
-                    profile_id="coding-reviewer",
-                    provider_id=parent.spec.model.provider_id,
-                    model_id=parent.spec.model.model_id,
-                    reasoning_effort=parent.spec.model.reasoning_effort,
-                    capabilities=list(_READ_REVIEW_CAPABILITIES),
-                    external_capabilities=[],
-                    success_criteria=["Return a structured independent review verdict for the immutable snapshot."],
-                    limits=default_reviewer_limits(parent.spec.limits, per_reviewer_fraction),
-                )
-                child_spec = derive_child_spec(parent, request, workspace_override=workspace)
-                deterministic_id = hashlib.sha256(
-                    f"review:{parent_run_id}:{snapshot_id}:{index}".encode("utf-8")
-                ).hexdigest()
-                child_spec = child_spec.model_copy(update={"run_id": deterministic_id})
-                existing = repository.get_run(deterministic_id)
-                if existing is not None:
-                    work.rollback()
-                    if existing.status in _TERMINAL:
-                        continue
-                    if self.runtime.get_status(existing.run_id) is None:
-                        try:
-                            self.runtime.start(existing.spec)
-                        except Exception:
-                            pass
-                    continue
-                self._validate_run_spec_authority(child_spec)
-                self._validate_evidence_authority(child_spec)
-                children = repository.list_children(parent_run_id)
-                reserve_child_budget(
-                    parent,
-                    children,
-                    child_spec,
-                    parent_usage=repository.get_usage(parent_run_id),
-                )
-                issued = self._prepare_workspace(self._bind_github_repository_authority(child_spec))
-                child_snapshot = self._persist_starting_run(repository, issued)
-                launch = (issued, child_snapshot)
-                work.commit()
-            if launch is not None:
-                self._launch_runtime(launch[0], launch[1])
+        launch_reviewer_children(self, parent_run_id, snapshot_id, count)
 
     @staticmethod
     def _review_snapshot_id_from_child(child: AgentRunSnapshot) -> str | None:
-        match = _REVIEW_MARKER.search(child.spec.task)
-        return match.group(1) if match else None
+        return review_snapshot_id_from_child(child)
 
     def _review_result_from_child(
         self,
         repository: PostgresAgentRunRepository,
         child: AgentRunSnapshot,
         snapshot: ReviewSnapshot,
-    ) -> ReviewResult:
-        events = repository.list_events(child.run_id, after_sequence=0, limit=5000)
-        text = ""
-        for event in reversed(events):
-            if event.event_type == "model.message":
-                candidate = str(event.payload.get("text") or "").strip()
-                if candidate:
-                    text = candidate
-                    break
-        if child.status == "completed":
-            result = parse_review_result(
-                text,
-                parent_run_id=child.spec.parent_run_id or snapshot.run_id,
-                reviewer_run_id=child.run_id,
-                snapshot=snapshot,
-            )
-        else:
-            result = ReviewResult(
-                run_id=child.spec.parent_run_id or snapshot.run_id,
-                reviewer_run_id=child.run_id,
-                review_snapshot_id=snapshot.snapshot_id,
-                task_revision_id=snapshot.task_revision_id,
-                workspace_state_id=snapshot.workspace_state_id,
-                verdict="blocked",
-                findings=[
-                    ReviewFinding(
-                        severity="high",
-                        category="review_runtime",
-                        problem=f"Independent reviewer ended with status {child.status}.",
-                        recommended_fix="Re-run independent review against the same immutable snapshot.",
-                    )
-                ],
-            )
+    ) -> ReviewResult | None:
+        """Compatibility reader that returns substantive review evidence only.
+
+        Runtime/protocol failure is represented by ReviewAttempt and therefore
+        returns ``None`` here instead of fabricating a blocked ReviewResult.
+        """
+
+        if child.status != "completed":
+            return None
+        revision = self._current_revision(
+            repository,
+            child.spec.parent_run_id or snapshot.run_id,
+        )
+        if revision is None or revision.revision_id != snapshot.task_revision_id:
+            return None
+        text = latest_reviewer_text(
+            repository.list_events(child.run_id, after_sequence=0, limit=5000)
+        )
+        if not review_payload_is_protocol_valid(text, revision):
+            return None
+        result = parse_review_result(
+            text,
+            parent_run_id=child.spec.parent_run_id or snapshot.run_id,
+            reviewer_run_id=child.run_id,
+            snapshot=snapshot,
+        )
         deterministic_result_id = hashlib.sha256(
             f"review-result:{child.run_id}:{snapshot.snapshot_id}".encode("utf-8")
         ).hexdigest()
@@ -1807,109 +1712,9 @@ class AgentRunService(_CoreAgentRunService):
         repository: PostgresAgentRunRepository,
         child_run_id: str,
     ) -> None:
-        child = repository.get_run(child_run_id)
-        if (
-            child is None
-            or child.spec.profile != "coding-reviewer"
-            or not child.spec.parent_run_id
-            or child.status not in _TERMINAL
-        ):
-            super()._maybe_finalize_parent_in_repository(repository, child_run_id)
+        if finalize_reviewer_child_in_repository(self, repository, child_run_id):
             return
-        parent = repository.get_run(child.spec.parent_run_id)
-        if parent is None or not self._quality_enabled(parent.spec):
-            super()._maybe_finalize_parent_in_repository(repository, child_run_id)
-            return
-        quality = PostgresCodingQualityRepository(repository.connection, self.context)
-        stage = quality.get_stage(parent.run_id)
-        if parent.status != "waiting_for_children" or stage is None or stage.get("stage") != "reviewing":
-            return
-        snapshot_id = self._review_snapshot_id_from_child(child)
-        if not snapshot_id:
-            return
-        snapshot = quality.get_review_snapshot(parent.run_id, snapshot_id)
-        revision = self._current_revision(repository, parent.run_id)
-        if snapshot is None or revision is None:
-            return
-        if (
-            snapshot.task_revision_id != revision.revision_id
-            or snapshot.workspace_state_id != stage.get("workspace_state_id")
-        ):
-            return
-
-        result = self._review_result_from_child(repository, child, snapshot)
-        quality.add_review_result(result)
-        repository.append_event(
-            AgentEvent(
-                run_id=parent.run_id,
-                event_type="quality.review_completed",
-                payload={
-                    "reviewer_run_id": child.run_id,
-                    "review_snapshot_id": snapshot.snapshot_id,
-                    "verdict": result.verdict,
-                    "findings": [item.model_dump(mode="json") for item in result.findings],
-                    "missing_tests": list(result.missing_tests),
-                    "task_revision_id": result.task_revision_id,
-                    "workspace_state_id": result.workspace_state_id,
-                },
-            )
-        )
-
-        matching_children = [
-            item
-            for item in repository.list_children(parent.run_id)
-            if item.spec.profile == "coding-reviewer"
-            and self._review_snapshot_id_from_child(item) == snapshot.snapshot_id
-        ]
-        if any(item.status not in _TERMINAL for item in matching_children):
-            return
-
-        results = quality.list_review_results(
-            parent.run_id,
-            task_revision_id=revision.revision_id,
-        )
-        current_results = [
-            item
-            for item in results
-            if item.workspace_state_id == snapshot.workspace_state_id
-            and item.review_snapshot_id == snapshot.snapshot_id
-        ]
-        required = required_review_count(
-            parent.spec,
-            quality.get_workspace_state(parent.run_id, snapshot.workspace_state_id),
-        )
-        approvals = [item for item in current_results if review_is_acceptable(item, revision)]
-        if len(approvals) >= required:
-            self._set_quality_stage(
-                repository,
-                run_id=parent.run_id,
-                stage="acceptance",
-                attempt=int(stage.get("attempt") or 1),
-                task_revision_id=revision.revision_id,
-                workspace_state_id=snapshot.workspace_state_id,
-            )
-            latest = repository.get_run(parent.run_id) or parent
-            if latest.status == "waiting_for_children":
-                latest = repository.update_state(
-                    parent.run_id,
-                    expected_revision=latest.revision,
-                    status="running",
-                    worker_id=self.worker_id,
-                )
-            self._finalize_acceptance(repository, latest)
-            return
-
-        latest_review = next(
-            (item for item in reversed(current_results) if item.verdict != "approve"),
-            current_results[-1] if current_results else None,
-        )
-        self._request_quality_repair(
-            repository,
-            parent,
-            revision,
-            latest_review,
-            failures=["quality_independent_review_missing_or_not_approved"],
-        )
+        super()._maybe_finalize_parent_in_repository(repository, child_run_id)
 
     def _request_quality_repair(
         self,
@@ -1939,11 +1744,15 @@ class AgentRunService(_CoreAgentRunService):
             current.run_id,
             task_revision_id=revision.revision_id,
         )
-        missing = missing_final_validations(
-            revision,
-            validations,
-            workspace_state_id=str(state_id or ""),
-        ) if state_id else list(revision.validation_plan)
+        missing = (
+            missing_final_validations(
+                revision,
+                validations,
+                workspace_state_id=str(state_id or ""),
+            )
+            if state_id
+            else list(revision.validation_plan)
+        )
         prompt = repair_prompt(
             revision,
             review,
