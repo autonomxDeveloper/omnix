@@ -93,17 +93,19 @@ function pathAllowed(value: unknown): boolean {
 const safeCommandPrefixes = [
   "git status", "git diff", "git log", "git show", "git grep",
   "python -m pytest", "python -m py_compile", "pytest", "ruff",
-  "npm test", "npm run test", "npm run build", "npm --prefix", "npm run typecheck", "npm run lint",
+  "npm test", "npm run test", "npm run build", "npm run typecheck", "npm run lint",
   "npm ci --ignore-scripts",
   "npx vitest", "npx tsc",
 ];
 
 const testCommandPrefixes = [
-  "python -m pytest", "pytest", "npm test", "npm run test", "npm --prefix", "npx vitest",
+  "python -m pytest", "pytest", "npm test", "npm run test", "npx vitest",
 ];
 
 const gitStatusCommandPrefixes = ["git status"];
 const gitDiffCommandPrefixes = ["git diff"];
+const npmPrefixedTestCommand = /^npm(?:\.cmd)?\s+--prefix\s+\S+\s+(?:test|run\s+test)(?:\s|$)/i;
+const npmPrefixedSafeValidationCommand = /^npm(?:\.cmd)?\s+--prefix\s+\S+\s+(?:test|run\s+(?:test|build|typecheck|lint))(?:\s|$)/i;
 
 function issuedCommandPrefixes(): string[] {
   if (localCapabilities.has("workspace.command")) return safeCommandPrefixes;
@@ -171,6 +173,12 @@ function commandSafetyRejectionReason(command: unknown): string | null {
 
 function commandPrefixAllowed(command: string): boolean {
   const normalized = command.trim().toLowerCase().replace(/^(npx|npm|python)\.cmd(?=\s|$)/, "$1");
+  // `npm --prefix <dir>` is an option form, not a capability by itself. Only
+  // explicit validation subcommands are safe under the corresponding issued
+  // capability; dependency-changing commands must fall through to workspace.command
+  // approval (or be rejected when only workspace.test was issued).
+  if (localCapabilities.has("workspace.test") && npmPrefixedTestCommand.test(normalized)) return true;
+  if (localCapabilities.has("workspace.command") && npmPrefixedSafeValidationCommand.test(normalized)) return true;
   return issuedCommandPrefixes().some((prefix) => normalized === prefix || normalized.startsWith(prefix + " "));
 }
 
