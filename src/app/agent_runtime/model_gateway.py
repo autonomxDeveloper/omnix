@@ -281,6 +281,40 @@ def _choice(response: ChatResponse, *, delta: bool) -> dict[str, Any]:
     }
 
 
+def _budget_http_exception(reason: str) -> HTTPException:
+    """Expose local Omnix budget exhaustion without pretending it is HTTP rate limiting."""
+
+    code = str(reason or "agent_budget_exhausted")[:500]
+    return HTTPException(
+        status_code=409,
+        detail={
+            "type": "agent_budget_error",
+            "code": code,
+            "message": code,
+            "retryable": False,
+            "scope": "run",
+        },
+        headers={
+            "X-Omnix-Error-Type": "agent_budget_error",
+            "X-Omnix-Error-Code": code,
+            "X-Omnix-Retryable": "false",
+        },
+    )
+
+
+def _budget_stream_error(reason: str) -> dict[str, Any]:
+    code = str(reason or "agent_budget_exhausted")[:500]
+    return {
+        "error": {
+            "message": code,
+            "type": "agent_budget_error",
+            "code": code,
+            "retryable": False,
+            "scope": "run",
+        }
+    }
+
+
 @router.get("/models")
 def list_agent_models(x_omnix_agent_run_id: str = Header(alias="X-Omnix-Agent-Run-Id")) -> dict[str, Any]:
     snapshot = default_agent_run_service().get(x_omnix_agent_run_id)
@@ -332,7 +366,7 @@ async def agent_chat_completion(
             x_omnix_agent_run_id,
         )
     except AgentBudgetError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
+        raise _budget_http_exception(str(exc)) from exc
     provider = await asyncio.to_thread(get_provider, provider_id)
     if provider is None:
         raise HTTPException(status_code=503, detail=f"agent_provider_unavailable:{provider_id}")
@@ -353,10 +387,7 @@ async def agent_chat_completion(
             x_omnix_agent_run_id,
             "budget_output_tokens_exhausted",
         )
-        raise HTTPException(
-            status_code=429,
-            detail="budget_output_tokens_exhausted",
-        )
+        raise _budget_http_exception("budget_output_tokens_exhausted")
     if bounded_tokens is not None:
         kwargs["max_tokens"] = bounded_tokens
     completion_id = f"chatcmpl-omnix-{x_omnix_agent_run_id[:16]}"
@@ -395,7 +426,7 @@ async def agent_chat_completion(
                     output_tokens,
                 )
             except AgentBudgetError as exc:
-                raise HTTPException(status_code=429, detail=str(exc)) from exc
+                raise _budget_http_exception(str(exc)) from exc
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -463,12 +494,7 @@ async def agent_chat_completion(
                         x_omnix_agent_run_id,
                         "budget_output_tokens_unmeterable",
                     )
-                    payload = {
-                        "error": {
-                            "message": "budget_output_tokens_unmeterable",
-                            "type": "agent_budget_error",
-                        }
-                    }
+                    payload = _budget_stream_error("budget_output_tokens_unmeterable")
                     yield f"data: {json.dumps(payload, sort_keys=True)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
@@ -480,15 +506,14 @@ async def agent_chat_completion(
                         observed_output_tokens,
                     )
                 except AgentBudgetError as exc:
-                    payload = {
-                        "error": {
-                            "message": str(exc),
-                            "type": "agent_budget_error",
-                        }
-                    }
+                    payload = _budget_stream_error(str(exc))
                     yield f"data: {json.dumps(payload, sort_keys=True)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
+            yield "data: [DONE]\n\n"
+        except AgentBudgetError as exc:
+            payload = _budget_stream_error(str(exc))
+            yield f"data: {json.dumps(payload, sort_keys=True)}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as exc:
             payload = {
